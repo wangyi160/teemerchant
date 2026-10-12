@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+.venv/
+dist/
+*.db
+*.db-*
+*.log
+*.dpapi
+transport.toml
+*.tmp
