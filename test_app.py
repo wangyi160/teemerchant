@@ -50,5 +50,14 @@ class MerchantTests(unittest.TestCase):
     def test_client_cannot_change_local_private_key_through_settings_api(self):
         app=Application(self.store,Transport())
         with self.assertRaises(ValueError):app.api('PUT','/api/settings',{'token':'overwrite'})
+    def test_filtered_legacy_usage_can_ack_without_disclosing_unused_users(self):
+        class Hidden(Transport):
+            def call(self,method,path,body=None):
+                if method=='GET':
+                    return {'instance_id':'instance','data':[], 'ack_through_seq':0 if self.acks else 5}
+                self.acks.append(body)
+        t=Hidden();app=Application(self.store,t);app.sync()
+        self.assertEqual(t.acks,[{'instance_id':'instance','through_seq':5}])
+        self.assertEqual(self.store.records('usage'),[])
 
 if __name__=='__main__':unittest.main()

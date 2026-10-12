@@ -40,10 +40,10 @@ class Application:
                 for _ in range(16):
                     result = self.transport.call('GET', path + '?limit=500')
                     rows = result['data']
-                    if not rows:
+                    through = result.get('ack_through_seq', rows[-1][field] if rows else 0) if kind == 'usage' else (rows[-1][field] if rows else 0)
+                    if not through:
                         break
                     self.store.archive(kind, result['instance_id'], rows)
-                    through = rows[-1][field]
                     if kind == 'usage':
                         self.transport.call('POST', path + '/ack', {'instance_id': result['instance_id'], 'through_seq': through})
                     else:
