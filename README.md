@@ -17,6 +17,8 @@ python app.py
 3. 点击“验证 TEE”和“连接商户”，再添加官方账号、客户授权和模型销售费率。
 4. 用户沿用平台 API key，选择 `/v1/models` 返回的商户模型 ID；本商户界面不签发用户平台 key。
 
+全部上游账号和账号池归属商户，平台没有自营池。商户费率支持输入、输出和缓存分类，以及按输入 tokens 阈值切换的长上下文阶梯；调用开始时保存完整报价版本。旧账号迁移保留原有倍率换算后的销售费率和阶梯。
+
 所有商户 API 通过 teeproxy 私有 stdin/stdout 管道执行。客户端验证证明、启动测量和 TLS 绑定后，才在同一连接发送凭证；不会信任平台返回的“验证通过”字样。验证失败不发送商户数据。正式部署须使用独立审核的信任策略，不能只从服务器下载策略后直接信任。
 
 API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`credential`），不是任意第三方客户端的凭证文件格式。每个账号须配置网络出口代理，可在代理栏或 OAuth JSON 的 `proxy` 中填写 `http://`、`https://` 或 `socks5h://` 地址；仅 Workbuddy 测试账号允许 `direct://`。代理地址是账号的网络出口，模型服务地址仍由 router 固定为官方域名。OpenAI OAuth 使用 `provider: openai`，由账号 credential 决定官方登录方式。支持 OpenAI、Anthropic、xAI；Workbuddy 需要平台单独启用测试权限。
