@@ -7,11 +7,11 @@ const field=(label,name,value="",type="text",attrs="")=>`<label>${label}<input n
 const table=(heads,rows)=>`<div class="scroll"><table><thead><tr>${heads.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.length?rows.join(""): `<tr><td class="empty" colspan="${heads.length}">暂无记录</td></tr>`}</tbody></table></div>`;
 const remote=()=>state.remote, settings=()=>remote()?.settings, pools=()=>remote()?.pools||[];
 const usd=n=>(n/1e6).toLocaleString("en-US",{maximumFractionDigits:6});
-function amount(v){if(!/^\d+(\.\d{1,6})?$/.test(v))throw Error("费率最多保留 6 位小数");const [a,b=""]=v.split('.');const n=Number(a)*1e6+Number(b.padEnd(6,'0'));if(!Number.isSafeInteger(n)||n>1e12)throw Error("费率超出范围");return n;}
+function amount(v){if(!/^\d+(\.\d{1,6})?$/.test(v))throw Error("倍率最多保留 6 位小数");const [a,b=""]=v.split('.');const n=Number(a)*1e6+Number(b.padEnd(6,'0'));if(!Number.isSafeInteger(n)||n>1e15)throw Error("倍率超出范围");return n;}
 async function api(path,method="GET",body){const r=await fetch(path,{method,headers:{"Content-Type":"application/json","X-CSRF-Token":$('meta[name=csrf]').content},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.json();if(!r.ok)throw Error(value.error||"操作失败");return value;}
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),6000);}
 async function reload(){state=await api('/api/state');render();}
-function draft(){if(!remote())throw Error("请先验证并连接 router");return {expected_revision:settings().revision,pools:structuredClone(pools()),customers:[],customer_defaults:structuredClone(settings().customer_defaults),prices:structuredClone(settings().prices),max_concurrent:settings().max_concurrent,rpm:settings().rpm,tpm:settings().tpm};}
+function draft(){if(!remote())throw Error("请先验证并连接 router");return {expected_revision:settings().revision,pools:structuredClone(pools()),customers:[],customer_defaults:structuredClone(settings().customer_defaults),pool_pricing:structuredClone(settings().pool_pricing||[]),max_concurrent:settings().max_concurrent,rpm:settings().rpm,tpm:settings().tpm};}
 async function save(value){await api('/api/config','PUT',value);await reload();}
 function form(title,html,action){const dialog=$('#dialog');dialog.innerHTML=`<h2>${esc(title)}</h2><form>${html}<p class="error" role="alert"></p><div class="actions">${btn('取消','close')}<button type="submit" class="primary">保存</button></div></form>`;dialog.querySelector('[data-action=close]').type='button';dialog.querySelector('form').onsubmit=async e=>{e.preventDefault();const button=e.target.querySelector('[type=submit]');button.disabled=true;try{await action(new FormData(e.target));dialog.close();dialog.innerHTML='';toast('已保存');}catch(error){dialog.querySelector('.error').textContent=error.message;}finally{button.disabled=false;}};dialog.showModal();}
 function heading(title,desc,action=""){return `<div class="heading"><div><h1>${title}</h1><p>${desc}</p></div>${action}</div>`;}
@@ -20,7 +20,7 @@ function view(){if(section==='connection')return connection();if(!remote())retur
 if(section==='overview')return heading('商户概览','你的上游账号与客户访问状态。')+`<div class="cards"><div class="card"><small>账号池</small><strong>${pools().length}</strong></div><div class="card"><small>已使用客户</small><strong>${settings().customers.length}</strong></div><div class="card"><small>价格 / 配置版本</small><strong>v${settings().revision}</strong></div></div><section class="panel"><h2>${esc(remote().merchant.name)}</h2><p>商户 ID：<code>${esc(remote().merchant.id)}</code></p><p>用户沿用平台 API key；商户标识会出现在模型和账号池名称中。</p><div class="notice">平台资源上限：并发 ${remote().merchant.max_concurrent} · RPM ${remote().merchant.rpm||'不限'} · TPM ${remote().merchant.tpm||'不限'}。实际采用平台与商户配置中较低的限额。</div></section>`;
 if(section==='accounts'){const rows=pools().flatMap(p=>p.deployments.map(d=>`<tr><td><strong>${esc(d.id)}</strong><small>${esc(p.name)}</small></td><td>${esc(d.provider)}</td><td>${d.enabled?'启用':'停用'}</td><td>${d.max_concurrent} / ${d.rpm||'不限'}</td><td>${btn(d.enabled?'停用':'启用','toggle-account',d.id)} ${btn('删除','delete-account',d.id)}</td></tr>`));return heading('账号与模型','仅直连官方服务；Workbuddy 为平台单独授权的测试服务。',btn('添加账号','account','','primary'))+`<section class="panel">${table(['账号 / 账号池','服务','状态','并发 / RPM','操作'],rows)}</section><section class="panel"><div class="panelhead"><h2>官方模型目录</h2>${btn('更新目录','refresh')}</div>${table(['账号池','账号','模型'],(remote().catalog?.data||[]).flatMap(c=>Object.keys(c.official_models||{}).map(id=>`<tr><td>${esc(c.pool)}</td><td>${esc(c.deployment)}</td><td>${esc(id)}</td></tr>`)))}</section>`;}
 if(section==='customers')return heading('客户授权','仅显示实际调用过本商户模型账号的用户；查询模型列表不会出现在这里。',btn('默认客户权限','customer-defaults','','primary'))+`<section class="panel"><p>平台已授权的用户首次调用时使用默认权限和限额，之后可在下方单独调整或停用。平台预授权名单不会向商户公开。</p>${table(['平台用户 ID','状态','模型 / 账号池权限','并发 / RPM / TPM','操作'],settings().customers.map(c=>`<tr><td>${esc(c.user_id)}</td><td>${c.enabled?'启用':'停用'}</td><td>${esc(c.models.join(', ')||'全部本商户模型')}</td><td>${c.max_concurrent} / ${c.rpm||'不限'} / ${c.tpm||'不限'}</td><td>${btn('编辑','customer',c.user_id)}</td></tr>`))}</section>`;
-if(section==='pricing')return heading('费率与限速','费率单位：USD / 百万 tokens。调用开始时锁定价格版本。',btn('添加费率','price','','primary'))+`<section class="panel"><div class="panelhead"><h2>商户总限速</h2>${btn('调整限速','limits')}</div><p>并发 ${settings().max_concurrent} · RPM ${settings().rpm||'不限'} · TPM ${settings().tpm||'不限'}</p></section><section class="panel">${table(['账号池 / 模型','输入','输出','缓存读取 / 写入 / 1h 写入','操作'],settings().prices.map((p,i)=>`<tr><td><strong>${esc(p.model)}</strong><small>${esc(p.pool)}</small>${p.long_context?`<small>输入超过 ${p.long_context.above_input_tokens.toLocaleString()} tokens：$${usd(p.long_context.rates.input)} / $${usd(p.long_context.rates.output)}</small>`:""}${p.valid_until?`<small>有效期至 ${esc(new Date(p.valid_until*1000).toLocaleString())}</small>`:""}</td><td>$${usd(p.input)}</td><td>$${usd(p.output)}</td><td>${['cache_read','cache_write','cache_write_hour'].map(k=>p[k]==null?'—':'$'+usd(p[k])).join(' / ')}</td><td>${btn('编辑','price',String(i))}</td></tr>`))}</section><p>未公布价格的模型会拒绝调用。缓存费率留空时，含该类缓存用量的调用会保留待结算记录。</p>`;
+if(section==='pricing')return heading('费率与限速','每个账号池设置一个倍率，按平台维护的官方价格计费。')+`<section class="panel"><div class="panelhead"><h2>商户总限速</h2>${btn('调整限速','limits')}</div><p>并发 ${settings().max_concurrent} · RPM ${settings().rpm||'不限'} · TPM ${settings().tpm||'不限'}</p></section><section class="panel">${table(['账号池','服务','官方价格倍率','价格基准','操作'],pools().map(p=>{const rate=(settings().pool_pricing||[]).find(r=>r.pool===p.name),book=remote().official_pricing?.providers.find(b=>b.provider===p.provider);return `<tr><td><strong>${esc(p.name)}</strong></td><td>${esc(p.provider)}</td><td><strong>${rate?usd(rate.multiplier_millionths)+'×':'未设置'}</strong></td><td>${book?(p.provider==='workbuddy'?'测试基准':'官方基准')+' v'+book.version+' · '+book.models.length+' 个模型':'基准价未就绪'}</td><td>${btn(rate?'修改倍率':'设置倍率','price',p.name)}</td></tr>`}))}</section><p>输入、输出、缓存和长上下文费率统一乘以该池倍率，1× 为基准价，0.2× 为基准价的 20%。Workbuddy 使用测试基准。调用开始时锁定基准价与倍率；未配置倍率或缺少模型基准价时拒绝调用。</p>`;
 if(section==='usage'||section==='refusals')return heading(names[section],'归档成功后才从 Router 确认删除；这里显示本机最近 200 条记录。',btn('立即同步','sync','','primary'))+`<section class="panel">${table(['ID','用户','模型 / 来源','详情'],records.map((r,i)=>{const e=r.event||r;return `<tr><td>${r.seq??r.id}</td><td>${esc(e.user_id||'')}</td><td>${esc(e.model||e.provider||'')}</td><td>${btn('查看','record',String(i))}</td></tr>`}))}</section>`;
 }
 function connection(){const s=state.settings;return heading('连接与身份','由本机独立核验 TEE，再通过同一条 TLS 连接发送商户凭证。')+`<section class="panel"><form id="connection"><div class="grid">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${field('TEE 验证组件（teeproxy.exe）','transport',s.transport,'text','required')}${field('本地 TDX 信任策略路径','tdx_policy',s.tdx_policy)}${field('本地 SNP 信任策略路径','snp_policy',s.snp_policy)}</div><div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}${btn('连接商户','connect')}</div></form></section><section class="panel"><div class="panelhead"><h2>平台登记信息</h2>${btn('复制登记信息','copy')}</div><p>由平台管理员登记以下信息并授予平台用户访问资格。</p><pre>${esc(JSON.stringify(state.enrollment,null,2))}</pre><p>本机已接受配置版本：${s.minimum_revision}。私钥由 Windows 当前用户加密保管。</p></section>`;}
@@ -43,27 +43,14 @@ function customerForm(id){
     });
 }
 function priceForm(id){
-  const p=id!==''?settings().prices[Number(id)]:null;
-  const keys=['input','output','cache_read','cache_write','cache_write_hour'];
-  const labels=['输入','输出','缓存读取','缓存写入','缓存写入（1 小时）'];
-  const rates=(prefix,value,required)=>keys.map((k,i)=>field(labels[i]+' · USD / 百万 tokens',prefix+k,value?.[k]==null?'':String(value[k]/1e6),'text',required&&i<2?'required':'')).join('');
-  form('模型费率',`<label>账号池<select name="pool">${pools().map(g=>`<option ${g.name===p?.pool?'selected':''}>${esc(g.name)}</option>`).join('')}</select></label>`+
-    field('官方模型 ID','model',p?.model||'','text','required')+rates('',p,true)+
-    field('长上下文阈值（输入 tokens；留空关闭）','threshold',p?.long_context?.above_input_tokens||'','number','min=1 max=1000000000')+
-    rates('tier_',p?.long_context?.rates,false)+
-    field('价格到期时间（Unix 秒；留空长期有效）','valid_until',p?.valid_until||'','number','min=1'),async f=>{
-      const d=draft(),row={pool:f.get('pool'),model:f.get('model'),long_context:null,valid_until:null};
-      for(const k of keys)row[k]=f.get(k)===''?null:amount(f.get(k));
-      if(f.get('threshold')){
-        const threshold=Number(f.get('threshold'));
-        if(!Number.isSafeInteger(threshold)||threshold<1||threshold>1e9)throw Error('长上下文阈值无效');
-        const tier={};for(const k of keys)tier[k]=f.get('tier_'+k)===''?null:amount(f.get('tier_'+k));
-        if(tier.input===null||tier.output===null)throw Error('请填写长上下文输入和输出费率');
-        row.long_context={above_input_tokens:threshold,rates:tier};
-      }
-      if(f.get('valid_until')){row.valid_until=Number(f.get('valid_until'));if(!Number.isSafeInteger(row.valid_until)||row.valid_until<1)throw Error('价格到期时间无效');}
-      if(id!=='')d.prices.splice(Number(id),1);
-      d.prices=d.prices.filter(p=>p.pool!==row.pool||p.model!==row.model);d.prices.push(row);await save(d);
+  const pool=pools().find(p=>p.name===id);
+  if(!pool)throw Error('请刷新账号池后重试');
+  const p=(settings().pool_pricing||[]).find(p=>p.pool===id);
+  form('账号池倍率',`<p>账号池：<strong>${esc(id)}</strong></p><p>此倍率适用于该池所有模型的输入、输出、缓存及长上下文费用。</p>`+
+    field(pool.provider==='workbuddy'?'测试基准倍率':'官方价格倍率','multiplier',p?String(p.multiplier_millionths/1e6):'1','text','required inputmode="decimal"')+
+    '<p>例如 0.2 表示按基准价的 20% 计费，1 表示原价，2 表示两倍。</p>',async f=>{
+      const d=draft(),row={pool:id,multiplier_millionths:amount(f.get('multiplier').trim())};
+      d.pool_pricing=d.pool_pricing.filter(p=>p.pool!==id);d.pool_pricing.push(row);await save(d);
     });
 }
 
