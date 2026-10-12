@@ -19,7 +19,7 @@ python app.py
 
 所有商户 API 通过 teeproxy 私有 stdin/stdout 管道执行。客户端验证证明、启动测量和 TLS 绑定后，才在同一连接发送凭证；不会信任平台返回的“验证通过”字样。验证失败不发送商户数据。正式部署须使用独立审核的信任策略，不能只从服务器下载策略后直接信任。
 
-API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`credential`，以及需要时的 `proxy`），不是任意第三方客户端的凭证文件格式。OpenAI OAuth 使用 `provider: openai`，由账号 credential 决定官方登录方式。支持 OpenAI、Anthropic、xAI；Workbuddy 需要平台单独启用测试权限。
+API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`credential`），不是任意第三方客户端的凭证文件格式。每个账号须配置网络出口代理，可在代理栏或 OAuth JSON 的 `proxy` 中填写 `http://`、`https://` 或 `socks5h://` 地址；仅 Workbuddy 测试账号允许 `direct://`。代理地址是账号的网络出口，模型服务地址仍由 router 固定为官方域名。OpenAI OAuth 使用 `provider: openai`，由账号 credential 决定官方登录方式。支持 OpenAI、Anthropic、xAI；Workbuddy 需要平台单独启用测试权限。
 
 身份、连接设置和归档正文用当前 Windows 用户的 DPAPI 加密，默认保存在 `%LOCALAPPDATA%/teemerchant`。SQLite 只在事务提交后确认 router 用量 / 拒答前缀。每 10 秒同步一次；写盘失败不确认删除，重复记录不重复保存，记录内容变化则停止同步。界面显示最近 200 条，数据库保存完整归档。
 
