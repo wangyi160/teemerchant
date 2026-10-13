@@ -100,9 +100,75 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(update['pools'][0]['deployments'][0]['oauth_account'], 'credential-ref')
         self.assertEqual(update['pool_pricing'][0]['multiplier_millionths'], 200000)
 
+    def test_pool_lifecycle_empty_pool_edit_rate_then_add_account(self):
+        self.page.locator('[data-action=pool]').click()
+        self.page.locator('[name=name]').fill('claude-team')
+        self.page.locator('[name=provider]').select_option('anthropic')
+        self.page.locator('[name=multiplier]').fill('0.3')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expect(self.page.locator('.selected-row')).to_contain_text('claude-team')
+        expect(self.page.locator('.selected-row td').nth(2)).to_have_text('0')
+        expect(self.page.get_by_role('heading', name='claude-team · 账号（0）')).to_be_visible()
+        created = self.router.writes[-1]
+        self.assertEqual(created['pools'][1], {'name':'claude-team','provider':'anthropic','deployments':[]})
+        self.assertEqual(created['accounts'], {})
+        self.assertEqual(created['secrets'], {})
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        self.page.locator('[data-action=account-pool][data-id=claude-team]').click()
+        self.page.locator('[data-action=edit-pool][data-id=claude-team]').click()
+        expect(self.page.locator('[name=name]')).to_have_attribute('readonly', '')
+        expect(self.page.locator('[name=provider]')).to_be_disabled()
+        expect(self.page.locator('[name=multiplier]')).to_have_value('0.3')
+        self.page.locator('[name=multiplier]').fill('0.25')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.page.locator('[data-action=account]').click()
+        expect(self.page.locator('[name=pool]')).to_have_value('claude-team')
+        self.assertEqual(self.page.locator('#dialog [name=provider], #dialog [name=multiplier]').count(), 0)
+        self.page.locator('[name=id]').fill('claude-account')
+        self.page.locator('[name=credential]').fill('FIXTURE_CLAUDE_KEY')
+        self.page.locator('[name=proxy]').fill('https://proxy.example')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expect(self.page.locator('.selected-row td').nth(2)).to_have_text('1')
+        self.assertEqual(len(self.router.writes), 3)
+        added = self.router.writes[-1]
+        self.assertEqual(added['pools'][1]['deployments'][0]['provider'], 'anthropic')
+        self.assertEqual(added['pool_pricing'], [{'pool':'openai','multiplier_millionths':200000},
+                                              {'pool':'claude-team','multiplier_millionths':250000}])
+        self.assertEqual(added['pools'][0], created['pools'][0])
+        self.page.locator('[data-action=edit-account][data-id=claude-account]').click()
+        expect(self.page.locator('[name=pool] option')).to_have_count(1)
+        expect(self.page.locator('[name=credential]')).to_have_value('FIXTURE_CLAUDE_KEY')
+
+    def test_empty_state_requires_pool_before_accounts(self):
+        empty = self.app._api('GET', '/api/state', None)
+        empty['remote']['pools'] = []
+        empty['remote']['settings']['pool_pricing'] = []
+        self.page.route('**/api/state', lambda route: route.fulfill(json=empty))
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        expect(self.page.locator('[data-action=pool]')).to_be_visible()
+        expect(self.page.locator('[data-action=account], [data-action=import-accounts]')).to_have_count(0)
+        self.page.locator('[data-action=pool]').click()
+        expect(self.page.get_by_role('heading', name='添加账号池', exact=True)).to_be_visible()
+        self.assertEqual(self.router.writes, [])
+
+    def test_batch_unknown_pool_is_rejected_without_creating_it(self):
+        self.page.locator('[data-action=import-accounts]').click()
+        self.page.locator('[name=proxy]').fill('https://proxy.example')
+        self.page.locator('[name=entries]').fill(json.dumps([
+            {'id':'new-account','pool':'not-created','api_key':'FIXTURE_KEY'}]))
+        self.page.get_by_role('button', name='校验并预览').click()
+        expect(self.page.locator('#dialog .error')).to_contain_text('请先添加账号池')
+        expect(self.page.get_by_role('button', name='确认导入')).to_be_disabled()
+        self.assertEqual(self.router.writes, [])
+
     def test_batch_file_preview_duplicate_block_and_single_commit(self):
         self.page.locator('[data-action=import-accounts]').click()
-        self.page.locator('[name=pool]').fill('openai')
+        self.page.locator('[name=pool]').select_option('openai')
         self.page.locator('[name=proxy]').fill('socks5h://user:PRIVATE_PROXY_PASSWORD@proxy.example:1080')
         rows = [{'id': 'new-001', 'credential': {'access_token': 'PRIVATE_OAUTH_TOKEN'}},
                 {'id': 'new-002', 'api_key': 'PRIVATE_API_KEY'}]
@@ -148,7 +214,7 @@ class BrowserTests(unittest.TestCase):
     def test_add_oauth_then_rotate_credentials_without_replacing_proxy(self):
         self.page.locator('[data-action=account]').click()
         self.page.locator('[name=id]').fill('new-oauth')
-        self.page.locator('[name=pool]').fill('openai')
+        self.page.locator('[name=pool]').select_option('openai')
         self.page.locator('[name=kind]').select_option('oauth')
         credential = {'provider': 'openai', 'proxy': 'socks5h://proxy.example:1080',
                       'credential': {'access_token': 'FIXTURE_ACCESS', 'refresh_token': 'FIXTURE_REFRESH'}}
@@ -174,7 +240,7 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('aside [data-id=accounts]').click()
         self.page.locator('[data-action=account]').click()
         self.page.locator('[name=id]').fill('offline-key')
-        self.page.locator('[name=pool]').fill('openai')
+        self.page.locator('[name=pool]').select_option('openai')
         self.page.locator('[name=credential]').fill('LOCAL_PRIVATE_FIXTURE')
         self.page.locator('[name=proxy]').fill('https://user:FIXTURE_PASSWORD@proxy.example')
         self.page.get_by_role('button', name='保存并同步').click()

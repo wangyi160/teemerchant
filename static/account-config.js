@@ -40,6 +40,25 @@ const AccountConfig = (() => {
       customer_defaults:clone(s.customer_defaults), pool_pricing:clone(s.pool_pricing || []),
       max_concurrent:s.max_concurrent, rpm:s.rpm, tpm:s.tpm};
   }
+  function pool(remote, entry, editName = null) {
+    const config = draft(remote);
+    const poolName = name(entry.name, '账号池名称', 80);
+    const existing = config.pools.find(p => p.name === (editName || poolName));
+    if (editName && (!existing || poolName !== editName)) throw Error('账号池标识不可变更，请刷新后重试');
+    if (!editName && existing) throw Error('账号池名称已存在');
+    if (!['openai','anthropic','xai','workbuddy'].includes(entry.provider) ||
+        (entry.provider === 'workbuddy' && !remote.merchant.allow_test))
+      throw Error('该服务未获授权或不受支持');
+    if (existing && existing.provider !== entry.provider) throw Error('账号池服务类型不可变更');
+    const multiplier = integer(entry.multiplier_millionths, '账号池倍率', 0, 1e15);
+    if (!existing) {
+      if (config.pools.length >= 1024) throw Error('账号池数量已达上限');
+      config.pools.push({name:poolName, provider:entry.provider, deployments:[]});
+    }
+    config.pool_pricing = config.pool_pricing.filter(p => p.pool !== poolName);
+    config.pool_pricing.push({pool:poolName, multiplier_millionths:multiplier});
+    return config;
+  }
   function build(remote, entries, defaults = {}, editId = null) {
     if (!Array.isArray(entries) || !entries.length || entries.length > 4096 || (editId && entries.length !== 1))
       throw Error('账号数量无效');
@@ -60,7 +79,12 @@ const AccountConfig = (() => {
         if (editId && (!existing || id !== editId)) throw Error('编辑时账号 ID 不可变更，请刷新账号列表');
         if (!editId && reserved.has(id)) throw Error('账号 ID 已存在，请使用新别名；更新已有账号请使用编辑');
         const old = existing?.deployment;
-        const provider = entry.provider ?? old?.provider ?? defaults.provider;
+        const poolName = name(entry.pool ?? existing?.pool ?? defaults.pool, '账号池名称', 80);
+        const pool = config.pools.find(p => p.name === poolName);
+        if (!pool) throw Error('账号池不存在，请先添加账号池');
+        const provider = pool.provider;
+        if (entry.provider !== undefined && entry.provider !== provider)
+          throw Error('账号池的服务类型不匹配');
         if (!['openai','anthropic','xai','workbuddy'].includes(provider) || (provider === 'workbuddy' && !remote.merchant.allow_test))
           throw Error('该服务未获授权或不受支持');
         if (old && provider !== old.provider) throw Error('编辑时不可变更服务类型');
@@ -70,14 +94,6 @@ const AccountConfig = (() => {
           throw Error('凭证类型无效或与原账号不一致');
         if ((kind === 'api' && entry.credential !== undefined) || (kind === 'oauth' && entry.api_key !== undefined))
           throw Error('同一账号只能提供一种凭证');
-        const poolName = name(entry.pool ?? existing?.pool ?? defaults.pool, '账号池名称', 80);
-        let pool = config.pools.find(p => p.name === poolName);
-        if (pool && pool.provider !== provider) throw Error('账号池的服务类型不匹配');
-        if (!pool) {
-          pool = {name:poolName, provider, deployments:[]};
-          config.pools.push(pool);
-          config.pool_pricing.push({pool:poolName, multiplier_millionths:integer(defaults.multiplier_millionths, '新账号池倍率', 0, 1e15)});
-        }
         const d = old ? clone(old) : {id,provider,enabled:true};
         d.max_concurrent = integer(entry.max_concurrent ?? old?.max_concurrent ?? defaults.max_concurrent ?? 16, '并发', 1, 4096);
         d.rpm = integer(entry.rpm ?? old?.rpm ?? defaults.rpm ?? 0, 'RPM', 0, 10000000);
@@ -142,6 +158,6 @@ const AccountConfig = (() => {
     });
     return {config,rows};
   }
-  return {parse,build,draft};
+  return {parse,build,draft,pool};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = AccountConfig;

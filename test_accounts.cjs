@@ -1,15 +1,66 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {build,parse} = require('./static/account-config.js');
+const {build,parse,pool} = require('./static/account-config.js');
 const remote = () => ({merchant:{allow_test:false},settings:{revision:7,max_concurrent:16,rpm:60,tpm:1000,
   customer_defaults:{enabled:true,models:[],max_concurrent:4,rpm:0,tpm:0},
-  pool_pricing:[{pool:'existing',multiplier_millionths:200000}]},
+  pool_pricing:[{pool:'existing',multiplier_millionths:200000},{pool:'new-pool',multiplier_millionths:1000000}]},
   pools:[{name:'existing',provider:'openai',strategy:'round_robin',deployments:[
     {id:'alias',provider:'openai',oauth_account:'private-ref',enabled:true,max_concurrent:8,rpm:30,weight:3},
-    {id:'api-alias',provider:'openai',api_key_ref:'key-ref',proxy:'[redacted]',enabled:true,max_concurrent:4,rpm:10}]}],
+    {id:'api-alias',provider:'openai',api_key_ref:'key-ref',proxy:'[redacted]',enabled:true,max_concurrent:4,rpm:10}]},{name:'new-pool',provider:'openai',deployments:[]}],
   accounts:{data:[{name:'private-ref',enabled:true}]}});
 const oauth = id => ({id,pool:'new-pool',provider:'openai',proxy:'socks5h://proxy.example:1080',credential:{access_token:'fixture-access',refresh_token:'fixture-refresh'}});
 const defaults = {multiplier_millionths:1000000};
+
+test('pool creation persists an independent empty pool without rewriting credentials or other prices',()=>{
+  const source=remote(), before=structuredClone(source);
+  const config=pool(source,{name:'claude-team',provider:'anthropic',multiplier_millionths:250000});
+  assert.deepEqual(source,before);
+  assert.deepEqual(config.pools.at(-1),{name:'claude-team',provider:'anthropic',deployments:[]});
+  assert.deepEqual(config.pools.slice(0,-1),source.pools);
+  assert.deepEqual(config.pool_pricing.slice(0,-1),source.settings.pool_pricing);
+  assert.deepEqual(config.pool_pricing.at(-1),{pool:'claude-team',multiplier_millionths:250000});
+  assert.equal(config.accounts,undefined);assert.equal(config.secrets,undefined);
+  assert.deepEqual(config.customers,[]);
+});
+
+test('pool edits preserve deployments, credential references, routing settings and unrelated pool prices',()=>{
+  const source=remote();source.local_revision=23;
+  const config=pool(source,{name:'existing',provider:'openai',multiplier_millionths:500000},'existing');
+  assert.deepEqual(config.pools,source.pools);
+  assert.equal(config._local_revision,23);
+  assert.equal(config.expected_revision,7);
+  assert.deepEqual(config.pool_pricing.find(p=>p.pool==='new-pool'),source.settings.pool_pricing[1]);
+  assert.equal(config.pool_pricing.find(p=>p.pool==='existing').multiplier_millionths,500000);
+  assert.equal(config.accounts,undefined);assert.equal(config.secrets,undefined);
+});
+
+test('duplicate pools, invalid prices, unauthorized providers and edits to stable identifiers are rejected',()=>{
+  const source=remote(), before=structuredClone(source);
+  const valid={name:'fresh',provider:'openai',multiplier_millionths:1000000};
+  for (const entry of [{name:'existing'},{name:'bad/name'},{name:'a'.repeat(81)},
+    {provider:'gemini'},{provider:'workbuddy'},{multiplier_millionths:-1},
+    {multiplier_millionths:1.5},{multiplier_millionths:1e15+1}])
+    assert.throws(()=>pool(source,{...valid,...entry}));
+  assert.throws(()=>pool(source,valid,'existing'),/标识不可变更/);
+  assert.throws(()=>pool(source,{...valid,name:'existing',provider:'anthropic'},'existing'),/服务类型不可变更/);
+  assert.deepEqual(source,before);
+  source.merchant.allow_test=true;
+  assert.equal(pool(source,{...valid,provider:'workbuddy'}).pools.at(-1).provider,'workbuddy');
+});
+
+test('account add and batch import require existing pools and inherit each pool provider',()=>{
+  const source=remote(), before=structuredClone(source);
+  assert.throws(()=>build(source,[oauth('first'),{...oauth('second'),pool:'missing'}],defaults),/请先添加账号池/);
+  assert.deepEqual(source,before);
+  source.pools.push({name:'claude-team',provider:'anthropic',deployments:[]});
+  const {config}=build(source,[{id:'new-openai',api_key:'fixture-one',proxy:'https://proxy.example'},
+    {id:'new-claude',pool:'claude-team',credential:{claudeAiOauth:{accessToken:'fixture-two'}},proxy:'https://proxy.example'}],{pool:'existing'});
+  assert.equal(config.pools[0].deployments.at(-1).provider,'openai');
+  assert.equal(config.accounts['new-claude'].provider,'anthropic');
+  assert.equal(config.pools.length,source.pools.length);
+  assert.deepEqual(config.pool_pricing,source.settings.pool_pricing);
+  assert.throws(()=>build(source,[{id:'alias',pool:'claude-team'}],{},'alias'),/服务类型/);
+});
 
 test('batch creates both credential types, binds each account and preserves existing prices/config',()=>{
   const source=remote(), before=structuredClone(source);
@@ -70,7 +121,7 @@ test('migrated Workbuddy account storage still accepts plain API key edits',()=>
 });
 
 test('moving account preserves its identity and leaves original pool and price intact',()=>{
-  const {config}=build(remote(),[{id:'alias',pool:'moved'}],defaults,'alias');
+  const {config}=build(remote(),[{id:'alias',pool:'new-pool'}],defaults,'alias');
   assert.equal(config.pools[0].deployments.length,1);
   assert.equal(config.pools[1].deployments[0].oauth_account,'private-ref');
   assert.equal(config.pool_pricing[0].multiplier_millionths,200000);
