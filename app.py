@@ -121,6 +121,9 @@ def handler(application, origin):
             if self.command == 'GET' and path in ('/', '/app.js', '/app.css'):
                 name = {'/': 'index.html', '/app.js': 'app.js', '/app.css': 'app.css'}[path]
                 data = (ROOT / 'static' / name).read_bytes()
+                if name == 'app.js':
+                    data = ((ROOT / 'static' / 'account-config.js').read_bytes() + b'\n' + data
+                            + b'\n' + (ROOT / 'static' / 'account-ui.js').read_bytes())
                 if name == 'index.html':
                     data = data.replace(b'CSRF_PLACEHOLDER', application.csrf.encode())
                 mime = {'index.html': 'text/html', 'app.js': 'text/javascript', 'app.css': 'text/css'}[name] + '; charset=utf-8'

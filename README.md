@@ -27,6 +27,44 @@ API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`cr
 
 身份、连接设置和归档正文用当前 Windows 用户的 DPAPI 加密，默认保存在 `%LOCALAPPDATA%/teemerchant`。SQLite 只在事务提交后确认 router 用量 / 拒答前缀。每 10 秒同步一次；写盘失败不确认删除，重复记录不重复保存，记录内容变化则停止同步。界面显示最近 200 条，数据库保存完整归档。
 
+## 账号管理与批量导入
+
+“账号与模型”先展示账号池、账号数量与倍率。点击账号池可筛选账号及模型目录。账号行显示启用情况、重新授权要求或目录状态；“目录已就绪”不代表额度、价格或所有模型调用均已验证。
+
+添加、编辑和批量导入的“保存并提交 / 确认导入”会立即通过 TEE 通道更新 Router，成功后显示配置版本。无需再点击“同步”；调用记录和拒答记录页面的“同步”仅用于本地归档。连接失败或版本冲突时不会显示保存成功，也不会自动重发写入；版本冲突须刷新后重新编辑。
+
+点击账号的“编辑”可调整所属池、并发、RPM、启用状态，更换凭证或出口代理。凭证和代理不回显，留空保留 Router 中的原值；账号 ID、服务和凭证类型固定。更换 OAuth 凭证时提交完整凭证对象，避免把不同身份的令牌拼接。共享凭证涉及多个部署时，界面会阻止只针对其中一个部署的凭证轮换及共享出口、限额变更。移动账号不会删除原池、原费率或历史记录。
+
+“批量导入”支持粘贴 JSON 数组或选择多个 JSON 文件。每个文件可包含一个账号对象或账号数组；每个账号必须有独立的 `id`（对外别名）。默认服务、账号池和出口代理可统一填写，单个账号的字段优先。示例：
+
+```json
+[
+  {
+    "id": "openai-001",
+    "pool": "openai",
+    "provider": "openai",
+    "proxy": "socks5h://proxy.example:1080",
+    "credential": {
+      "access_token": "REPLACE_ACCESS_TOKEN",
+      "refresh_token": "REPLACE_REFRESH_TOKEN",
+      "id_token": "REPLACE_ID_TOKEN",
+      "account_id": "REPLACE_OFFICIAL_ACCOUNT_ID"
+    }
+  },
+  {
+    "id": "openai-002",
+    "pool": "openai",
+    "provider": "openai",
+    "proxy": "socks5h://proxy.example:1080",
+    "api_key": "REPLACE_API_KEY"
+  }
+]
+```
+
+每项还可填写 `max_concurrent`（默认 16）、`rpm`（默认 0，不限）和 `enabled`（默认 true）。不能同时提供 `api_key` 和 `credential`。OpenAI 官方 `credential.account_id` 须保持真实值，与展示用的 `id` 独立。Codex `auth.json` 等其他客户端格式需要先转换。
+
+先点击“校验并预览”，再确认一次提交。预览不显示令牌和代理密码；内容修改后需要重新校验。重复 ID、已有账号或不匹配的账号池会阻止提交，不会悄悄覆盖账号。每批最多 4096 项，文件总大小最多 12 MB。已有账号池沿用原倍率，新建池使用界面明确填写的倍率（默认 1×）。可在导入窗口下载占位示例，真实凭证只放在自己的本机导入文件中。
+
 当前身份绑定 Windows 用户，本版尚无跨设备密钥迁移界面。保护 Windows 用户配置与 DPAPI 恢复材料；丢失身份会无法解锁商户恢复胶囊。商户费率不是签名金融凭证，记录用于外部账务与审计。更多边界和 API 见 [teerouter 多商户文档](https://github.com/wangyi160/teerouter/blob/main/docs/MERCHANTS.md)。
 
 ## 验证
@@ -34,6 +72,10 @@ API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`cr
 ```powershell
 python -m unittest -v
 node --check static/app.js
+node --check static/account-ui.js
+node --test test_accounts.cjs
 ```
 
 测试包括 DPAPI 持久化、归档先于确认、重复归档、写盘失败、身份与版本回退拒绝。TEE / TLS 传输测试位于 teeproxy；多商户权限、统一 key、价格、备份和隔离测试位于 teerouter。测试使用受控上游，不代表真实账号或生产审计。
+
+账号配置测试覆盖批量校验、凭证保留及轮换、旧倍率保留、账号移动、共享凭证与别名冲突。可选浏览器测试 `python -m unittest -v test_browser` 需要 Playwright 和 Microsoft Edge，使用独立临时目录及模拟 Router，不修改真实商户账号。
