@@ -4,6 +4,7 @@ Uses an isolated local server and a fake TEE transport. Never touches live accou
 """
 import copy
 import json
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tempfile
 import threading
@@ -158,9 +159,8 @@ class BrowserTests(unittest.TestCase):
 
     def test_batch_unknown_pool_is_rejected_without_creating_it(self):
         self.page.locator('[data-action=import-accounts]').click()
-        self.page.locator('[name=proxy]').fill('https://proxy.example')
         self.page.locator('[name=entries]').fill(json.dumps([
-            {'id':'new-account','pool':'not-created','api_key':'FIXTURE_KEY'}]))
+            {'id':'new-account','pool':'not-created','api_key':'FIXTURE_KEY','proxy':'https://proxy.example'}]))
         self.page.get_by_role('button', name='校验并预览').click()
         expect(self.page.locator('#dialog .error')).to_contain_text('请先添加账号池')
         expect(self.page.get_by_role('button', name='确认导入')).to_be_disabled()
@@ -169,16 +169,28 @@ class BrowserTests(unittest.TestCase):
     def test_batch_file_preview_duplicate_block_and_single_commit(self):
         self.page.locator('[data-action=import-accounts]').click()
         self.page.locator('[name=pool]').select_option('openai')
-        self.page.locator('[name=proxy]').fill('socks5h://user:PRIVATE_PROXY_PASSWORD@proxy.example:1080')
-        rows = [{'id': 'new-001', 'credential': {'access_token': 'PRIVATE_OAUTH_TOKEN'}},
-                {'id': 'new-002', 'api_key': 'PRIVATE_API_KEY'}]
+        expect(self.page.locator('#dialog [name=proxy]')).to_have_count(0)
+        rows = [{'id': 'new-001', 'credential': {'access_token': 'PRIVATE_OAUTH_TOKEN'},
+                 'proxy': {'scheme':'socks5h','host':'proxy-1.example','port':1080,
+                           'username':'PRIVATE_USER','password':'PRIVATE_PROXY_PASSWORD'}},
+                {'id': 'new-002', 'api_key': 'PRIVATE_API_KEY',
+                 'proxy': 'https://user:PRIVATE_PASSWORD@proxy-2.example:8443'}]
         self.page.locator('#import-files').set_input_files([
             {'name': 'first.json', 'mimeType': 'application/json', 'buffer': json.dumps(rows[0]).encode()},
             {'name': 'second.json', 'mimeType': 'application/json', 'buffer': json.dumps(rows[1]).encode()}])
         self.page.wait_for_function("document.querySelector('[name=entries]').value.includes('new-002')")
         self.page.get_by_role('button', name='校验并预览').click()
         expect(self.page.locator('#import-review')).to_contain_text('2 个账号校验通过')
+        expect(self.page.locator('#import-review tbody tr').nth(0)).to_contain_text('socks5h://***:***@proxy-1.example:1080')
+        expect(self.page.locator('#import-review tbody tr').nth(1)).to_contain_text('https://***:***@proxy-2.example:8443')
         self.assertNotIn('PRIVATE_', self.page.locator('#import-review').inner_text())
+        self.assertEqual(self.router.writes, [])
+        missing = copy.deepcopy(rows)
+        del missing[1]['proxy']
+        self.page.locator('[name=entries]').fill(json.dumps(missing))
+        self.page.get_by_role('button', name='校验并预览').click()
+        expect(self.page.locator('#dialog .error')).to_contain_text('第 2 个账号：缺少 proxy')
+        expect(self.page.get_by_role('button', name='确认导入')).to_be_disabled()
         self.assertEqual(self.router.writes, [])
         self.page.locator('[name=entries]').fill(json.dumps([rows[0], rows[0]]))
         expect(self.page.get_by_role('button', name='确认导入')).to_be_disabled()
@@ -193,8 +205,34 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(len(self.router.writes[0]['pools'][0]['deployments']), 3)
         self.assertEqual(self.router.writes[0]['accounts']['new-001']['credential']['access_token'], 'PRIVATE_OAUTH_TOKEN')
         self.assertEqual(self.router.writes[0]['secrets']['new-002'], 'PRIVATE_API_KEY')
+        self.assertEqual(self.router.writes[0]['accounts']['new-001']['proxy'],
+                         'socks5h://PRIVATE_USER:PRIVATE_PROXY_PASSWORD@proxy-1.example:1080')
+        self.assertEqual(self.router.writes[0]['pools'][0]['deployments'][2]['proxy'], rows[1]['proxy'])
         self.assertNotIn('PRIVATE_', self.page.locator('body').inner_text())
         self.assertEqual(self.page.locator('#dialog textarea').count(), 0)
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        for account_id, proxy in [('new-001',self.router.writes[0]['accounts']['new-001']['proxy']),
+                                  ('new-002',rows[1]['proxy'])]:
+            self.page.locator('[data-action=edit-account][data-id='+account_id+']').click()
+            expect(self.page.locator('[name=proxy]')).to_have_value(proxy)
+            self.page.locator('[data-action=close]').click()
+
+    def test_batch_download_example_has_individual_structured_proxies(self):
+        self.page.locator('[data-action=import-accounts]').click()
+        with self.page.expect_download() as download:
+            self.page.locator('#import-example').click()
+        rows = json.loads(Path(download.value.path()).read_text(encoding='utf-8'))
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(row['pool'], 'openai')
+            self.assertEqual(set(row['proxy']), {'scheme','host','port','username','password'})
+        self.assertNotEqual(rows[0]['proxy']['host'], rows[1]['proxy']['host'])
+        self.page.locator('[name=entries]').fill(json.dumps(rows))
+        self.page.get_by_role('button', name='校验并预览').click()
+        expect(self.page.locator('#import-review')).to_contain_text('2 个账号校验通过')
+        self.assertNotIn('REPLACE_PROXY_', self.page.locator('#import-review').inner_text())
+        self.assertEqual(self.router.writes, [])
 
     def test_revision_conflict_retains_local_edit_without_claiming_router_success(self):
         self.router.reject = True

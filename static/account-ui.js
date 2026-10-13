@@ -125,12 +125,12 @@ function batchAccountForm() {
   const snapshot = structuredClone(remote());
   if (!snapshot.pools.length) throw Error('请先添加账号池');
   let preview = null, fileGeneration = 0;
-  form('批量导入账号',`<p>选择 JSON 文件或粘贴账号数组。每项包含独立的 id 和 credential（OAuth）或 api_key。账号继承池的服务类型和倍率；单项可指定另一个已有池。已有账号请使用“编辑”。</p>
-    <div class="grid">${poolSelect(snapshot.pools,selectedAccountPool,'默认账号池')}
-    ${field('默认网络代理（可在各账号中单独填写）','proxy','','text','autocomplete="off"')}</div>
+  form('批量导入账号',`<p>每个账号对象必须包含 id、proxy，以及 credential（OAuth）或 api_key。代理与该账号单独绑定，不使用默认代理。服务类型和倍率继承账号池；单项可指定另一个已有池。</p>
+    ${poolSelect(snapshot.pools,selectedAccountPool,'默认账号池')}
+    <p>proxy 推荐填写为对象：scheme、host、port，以及可选的 username、password；也兼容代理 URL。仅 Workbuddy 测试账号允许填写 "direct://"。已有账号请使用“编辑”。</p>
     <label>选择 JSON 文件（支持多选）<input id="import-files" type="file" accept=".json,application/json" multiple></label>
     <div class="panelhead"><span class="muted">账号 JSON</span><button id="import-example" type="button">下载示例</button></div>
-    <label><textarea name="entries" rows="9" required spellcheck="false" autocomplete="off" placeholder='[{"id":"openai-001","credential":{"access_token":"…","refresh_token":"…"}}]'></textarea></label>
+    <label><textarea name="entries" rows="12" required spellcheck="false" autocomplete="off" placeholder='[{"id":"account-001","proxy":{"scheme":"socks5h","host":"proxy-1.example","port":1080,"username":"user1","password":"…"},"api_key":"…"}]'></textarea></label>
     <button id="import-preview" type="button">校验并预览</button><div id="import-review" aria-live="polite"></div>`,async () => {
       if (!preview) throw Error('请先校验并预览');
       await save(preview.config);
@@ -148,10 +148,10 @@ function batchAccountForm() {
     try {
       const f = new FormData(formEl);
       const result = AccountConfig.build(snapshot,AccountConfig.parse(f.get('entries')),
-        {pool:f.get('pool'),proxy:f.get('proxy').trim()});
+        {pool:f.get('pool')});
       $('#import-review').innerHTML=`<p><strong>${result.rows.length} 个账号校验通过，尚未提交。</strong>确认后一次提交；账号凭证和代理密码不在预览中显示。</p>`+
-        table(['账号别名','账号池 / 倍率','服务 / 凭证','网络出口','并发 / RPM'],result.rows.map(r=>
-          `<tr><td>${esc(r.id)}</td><td>${esc(r.pool)}<small>${r.multiplier_millionths===undefined?'待设置倍率':usd(r.multiplier_millionths)+'×'}</small></td><td>${esc(r.provider)} / ${r.kind==='api'?'API key':'OAuth'}</td><td>${r.proxy}</td><td>${r.max_concurrent} / ${r.rpm||'不限'}</td></tr>`));
+        table(['账号别名','账号池 / 倍率','服务 / 凭证','账号代理（认证已隐藏）','并发 / RPM'],result.rows.map(r=>
+          `<tr><td>${esc(r.id)}</td><td>${esc(r.pool)}<small>${r.multiplier_millionths===undefined?'待设置倍率':usd(r.multiplier_millionths)+'×'}</small></td><td>${esc(r.provider)} / ${r.kind==='api'?'API key':'OAuth'}</td><td>${esc(r.proxy)}</td><td>${r.max_concurrent} / ${r.rpm||'不限'}</td></tr>`));
       preview=result;
       submit.disabled=false;
     } catch(error) {dialog.querySelector('.error').textContent=error.message;}
@@ -174,9 +174,10 @@ function batchAccountForm() {
   formEl.elements.entries.addEventListener('input',()=>fileGeneration++);
   $('#import-example').onclick = () => {
     const target = snapshot.pools.find(p=>p.name===formEl.elements.pool.value);
-    const common = {pool:target.name,provider:target.provider,proxy:target.provider==='workbuddy'?'direct://':'socks5h://proxy.example:1080'};
-    const data=[{id:'account-001',...common,api_key:'REPLACE_API_KEY'},
-      {id:'account-002',...common,api_key:'REPLACE_API_KEY'}];
+    const data=[1,2].map(n=>({id:`account-00${n}`,pool:target.name,
+      proxy:target.provider==='workbuddy'?'direct://':{scheme:'socks5h',host:`proxy-${n}.example`,port:1080,
+        username:`REPLACE_PROXY_USER_${n}`,password:`REPLACE_PROXY_PASSWORD_${n}`},
+      api_key:`REPLACE_API_KEY_${n}`}));
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)+'\n'],{type:'application/json'}));
     const link=document.createElement('a');link.href=url;link.download='merchant-accounts.example.json';link.click();
     setTimeout(()=>URL.revokeObjectURL(url),1000);

@@ -15,12 +15,31 @@ const AccountConfig = (() => {
   function proxy(value, provider) {
     if (provider === 'workbuddy' && value === 'direct://') return value;
     try {
+      if (object(value)) {
+        const fields = ['scheme','host','port','username','password'];
+        if (Object.keys(value).some(k => !fields.includes(k)) ||
+            !['http','https','socks5h'].includes(value.scheme) ||
+            typeof value.host !== 'string' || !value.host || /[\s/@?#\\]/.test(value.host) ||
+            !Number.isInteger(value.port) || value.port < 1 || value.port > 65535 ||
+            [value.username,value.password].some(v => v !== undefined && typeof v !== 'string') ||
+            value.password && !value.username) throw Error();
+        const url = new URL(`${value.scheme}://${value.host}:${value.port}`);
+        // Encode each field separately so @, :, /, %, etc. remain credential data.
+        url.username = encodeURIComponent(value.username || '');
+        url.password = encodeURIComponent(value.password || '');
+        value = url.href;
+      }
       if (typeof value !== 'string' || value.trim() !== value || /[\x00-\x1f\x7f]/.test(value)) throw Error();
       const url = new URL(value);
       if (!['http:', 'https:', 'socks5h:'].includes(url.protocol) || !url.hostname || url.hash || url.search || !['','/'].includes(url.pathname) || url.port === '0')
         throw Error();
       return value;
-    } catch { throw Error('请配置 Router 可访问的 HTTP、HTTPS 或 SOCKS5H 代理；仅 Workbuddy 可用 direct://'); }
+    } catch { throw Error('proxy 格式无效：请填写 scheme（http/https/socks5h）、host、port（1–65535）及可选 username/password，或有效代理 URL；仅 Workbuddy 可用 direct://'); }
+  }
+  function proxyLabel(value) {
+    if (value === 'direct://') return value;
+    const url = new URL(value);
+    return `${url.protocol}//${url.username || url.password ? '***:***@' : ''}${url.host}`;
   }
   function parse(text) {
     if (typeof text !== 'string' || new TextEncoder().encode(text).length > 12*1024*1024)
@@ -99,9 +118,8 @@ const AccountConfig = (() => {
         d.rpm = integer(entry.rpm ?? old?.rpm ?? defaults.rpm ?? 0, 'RPM', 0, 10000000);
         d.enabled = entry.enabled ?? old?.enabled ?? true;
         if (typeof d.enabled !== 'boolean') throw Error('enabled 须为布尔值');
-        const network = entry.proxy || defaults.proxy || '';
-        if (network) proxy(network, provider);
-        if (!old && !network) throw Error('新账号必须配置网络出口代理');
+        const network = entry.proxy === undefined || entry.proxy === '' ? '' : proxy(entry.proxy, provider);
+        if (!old && !network) throw Error('缺少 proxy：每个新账号必须单独配置网络出口代理');
         const credential = kind === 'api' ? entry.api_key : entry.credential;
         const changed = credential !== undefined;
         if (!old && !changed) throw Error('新账号必须提供凭证');
@@ -152,7 +170,7 @@ const AccountConfig = (() => {
         pool.deployments.push(d);
         const price = config.pool_pricing.find(p => p.pool === poolName);
         rows.push({id,pool:poolName,provider,kind,max_concurrent:d.max_concurrent,rpm:d.rpm,
-          credential:changed ? (old ? '更换' : '新增') : '保留', proxy:network ? '已配置' : '保留',
+          credential:changed ? (old ? '更换' : '新增') : '保留', proxy:network ? proxyLabel(network) : '保留',
           multiplier_millionths:price?.multiplier_millionths});
       } catch (error) { throw Error(`第 ${index + 1} 个账号：${error.message}`); }
     });

@@ -159,6 +159,57 @@ test('JSON syntax errors and preview rows do not expose tokens or proxy password
   assert.throws(()=>parse('[]'));
 });
 
+test('each imported account requires its own proxy and cannot inherit a default',()=>{
+  const source=remote(), before=structuredClone(source);
+  for (const missing of [undefined,'',null,false,0,{},[]]) {
+    assert.throws(()=>build(source,[oauth('first'),{...oauth('second'),proxy:missing}],
+      {proxy:'https://default.example'}),/第 2 个账号.*proxy/);
+    assert.deepEqual(source,before);
+  }
+});
+
+test('structured proxies bind independently to OAuth and API accounts and encode auth safely',()=>{
+  const auth={scheme:'socks5h',host:'proxy-1.example',port:1080,
+    username:'PRIVATE_USER:@/',password:'PRIVATE_PASS:@/%?#中文'};
+  const {config,rows}=build(remote(),[
+    {...oauth('first'),proxy:auth},
+    {id:'second',pool:'new-pool',api_key:'FIXTURE_KEY',proxy:{scheme:'https',host:'proxy-2.example',port:8443}}
+  ]);
+  const first=new URL(config.accounts.first.proxy);
+  assert.equal(first.hostname,'proxy-1.example');assert.equal(first.port,'1080');
+  assert.equal(decodeURIComponent(first.username),auth.username);
+  assert.equal(decodeURIComponent(first.password),auth.password);
+  assert.equal(new URL(config.pools[1].deployments[1].proxy).host,'proxy-2.example:8443');
+  assert.deepEqual(rows.map(r=>r.proxy),['socks5h://***:***@proxy-1.example:1080','https://proxy-2.example:8443']);
+  assert.ok(!JSON.stringify(rows).includes('PRIVATE_'));
+  const ipv6=build(remote(),[{...oauth('ipv6'),proxy:{scheme:'http',host:'[::1]',port:8080}}]);
+  assert.equal(ipv6.rows[0].proxy,'http://[::1]:8080');
+});
+
+test('invalid structured proxies are rejected without disclosing authentication data',()=>{
+  const good={scheme:'http',host:'proxy.example',port:8080,username:'PRIVATE_USER',password:'PRIVATE_PASS'};
+  for (const override of [{scheme:'socks5'},{scheme:'file'},{host:''},{host:'proxy.example/path'},
+    {host:'user@proxy.example'},{host:'proxy.example?query'},{host:'proxy.example\\path'},
+    {port:0},{port:65536},{port:1.5},{port:'8080'},
+    {username:''},{username:null},{password:123},{unexpected:'PRIVATE_VALUE'}]) {
+    assert.throws(()=>build(remote(),[{...oauth('new'),proxy:{...good,...override}}]),
+      error=>error.message.includes('proxy 格式无效') && !error.message.includes('PRIVATE_'));
+  }
+});
+
+test('legacy proxy URLs stay supported and direct is explicit for authorized Workbuddy only',()=>{
+  const url='https://user:PRIVATE_PASS@proxy.example:8443';
+  const result=build(remote(),[{...oauth('new'),proxy:url}]);
+  assert.equal(result.config.accounts.new.proxy,url);
+  assert.equal(result.rows[0].proxy,'https://***:***@proxy.example:8443');
+  assert.throws(()=>build(remote(),[{...oauth('new'),proxy:'direct://'}]));
+  const source=remote();source.merchant.allow_test=true;
+  source.pools.push({name:'test-pool',provider:'workbuddy',deployments:[]});
+  const entry={id:'test-account',pool:'test-pool',api_key:'FIXTURE_KEY',proxy:'direct://'};
+  assert.equal(build(source,[entry]).rows[0].proxy,'direct://');
+  assert.throws(()=>build(source,[{...entry,proxy:undefined}]),/缺少 proxy/);
+});
+
 test('account aliases cannot modify object prototypes',()=>{
   const {config}=build(remote(),[oauth('__proto__'),oauth('constructor')],defaults);
   assert.equal(Object.getPrototypeOf(config.accounts),null);

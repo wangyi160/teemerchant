@@ -41,15 +41,20 @@ API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`cr
 
 OAuth 自动续期目前仍由 Router 执行，本地保存最近导入或恢复的凭证版本；编辑其他字段不会把本地旧令牌覆盖到 Router。普通状态查询不包含凭证，只有编辑该账号时才读取本地明文。旧版本未留存本地凭证的账号会明确提示缺失，需要从商户自己的加密备份恢复或补录，不能凭空回填。
 
-“批量导入”支持粘贴 JSON 数组或选择多个 JSON 文件。每个文件可包含一个账号对象或账号数组；每个账号必须有独立的 `id`（对外别名）。可统一选择默认账号池和填写出口代理，单个账号的字段优先；`pool` 必须是已创建的池，`provider` 可省略，填写时必须与该池一致。下面示例须先创建服务类型为 `openai`、名称为 `openai` 的账号池：
+“批量导入”支持粘贴 JSON 数组或选择多个 JSON 文件。每个文件可包含一个账号对象或账号数组；每个账号必须有独立的 `id`（对外别名）、自己的 `proxy`，以及 `credential`（OAuth）或 `api_key`。代理和凭证放在同一个对象里，逐个绑定，不再提供默认代理。`pool` 可省略并使用界面选择的默认账号池；填写时必须是已有池。`provider` 可省略，填写时必须与池一致。下面示例须先创建服务类型为 `openai`、名称为 `openai` 的账号池：
 
 ```json
 [
   {
     "id": "openai-001",
     "pool": "openai",
-    "provider": "openai",
-    "proxy": "socks5h://proxy.example:1080",
+    "proxy": {
+      "scheme": "socks5h",
+      "host": "proxy-1.example",
+      "port": 1080,
+      "username": "REPLACE_PROXY_USER_1",
+      "password": "REPLACE_PROXY_PASSWORD_1"
+    },
     "credential": {
       "access_token": "REPLACE_ACCESS_TOKEN",
       "refresh_token": "REPLACE_REFRESH_TOKEN",
@@ -60,16 +65,23 @@ OAuth 自动续期目前仍由 Router 执行，本地保存最近导入或恢复
   {
     "id": "openai-002",
     "pool": "openai",
-    "provider": "openai",
-    "proxy": "socks5h://proxy.example:1080",
+    "proxy": {
+      "scheme": "http",
+      "host": "proxy-2.example",
+      "port": 8080,
+      "username": "REPLACE_PROXY_USER_2",
+      "password": "REPLACE_PROXY_PASSWORD_2"
+    },
     "api_key": "REPLACE_API_KEY"
   }
 ]
 ```
 
+代理对象中 `scheme` 支持 `http`、`https`、`socks5h`；`host` 只填主机名或 IP（IPv6 用方括号），`port` 为 1–65535 的整数。无需认证时省略 `username` 和 `password`；需要认证时填写原始用户名和密码，程序会自动编码其中的 `@`、`:`、`/` 等特殊字符。也兼容每条账号中的 URL 写法，如 `"proxy": "socks5h://user:password@proxy.example:1080"`，URL 内的特殊字符需要自行百分号编码。仅获授权的 Workbuddy 测试账号可显式填写 `"proxy": "direct://"`。同一代理可显式绑定多个账号，但不会为缺少 `proxy` 的账号自动补值。
+
 每项还可填写 `max_concurrent`（默认 16）、`rpm`（默认 0，不限）和 `enabled`（默认 true）。不能同时提供 `api_key` 和 `credential`。OpenAI 官方 `credential.account_id` 须保持真实值，与展示用的 `id` 独立。Codex `auth.json` 等其他客户端格式需要先转换。
 
-先点击“校验并预览”，再确认保存到本地并同步。预览不显示令牌和代理密码；内容修改后需要重新校验。重复 ID、已有账号、不存在或服务类型不匹配的账号池会阻止保存，不会悄悄覆盖账号。每批最多 4096 项，文件总大小最多 12 MB。导入沿用目标账号池倍率；倍率在账号池的创建或编辑窗口单独设置。可在导入窗口下载当前所选池的 API key 占位示例，真实凭证只放在自己的本机导入文件中。
+先点击“校验并预览”，再确认保存到本地并同步。预览逐行展示账号对应的代理协议、地址和端口，隐藏代理认证信息及模型凭证。缺少或无效代理会指出第几个账号有问题，整批不提交；内容修改后需要重新校验。重复 ID、已有账号、不存在或服务类型不匹配的账号池也会阻止保存。每批最多 4096 项，文件总大小最多 12 MB。导入沿用目标账号池倍率；倍率在账号池的创建或编辑窗口单独设置。可在导入窗口下载当前所选池的 API key 示例，每条都有独立代理配置占位；真实凭证只放在自己的本机导入文件中。代理对象会转换成 URL 后随对应账号加密保存到本地，再同步给 Router；编辑账号时仍可查看和修改这个 URL。
 
 当前身份绑定 Windows 用户，本版尚无跨设备密钥迁移界面。保护 Windows 用户配置与 DPAPI 恢复材料；丢失身份会无法解锁商户恢复胶囊。商户费率不是签名金融凭证，记录用于外部账务与审计。更多边界和 API 见 [teerouter 多商户文档](https://github.com/wangyi160/teerouter/blob/main/docs/MERCHANTS.md)。
 
