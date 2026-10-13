@@ -52,6 +52,55 @@ const AccountConfig = (() => {
       throw Error('请提供 1–4096 个账号对象');
     return entries;
   }
+  // Matches teerouter's built-in xAI OAuth client. This cache key is an identifier,
+  // never a URL to fetch or a source for routing/refresh endpoints.
+  const grokCacheKey = 'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828';
+  const isGrokCache = value => object(value) && Object.keys(value).some(k => k.includes('::'));
+  function normalizeCredential(provider, value) {
+    if (!object(value) || !Object.keys(value).length) throw Error('credential 须为非空对象');
+    let record = clone(value);
+    if (isGrokCache(record)) {
+      if (provider !== 'xai') throw Error('Grok 原生凭证只能导入 xai 账号池');
+      if (Object.keys(record).length !== 1) throw Error('Grok 凭证文件包含多个条目，请每个账号仅保留一个认证条目');
+      if (!Object.hasOwn(record,grokCacheKey)) throw Error('Grok 认证来源或客户端 ID 与 Router 当前支持的配置不匹配');
+      const native = record[grokCacheKey];
+      if (!object(native) || Object.keys(native).some(k => !['key','refresh_token','expires_at','scope','token_type','id_token'].includes(k)))
+        throw Error('Grok 原生凭证字段无效');
+      record = {access_token:native.key};
+      for (const field of ['refresh_token','expires_at','scope','token_type','id_token'])
+        if (Object.hasOwn(native,field)) record[field] = clone(native[field]);
+      if (typeof record.access_token !== 'string' || !record.access_token)
+        throw Error('Grok 原生凭证缺少 key 访问令牌');
+    }
+    if (provider === 'xai') {
+      if (record.token_type !== undefined && (typeof record.token_type !== 'string' || record.token_type.toLowerCase() !== 'bearer'))
+        throw Error('Grok 凭证 token_type 必须为 Bearer');
+      if (typeof record.expires_at === 'string') {
+        // Require an explicit timezone; never interpret expiry in browser local time.
+        const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.exec(record.expires_at);
+        if (!parts)
+          throw Error('Grok expires_at 必须是带时区的 ISO 时间或 Unix 秒');
+        const [year,month,day,hour,minute,second] = parts.slice(1,7).map(Number);
+        if (year < 1970 || month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year,month,0)).getUTCDate() ||
+            hour > 23 || minute > 59 || second > 59)
+          throw Error('Grok expires_at 包含无效日期或时间');
+        record.expires_at = Date.parse(record.expires_at) / 1000;
+      }
+      if (record.expires_at !== undefined && (typeof record.expires_at !== 'number' || !Number.isFinite(record.expires_at) ||
+          record.expires_at < 0 || record.expires_at > 253402300799))
+        throw Error('Grok expires_at 必须是有效的 Unix 秒');
+    }
+    return record;
+  }
+  function oauthInput(text, provider) {
+    const values = parse(text), value = values[0];
+    if (values.length !== 1) throw Error('此处只能填写一个账号的凭证；多个账号请使用批量导入');
+    if (isGrokCache(value)) return {credential:normalizeCredential(provider,value)};
+    if (value.provider !== provider || !value.credential ||
+        Object.keys(value).some(k => !['provider','credential','proxy','enabled'].includes(k)))
+      throw Error('请填写匹配的 provider 和 credential；xai 账号也可直接粘贴 Grok 原生凭证 JSON');
+    return {...value,credential:normalizeCredential(provider,value.credential)};
+  }
   function draft(remote) {
     if (!remote) throw Error('请先验证并连接 Router');
     const s = remote.settings;
@@ -90,6 +139,7 @@ const AccountConfig = (() => {
     const fields = new Set(['id','pool','provider','kind','credential','api_key','proxy','max_concurrent','rpm','enabled']);
     entries.forEach((entry, index) => {
       try {
+        if (isGrokCache(entry)) throw Error('请将 Grok 原生 JSON 放入该账号的 credential，并填写 id 和 proxy；单个账号也可在添加账号窗口直接粘贴');
         if (!object(entry) || Object.keys(entry).some(key => !fields.has(key))) throw Error('账号包含不支持的字段');
         const id = name(entry.id, '账号 ID');
         if (seen.has(id)) throw Error('导入内容中的账号 ID 重复');
@@ -120,7 +170,7 @@ const AccountConfig = (() => {
         if (typeof d.enabled !== 'boolean') throw Error('enabled 须为布尔值');
         const network = entry.proxy === undefined || entry.proxy === '' ? '' : proxy(entry.proxy, provider);
         if (!old && !network) throw Error('缺少 proxy：每个新账号必须单独配置网络出口代理');
-        const credential = kind === 'api' ? entry.api_key : entry.credential;
+        const credential = kind === 'api' ? entry.api_key : entry.credential === undefined ? undefined : normalizeCredential(provider,entry.credential);
         const changed = credential !== undefined;
         if (!old && !changed) throw Error('新账号必须提供凭证');
         const ref = old ? (old.oauth_account || old.api_key_ref) : id;
@@ -176,6 +226,6 @@ const AccountConfig = (() => {
     });
     return {config,rows};
   }
-  return {parse,build,draft,pool};
+  return {parse,build,draft,pool,normalizeCredential,oauthInput};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = AccountConfig;

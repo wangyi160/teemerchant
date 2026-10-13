@@ -298,6 +298,55 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('.notice')).to_contain_text('已与 Router 同步')
         self.assertEqual(self.router.writes[0]['secrets']['offline-key'], 'LOCAL_PRIVATE_FIXTURE')
 
+    def test_grok_native_paste_batch_and_local_edit(self):
+        cache_key = 'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828'
+        native = {cache_key:{'key':'PRIVATE_GROK_ACCESS','refresh_token':'PRIVATE_GROK_REFRESH',
+                             'expires_at':'2030-01-01T00:00:00.000Z','scope':'openid offline_access','token_type':'Bearer'}}
+        expected = {'access_token':'PRIVATE_GROK_ACCESS','refresh_token':'PRIVATE_GROK_REFRESH',
+                    'expires_at':1893456000,'scope':'openid offline_access','token_type':'Bearer'}
+        self.page.locator('[data-action=pool]').click()
+        self.page.locator('[name=name]').fill('grok')
+        self.page.locator('[name=provider]').select_option('xai')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.page.locator('[data-action=account]').click()
+        self.page.locator('[name=id]').fill('grok-native')
+        self.page.locator('[name=kind]').select_option('oauth')
+        self.page.locator('[name=credential]').fill(json.dumps(native))
+        self.page.locator('[name=proxy]').fill('socks5h://proxy-1.example:1080')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(self.router.writes[-1]['accounts']['grok-native']['credential'], expected)
+        self.assertEqual(self.router.writes[-1]['accounts']['grok-native']['proxy'], 'socks5h://proxy-1.example:1080')
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        self.page.locator('[data-action=account-pool][data-id=grok]').click()
+        self.page.locator('[data-action=edit-account][data-id=grok-native]').click()
+        expect(self.page.locator('[name=credential]')).to_have_value(json.dumps(
+            {'provider':'xai','credential':expected},ensure_ascii=False,indent=2))
+        self.page.locator('[name=credential]').fill(json.dumps(native))
+        self.page.locator('[name=max_concurrent]').fill('12')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(self.router.writes[-1]['accounts'], {})
+        self.assertEqual(self.router.writes[-1]['secrets'], {})
+        self.page.locator('[data-action=import-accounts]').click()
+        with self.page.expect_download() as download:
+            self.page.locator('#import-example').click()
+        example = json.loads(Path(download.value.path()).read_text(encoding='utf-8'))
+        self.assertIn(cache_key, example[0]['credential'])
+        self.assertIn('api_key', example[1])
+        self.page.locator('[name=entries]').fill(json.dumps([
+            {'id':'grok-batch','credential':native,'proxy':{'scheme':'http','host':'proxy-2.example','port':8080}}]))
+        self.page.locator('#import-preview').click()
+        expect(self.page.locator('#import-review')).to_contain_text('1 个账号校验通过')
+        self.assertNotIn('PRIVATE_GROK', self.page.locator('#import-review').inner_text())
+        self.page.get_by_role('button', name='确认导入').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(self.router.writes[-1]['accounts']['grok-batch']['credential'], expected)
+        self.assertEqual(self.router.writes[-1]['accounts']['grok-batch']['proxy'], 'http://proxy-2.example:8080/')
+        self.assertNotIn('PRIVATE_GROK', self.page.locator('body').inner_text())
+
 
 if __name__ == '__main__':
     unittest.main()

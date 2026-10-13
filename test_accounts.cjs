@@ -1,6 +1,6 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {build,parse,pool} = require('./static/account-config.js');
+const {build,parse,pool,normalizeCredential,oauthInput} = require('./static/account-config.js');
 const remote = () => ({merchant:{allow_test:false},settings:{revision:7,max_concurrent:16,rpm:60,tpm:1000,
   customer_defaults:{enabled:true,models:[],max_concurrent:4,rpm:0,tpm:0},
   pool_pricing:[{pool:'existing',multiplier_millionths:200000},{pool:'new-pool',multiplier_millionths:1000000}]},
@@ -216,4 +216,63 @@ test('account aliases cannot modify object prototypes',()=>{
   assert.ok(Object.hasOwn(config.accounts,'__proto__'));
   assert.equal(JSON.parse(JSON.stringify(config.accounts)).__proto__.provider,'openai');
   assert.equal({}.provider,undefined);
+});
+
+const grokKey = 'https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828';
+const grokNative = () => ({[grokKey]:{key:'FIXTURE_ACCESS',refresh_token:'FIXTURE_REFRESH',
+  expires_at:'2030-01-01T00:00:00.000Z',scope:'openid offline_access',token_type:'Bearer'}});
+
+test('Grok native cache maps key and ISO expiry while preserving refresh and scope',()=>{
+  const source=grokNative(), before=structuredClone(source);
+  const credential=normalizeCredential('xai',source);
+  assert.deepEqual(credential,{access_token:'FIXTURE_ACCESS',refresh_token:'FIXTURE_REFRESH',
+    expires_at:1893456000,scope:'openid offline_access',token_type:'Bearer'});
+  assert.deepEqual(source,before);
+  assert.equal(credential.token_endpoint,undefined);
+  assert.equal(credential.key,undefined);
+  assert.deepEqual(oauthInput(JSON.stringify(source),'xai'),{credential});
+  assert.deepEqual(oauthInput(JSON.stringify({provider:'xai',credential:source}),'xai').credential,credential);
+  assert.deepEqual(oauthInput(JSON.stringify({provider:'xai',credential}),'xai').credential,credential);
+});
+
+test('Grok batch import normalizes each native credential and keeps each proxy binding',()=>{
+  const source=remote();source.pools.push({name:'grok',provider:'xai',deployments:[]});
+  const first=grokNative(), second=grokNative();second[grokKey].key='FIXTURE_SECOND_ACCESS';
+  const {config,rows}=build(source,[
+    {id:'grok-001',credential:first,proxy:'http://proxy-1.example:8080'},
+    {id:'grok-002',credential:second,proxy:'socks5h://proxy-2.example:1080'}],{pool:'grok'});
+  assert.equal(config.accounts['grok-001'].credential.access_token,'FIXTURE_ACCESS');
+  assert.equal(config.accounts['grok-002'].credential.access_token,'FIXTURE_SECOND_ACCESS');
+  assert.equal(config.accounts['grok-001'].proxy,'http://proxy-1.example:8080');
+  assert.equal(config.accounts['grok-002'].proxy,'socks5h://proxy-2.example:1080');
+  assert.equal(config.accounts['grok-001'].credential.expires_at,1893456000);
+  assert.ok(!JSON.stringify(rows).includes('FIXTURE_'));
+  assert.throws(()=>build(source,[first],{pool:'grok'}),/credential.*id.*proxy/);
+});
+
+test('Grok native caches reject other providers, ambiguous entries and unsupported identities',()=>{
+  const source=grokNative();
+  for (const provider of ['openai','anthropic','workbuddy'])
+    assert.throws(()=>normalizeCredential(provider,source),/只能导入 xai/);
+  for (const value of [
+    {[grokKey]:source[grokKey],'https://auth.x.ai::another':source[grokKey]},
+    {'https://auth.x.ai::another':source[grokKey]},
+    {'https://evil.example::PRIVATE_MARKER':source[grokKey]},
+    {[grokKey]:null},{[grokKey]:{...source[grokKey],key:''}},
+    {[grokKey]:{...source[grokKey],token_endpoint:'https://evil.example/PRIVATE_MARKER'}},
+    {[grokKey]:{...source[grokKey],token_type:'Other'}}]) {
+    assert.throws(()=>normalizeCredential('xai',value),error=>!error.message.includes('PRIVATE_MARKER'));
+  }
+});
+
+test('xAI expiry parsing uses explicit timezones, rejects malformed dates and accepts expired tokens',()=>{
+  const value={access_token:'FIXTURE',refresh_token:'FIXTURE_REFRESH'};
+  assert.equal(normalizeCredential('xai',{...value,expires_at:'2030-01-01T08:00:00+08:00'}).expires_at,1893456000);
+  assert.equal(normalizeCredential('xai',{...value,expires_at:1}).expires_at,1);
+  assert.equal(normalizeCredential('xai',value).expires_at,undefined);
+  for (const expiry of ['tomorrow','2030-01-01T00:00:00','2030-02-30T00:00:00Z',
+    '2030-01-01T24:00:00Z',null,-1,Infinity,1893456000000])
+    assert.throws(()=>normalizeCredential('xai',{...value,expires_at:expiry}),/expires_at/);
+  const standard={provider:'openai',credential:{access_token:'OPENAI_FIXTURE',account_id:'account'}};
+  assert.deepEqual(oauthInput(JSON.stringify(standard),'openai'),standard);
 });

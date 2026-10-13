@@ -81,7 +81,34 @@ OAuth 自动续期目前仍由 Router 执行，本地保存最近导入或恢复
 
 每项还可填写 `max_concurrent`（默认 16）、`rpm`（默认 0，不限）和 `enabled`（默认 true）。不能同时提供 `api_key` 和 `credential`。OpenAI 官方 `credential.account_id` 须保持真实值，与展示用的 `id` 独立。Codex `auth.json` 等其他客户端格式需要先转换。
 
-先点击“校验并预览”，再确认保存到本地并同步。预览逐行展示账号对应的代理协议、地址和端口，隐藏代理认证信息及模型凭证。缺少或无效代理会指出第几个账号有问题，整批不提交；内容修改后需要重新校验。重复 ID、已有账号、不存在或服务类型不匹配的账号池也会阻止保存。每批最多 4096 项，文件总大小最多 12 MB。导入沿用目标账号池倍率；倍率在账号池的创建或编辑窗口单独设置。可在导入窗口下载当前所选池的 API key 示例，每条都有独立代理配置占位；真实凭证只放在自己的本机导入文件中。代理对象会转换成 URL 后随对应账号加密保存到本地，再同步给 Router；编辑账号时仍可查看和修改这个 URL。
+### Grok 原生 OAuth 凭证
+
+xai 账号池支持 Grok 的原生 OAuth 缓存 JSON。单个账号选择“OAuth 账号 JSON”，可在凭证框直接粘贴原始 JSON，另填账号别名和代理；也可继续使用 `{ "provider": "xai", "credential": {...} }` 统一格式。批量导入时，把原始 JSON 完整放入每条账号的 `credential`：
+
+```json
+[
+  {
+    "id": "grok-001",
+    "proxy": {"scheme": "socks5h", "host": "proxy-1.example", "port": 1080},
+    "credential": {
+      "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+        "key": "REPLACE_ACCESS_TOKEN",
+        "refresh_token": "REPLACE_REFRESH_TOKEN",
+        "expires_at": "2030-01-01T00:00:00.000Z",
+        "token_type": "Bearer"
+      }
+    }
+  }
+]
+```
+
+界面选择已有 xai 账号池；每条仍需自己的 `id` 和 `proxy`。导入时自动将 `key` 转为 `access_token`，ISO `expires_at` 转为 Unix 秒，并保留刷新令牌、scope 和 token_type 等凭证字段。编辑时显示转换后的本地凭证。缓存键是发行方和 OAuth 客户端的标识，不是商户账号别名，也不会用作转发地址；当前仅支持上述与 Router 内置配置一致的认证条目，多个条目或其他认证来源会明确报错。
+
+过期时间按原值保留，不伪造新的有效期。格式校验成功只表示能够导入；是否能刷新令牌或调用模型取决于实际账号与网络出口。Router 沿用已有 xAI 刷新逻辑，刷新失败时须重新登录并补录。选择 xai 池后，“下载示例”会同时给出原生 OAuth 和 API key 账号示例，凭证内容均为占位值。Grok 的登录与凭证缓存说明见[官方文档](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md)。
+
+### 校验与保存
+
+先点击“校验并预览”，再确认保存到本地并同步。预览逐行展示账号对应的代理协议、地址和端口，隐藏代理认证信息及模型凭证。缺少或无效代理会指出第几个账号有问题，整批不提交；内容修改后需要重新校验。重复 ID、已有账号、不存在或服务类型不匹配的账号池也会阻止保存。每批最多 4096 项，文件总大小最多 12 MB。导入沿用目标账号池倍率；倍率在账号池的创建或编辑窗口单独设置。可在导入窗口下载当前所选池的账号示例，每条都有独立代理配置占位；真实凭证只放在自己的本机导入文件中。代理对象会转换成 URL 后随对应账号加密保存到本地，再同步给 Router；编辑账号时仍可查看和修改这个 URL。
 
 当前身份绑定 Windows 用户，本版尚无跨设备密钥迁移界面。保护 Windows 用户配置与 DPAPI 恢复材料；丢失身份会无法解锁商户恢复胶囊。商户费率不是签名金融凭证，记录用于外部账务与审计。更多边界和 API 见 [teerouter 多商户文档](https://github.com/wangyi160/teerouter/blob/main/docs/MERCHANTS.md)。
 
