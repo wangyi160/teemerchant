@@ -89,9 +89,9 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('[name=credential]')).to_have_value('')
         expect(self.page.locator('[name=proxy]')).to_have_value('')
         self.page.locator('[name=max_concurrent]').fill('12')
-        self.page.get_by_role('button', name='保存并提交').click()
+        self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
-        expect(self.page.locator('#toast')).to_contain_text('账号已提交至 Router')
+        expect(self.page.locator('#toast')).to_contain_text('已保存到本地并同步至 Router')
         self.assertEqual(len(self.router.writes), 1)
         update = self.router.writes[0]
         self.assertEqual(update['accounts'], {})
@@ -130,14 +130,18 @@ class BrowserTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_', self.page.locator('body').inner_text())
         self.assertEqual(self.page.locator('#dialog textarea').count(), 0)
 
-    def test_revision_conflict_keeps_dialog_open_and_does_not_claim_success(self):
+    def test_revision_conflict_retains_local_edit_without_claiming_router_success(self):
         self.router.reject = True
         self.page.locator('[data-action=edit-account]').click()
         self.page.locator('[name=max_concurrent]').fill('12')
-        self.page.get_by_role('button', name='保存并提交').click()
-        expect(self.page.locator('#dialog .error')).to_contain_text('配置已变更')
-        expect(self.page.get_by_role('button', name='保存并提交')).to_be_enabled()
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expect(self.page.locator('.notice')).to_contain_text('等待同步')
+        expect(self.page.locator('.notice')).to_contain_text('revision_conflict')
+        expect(self.page.locator('#toast')).to_contain_text('已保存到本地，等待同步')
         self.assertEqual(self.router.writes, [])
+        self.page.locator('[data-action=edit-account]').click()
+        expect(self.page.locator('[name=max_concurrent]')).to_have_value('12')
         self.page.locator('[data-action=close]').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
 
@@ -149,18 +153,46 @@ class BrowserTests(unittest.TestCase):
         credential = {'provider': 'openai', 'proxy': 'socks5h://proxy.example:1080',
                       'credential': {'access_token': 'FIXTURE_ACCESS', 'refresh_token': 'FIXTURE_REFRESH'}}
         self.page.locator('[name=credential]').fill(json.dumps(credential))
-        self.page.get_by_role('button', name='保存并提交').click()
+        self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(self.router.writes[0]['accounts']['new-oauth']['credential'], credential['credential'])
         self.page.locator('[data-action=edit-account][data-id=new-oauth]').click()
-        expect(self.page.locator('[name=credential]')).to_have_value('')
+        expect(self.page.locator('[name=credential]')).to_have_value(json.dumps(
+            {'provider':'openai','credential':credential['credential']},ensure_ascii=False,indent=2))
+        expect(self.page.locator('[name=proxy]')).to_have_value('socks5h://proxy.example:1080')
         del credential['proxy']
         credential['credential']['access_token'] = 'ROTATED_FIXTURE_ACCESS'
         self.page.locator('[name=credential]').fill(json.dumps(credential))
-        self.page.get_by_role('button', name='保存并提交').click()
+        self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(len(self.router.writes), 2)
         self.assertEqual(self.router.writes[1]['accounts']['new-oauth'], credential)
+
+    def test_offline_restart_displays_local_credentials_and_preserves_pending_changes(self):
+        self.app.connected = False
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        self.page.locator('[data-action=account]').click()
+        self.page.locator('[name=id]').fill('offline-key')
+        self.page.locator('[name=pool]').fill('openai')
+        self.page.locator('[name=credential]').fill('LOCAL_PRIVATE_FIXTURE')
+        self.page.locator('[name=proxy]').fill('https://user:FIXTURE_PASSWORD@proxy.example')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expect(self.page.locator('.notice')).to_contain_text('等待同步')
+        self.assertEqual(self.router.writes, [])
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        self.page.locator('[data-action=edit-account][data-id=offline-key]').click()
+        expect(self.page.locator('[name=credential]')).to_have_value('LOCAL_PRIVATE_FIXTURE')
+        expect(self.page.locator('[name=proxy]')).to_have_value('https://user:FIXTURE_PASSWORD@proxy.example')
+        self.page.locator('[name=max_concurrent]').fill('20')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(self.router.writes, [])
+        self.page.locator('[data-action=sync-config]').click()
+        expect(self.page.locator('.notice')).to_contain_text('已与 Router 同步')
+        self.assertEqual(self.router.writes[0]['secrets']['offline-key'], 'LOCAL_PRIVATE_FIXTURE')
 
 
 if __name__ == '__main__':

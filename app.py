@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import secrets
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 import webbrowser
 from store import Store
 from transport import Transport
@@ -18,7 +18,7 @@ class Application:
         self.store, self.transport = store, transport or Transport(store)
         self.csrf = secrets.token_urlsafe(32)
         self.connected = False
-        self.remote = None
+        self.remote = store.accounts.view(store.settings['router'])
         self.last_error = ''
         self.sync_lock = threading.Lock()
         self.state_lock = threading.RLock()
@@ -31,8 +31,28 @@ class Application:
             raise RuntimeError('Router 状态早于本机已确认版本，已拒绝回退')
         self.store.settings['minimum_revision'] = revision
         self.store.save()
-        self.remote, self.connected = result, True
-        return result
+        self.store.accounts.observe(self.store.settings['router'], result)
+        self.remote, self.connected = self.store.accounts.view(self.store.settings['router']), True
+        return self.remote
+
+    def push_config(self):
+        router = self.store.settings['router']
+        pending = self.store.accounts.pending(router)
+        if not pending:
+            return self.remote
+        try:
+            if not self.connected:
+                self.accept(self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']}))
+            result = self.transport.call('PUT', '/merchant/config', pending)
+            self.accept(result)
+            self.store.accounts.acknowledge(router, result)
+        except Exception as error:
+            # The local write already committed. Retain it even if a request or its
+            # acknowledgement failed; never silently replay credential updates.
+            message = str(error) if isinstance(error, (ValueError, RuntimeError)) else '同步失败，Router 写入结果待确认；本地资料已保存'
+            self.store.accounts.sync_failed(router, message)
+        self.remote = self.store.accounts.view(router)
+        return self.remote
 
     def sync(self):
         with self.state_lock, self.sync_lock:
@@ -68,7 +88,7 @@ class Application:
             self.transport.close()
             self.store.settings.update(body)
             self.store.save()
-            self.remote, self.connected = None, False
+            self.remote, self.connected = self.store.accounts.view(self.store.settings['router']), False
             return {'saved': True}
         if (method, path) == ('POST', '/api/verify'):
             return self.transport.call('VERIFY', '')
@@ -77,7 +97,15 @@ class Application:
         if (method, path) == ('GET', '/api/merchant'):
             return self.accept(self.transport.call('GET', '/merchant/state'))
         if (method, path) == ('PUT', '/api/config'):
-            return self.accept(self.transport.call('PUT', '/merchant/config', body))
+            self.store.accounts.stage(self.store.settings['router'], body)
+            self.remote = self.store.accounts.view(self.store.settings['router'])
+            # Offline changes are still saved and editable. Explicitly retry once
+            # through /api/config/sync when the user requests synchronization.
+            return self.push_config() if self.connected else self.remote
+        if (method, path) == ('POST', '/api/config/sync'):
+            return self.push_config()
+        if method == 'GET' and path.startswith('/api/accounts/'):
+            return self.store.accounts.account(self.store.settings['router'], unquote(path[len('/api/accounts/'):]))
         if (method, path) == ('POST', '/api/refresh'):
             return self.accept(self.transport.call('POST', '/merchant/models/refresh'))
         if (method, path) == ('POST', '/api/sync'):

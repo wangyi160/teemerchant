@@ -36,7 +36,7 @@ const AccountConfig = (() => {
   function draft(remote) {
     if (!remote) throw Error('请先验证并连接 Router');
     const s = remote.settings;
-    return {expected_revision:s.revision, pools:clone(remote.pools), customers:[],
+    return {expected_revision:s.revision, _local_revision:remote.local_revision, pools:clone(remote.pools), customers:[],
       customer_defaults:clone(s.customer_defaults), pool_pricing:clone(s.pool_pricing || []),
       max_concurrent:s.max_concurrent, rpm:s.rpm, tpm:s.tpm};
   }

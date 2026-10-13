@@ -8,6 +8,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import threading
+from local_accounts import AccountBook
 
 class Blob(ctypes.Structure):
     _fields_ = [('size', wintypes.DWORD), ('data', ctypes.POINTER(ctypes.c_ubyte))]
@@ -46,6 +47,7 @@ class Store:
         self.db = sqlite3.connect(self.directory / 'records.db', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS records(kind TEXT, instance TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(kind,instance,seq))')
         self.db.commit()
+        self.accounts = AccountBook(self.directory, self.enrollment()['id'], protect)
 
     def save(self):
         with self.lock:
