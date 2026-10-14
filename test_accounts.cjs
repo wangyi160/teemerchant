@@ -78,6 +78,13 @@ test('batch creates both credential types, binds each account and preserves exis
   assert.ok(!JSON.stringify(result.rows).includes('fixture-access'));
 });
 
+test('access-only replacement removes an existing refresh token instead of merging credentials',()=>{
+  const credential={access_token:'FIXTURE_ACCESS_ONLY',expires_at:1893456000};
+  const result=build(remote(),[{id:'alias',credential}],{},'alias');
+  assert.deepEqual(result.config.accounts['private-ref'].credential,credential);
+  assert.equal(result.config.accounts['private-ref'].credential.refresh_token,undefined);
+});
+
 test('blank OAuth edit preserves credential, network binding, reference and unrelated settings',()=>{
   const source=remote();
   const {config}=build(source,[{id:'alias',pool:'existing',max_concurrent:12,rpm:40}],{},'alias');

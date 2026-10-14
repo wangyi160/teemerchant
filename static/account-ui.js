@@ -30,6 +30,7 @@ function poolForm(editName = '') {
 function accountState(pool, deployment) {
   if (!deployment.enabled) return ['停用', 'muted'];
   const account = (remote().accounts?.data || []).find(a => a.name === deployment.oauth_account);
+  if (account?.health?.state === 'expired') return ['已过期', 'error'];
   if (account?.health?.state === 'reauthorization_required') return ['需重新授权', 'error'];
   const entry = (remote().catalog?.data || []).find(c => c.pool === pool.name && c.deployment === deployment.id);
   if (entry?.catalog?.refreshing) return ['获取目录中', 'muted'];
@@ -96,6 +97,7 @@ async function accountForm(editId = '') {
     `<label>凭证类型<select name="kind" ${account?'disabled':''}><option value="api" ${kind==='api'?'selected':''}>API key</option><option value="oauth" ${kind==='oauth'?'selected':''}>OAuth 账号 JSON</option></select></label></div>
     <p>服务类型和倍率继承所属账号池。需要新池时，请先在账号池列表中添加。</p>
     <label>凭证（本地保存）<textarea name="credential" ${account?'':'required'} autocomplete="off" spellcheck="false" placeholder="API key，或包含 provider 和 credential 的 OAuth JSON；xai 支持直接粘贴 Grok 原生凭证 JSON">${esc(originalCredential)}</textarea></label>
+    <p>OAuth 可只提供 access_token，省略 refresh_token 时不自动续期，到期后显示“已过期”，需手动更新凭证。JWT 会读取自带的到期时间；不含到期时间的令牌可填写 expires_at（Unix 秒）。</p>
     <p>xai 池选择 OAuth 后，可直接粘贴 Grok 原生凭证 JSON，程序会自动转换 key 和到期时间；账号别名、网络代理仍在本窗口填写。</p>`+
     field('账号网络代理（本地保存）','proxy',originalProxy,'text','autocomplete="off" placeholder="socks5h://代理服务器:1080；Workbuddy 可填 direct://"')+
     `<div class="grid">`+field('并发上限','max_concurrent',account?.max_concurrent ?? 16,'number','required min="1" max="4096"')+
@@ -126,7 +128,7 @@ function batchAccountForm() {
   form('批量导入账号',`<p>每个账号对象必须包含 id、proxy，以及 credential（OAuth）或 api_key。代理与该账号单独绑定，不使用默认代理。服务类型和倍率继承账号池；单项可指定另一个已有池。</p>
     ${poolSelect(snapshot.pools,selectedAccountPool,'默认账号池')}
     <p>proxy 推荐填写为对象：scheme、host、port，以及可选的 username、password；也兼容代理 URL。仅 Workbuddy 测试账号允许填写 "direct://"。已有账号请使用“编辑”。</p>
-    <p>Grok 原生凭证可原样放入每条账号的 credential 中；仍须为每条账号填写 id 和 proxy。</p>
+    <p>Grok 原生凭证可原样放入每条账号的 credential 中；仍须为每条账号填写 id 和 proxy。可省略 refresh_token，仅使用 access_token，到期后手动更新。</p>
     <label>选择 JSON 文件（支持多选）<input id="import-files" type="file" accept=".json,application/json" multiple></label>
     <div class="panelhead"><span class="muted">账号 JSON</span><button id="import-example" type="button">下载示例</button></div>
     <label><textarea name="entries" rows="12" required spellcheck="false" autocomplete="off" placeholder='[{"id":"account-001","proxy":{"scheme":"socks5h","host":"proxy-1.example","port":1080,"username":"user1","password":"…"},"api_key":"…"}]'></textarea></label>

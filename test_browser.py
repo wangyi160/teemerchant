@@ -101,6 +101,15 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(update['pools'][0]['deployments'][0]['oauth_account'], 'credential-ref')
         self.assertEqual(update['pool_pricing'][0]['multiplier_millionths'], 200000)
 
+    def test_expired_access_only_account_is_distinct_from_reauthorization(self):
+        self.router.remote['accounts']['data'][0]['health'] = {'state': 'expired', 'last_error': 'access_token_expired'}
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        expect(self.page.get_by_text('已过期', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('需重新授权', exact=True)).to_have_count(0)
+        self.assertEqual(self.router.writes, [])
+
     def test_pool_lifecycle_empty_pool_edit_rate_then_add_account(self):
         self.page.locator('[data-action=pool]').click()
         self.page.locator('[name=name]').fill('claude-team')
