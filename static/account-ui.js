@@ -18,8 +18,8 @@ function poolForm(editName = '') {
     field('账号池名称（路由标识）','name',existing?.name || '','text',`required maxlength="80" pattern="[a-zA-Z0-9_.-]+" ${existing?'readonly':''}`)+
     `<label>服务类型<select name="provider" ${existing?'disabled':''}>${providers.map(p =>
       `<option value="${p}" ${p === existing?.provider?'selected':''}>${p}</option>`).join('')}</select></label></div>`+
-    field('价格倍率（Workbuddy 使用测试基准）','multiplier',rate?String(rate.multiplier_millionths/1e6):'1','text','required inputmode="decimal"')+
-    '<p>例如 0.2 表示官方价格的 20%，1 表示原价。空池不会提供模型服务。</p>', async f => {
+    field('实际倍率（Workbuddy 使用测试基准）','multiplier',rate?String(rate.multiplier_millionths/1e6):existing?'':String((state.settings.default_multiplier_millionths ?? 1000000)/1e6),'text','required inputmode="decimal"')+
+    `<p>${existing?'以此账号池保存的倍率计费。':'初始值来自费用页的默认倍率，可在这里修改。'}保存后不随默认倍率变化。空池不会提供模型服务。</p>`, async f => {
       const name = f.get('name').trim();
       await save(AccountConfig.pool(snapshot,{name,provider:existing?.provider || f.get('provider'),
         multiplier_millionths:amount(f.get('multiplier').trim())},editName || null));

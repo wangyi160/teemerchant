@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import threading
 from local_accounts import AccountBook
+from revenue import RevenueIndex, integer
 
 class Blob(ctypes.Structure):
     _fields_ = [('size', wintypes.DWORD), ('data', ctypes.POINTER(ctypes.c_ubyte))]
@@ -47,6 +48,7 @@ class Store:
         self.db = sqlite3.connect(self.directory / 'records.db', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS records(kind TEXT, instance TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(kind,instance,seq))')
         self.db.commit()
+        self.revenue_index = RevenueIndex()
         self.accounts = AccountBook(self.directory, self.enrollment()['id'], protect)
 
     def save(self):
@@ -63,7 +65,21 @@ class Store:
         return {'id': 'm_' + digest[:32], 'credential_hash': digest}
 
     def public(self):
-        return {k: v for k, v in self.settings.items() if k != 'token'}
+        return {'default_multiplier_millionths': 1_000_000,
+                **{k: v for k, v in self.settings.items() if k != 'token'}}
+
+    def pricing_defaults(self, value):
+        if not isinstance(value, dict) or set(value) != {'default_multiplier_millionths'} or not integer(value['default_multiplier_millionths']):
+            raise ValueError('默认倍率无效')
+        with self.lock:
+            previous = self.settings.copy()
+            self.settings.update(value)
+            try:
+                self.save()
+            except Exception:
+                self.settings = previous
+                raise
+        return {'saved': True, **value}
 
     def archive(self, kind, instance, rows):
         with self.lock, self.db:
@@ -80,3 +96,28 @@ class Store:
     def records(self, kind):
         with self.lock:
             return [json.loads(protect(row[0], True)) for row in self.db.execute('SELECT payload FROM records WHERE kind=? ORDER BY rowid DESC LIMIT 200', (kind,))]
+
+    def revenue(self, query=''):
+        with self.lock:
+            # Every archived usage record contributes, including records older than
+            # the activity screen's 200-row limit. Only new rows are decrypted again.
+            for rowid, instance, seq, payload in self.db.execute(
+                    "SELECT rowid,instance,seq,payload FROM records WHERE kind='usage' AND rowid>? ORDER BY rowid",
+                    (self.revenue_index.cursor,)):
+                row = json.loads(protect(payload, True))
+                event = row.get('event', {})
+                self.revenue_index.add(rowid, instance, seq, event)
+            return self.revenue_index.report(query)
+
+    def revenue_record(self, instance, seq):
+        with self.lock:
+            row = self.db.execute("SELECT payload FROM records WHERE kind='usage' AND instance=? AND seq=?", (instance, seq)).fetchone()
+            if not row:
+                raise ValueError('收入记录不存在')
+            def exact(value):
+                if isinstance(value, dict):
+                    return {k: exact(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [exact(v) for v in value]
+                return str(value) if type(value) is int and abs(value) > 2**53-1 else value
+            return exact(json.loads(protect(row[0], True)))

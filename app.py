@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import secrets
 import threading
-from urllib.parse import urlsplit, unquote
+from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
 from transport import Transport
@@ -80,6 +80,19 @@ class Application:
             return self._api(method, path, body)
 
     def _api(self, method, path, body):
+        url = urlsplit(path)
+        if method == 'GET' and url.path == '/api/revenue':
+            return self.store.revenue(url.query)
+        if method == 'GET' and url.path == '/api/revenue/record':
+            values = parse_qs(url.query, keep_blank_values=True, max_num_fields=2)
+            if set(values) != {'instance', 'seq'} or any(len(v) != 1 for v in values.values()):
+                raise ValueError('收入记录标识无效')
+            instance, seq = values['instance'][0], values['seq'][0]
+            if len(instance) > 256 or not seq.isascii() or not seq.isdigit() or len(seq) > 19:
+                raise ValueError('收入记录标识无效')
+            return self.store.revenue_record(instance, int(seq))
+        if (method, path) == ('PUT', '/api/pricing-defaults'):
+            return self.store.pricing_defaults(body)
         if (method, path) == ('GET', '/api/state'):
             return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
         if (method, path) == ('PUT', '/api/settings'):
@@ -151,7 +164,8 @@ def handler(application, origin):
                 data = (ROOT / 'static' / name).read_bytes()
                 if name == 'app.js':
                     data = ((ROOT / 'static' / 'account-config.js').read_bytes() + b'\n' + data
-                            + b'\n' + (ROOT / 'static' / 'account-ui.js').read_bytes())
+                            + b'\n' + (ROOT / 'static' / 'account-ui.js').read_bytes()
+                            + b'\n' + (ROOT / 'static' / 'revenue-ui.js').read_bytes())
                 if name == 'index.html':
                     data = data.replace(b'CSRF_PLACEHOLDER', application.csrf.encode())
                 mime = {'index.html': 'text/html', 'app.js': 'text/javascript', 'app.css': 'text/css'}[name] + '; charset=utf-8'
@@ -163,7 +177,7 @@ def handler(application, origin):
                 if length < 0 or length > 16 * 1024 * 1024 or self.headers.get('Transfer-Encoding'):
                     return self.respond(413, {'error': '请求过大'})
                 body = json.loads(self.rfile.read(length)) if length else {}
-                return self.respond(200, application.api(self.command, path, body))
+                return self.respond(200, application.api(self.command, self.path, body))
             except (ValueError, RuntimeError) as error:
                 return self.respond(400, {'error': str(error)})
             except Exception:
