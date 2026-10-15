@@ -1,5 +1,6 @@
 "use strict";
 let selectedAccountPool = null;
+let poolModelEditor = null;
 
 function poolSelect(available, selected, label = '所属账号池') {
   return `<label>${label}<select name="pool" required>${available.map(p =>
@@ -77,43 +78,88 @@ function accountsView() {
     <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account','','primary'):''}</div></div>
     ${selectedAccountPool && !rows.length?'<p>此账号池还没有账号，可以逐个添加或批量导入。</p>':''}
     ${table(['账号别名 / 账号池','服务 / 凭证','状态','并发 / RPM','操作'],rows)}</section>
-    <section class="panel"><div class="panelhead"><h2>池内模型目录</h2>${btn('更新目录','refresh')}</div>
-    <p>对外模型名单由账号池统一设置，池内所有账号共用；实际可调用模型还须通过 Router 的可用性、权限和价格校验。</p>
-    ${table(['账号池','模型','对外策略'],chosen.flatMap(p => [...new Set(catalog.filter(c => c.pool === p.name)
-      .flatMap(c => Object.keys(c.official_models || {})).concat(p.allowed_models || []))].sort().map(id =>
-      `<tr><td>${esc(p.name)}</td><td>${esc(id)}</td><td>${p.allowed_models == null || p.allowed_models.includes(id) ? '开放' : '不开放'}</td></tr>`)))}</section>`;
+    ${poolModelCatalog(chosen, catalog)}`;
 }
 
 function poolModelsForm(poolName) {
-  const snapshot = structuredClone(remote()), pool = snapshot.pools.find(p => p.name === poolName);
-  if (!pool) throw Error('账号池不存在，请刷新后重试');
-  const discovered = new Set((snapshot.catalog?.data || []).filter(c => c.pool === poolName)
-    .flatMap(c => Object.keys(c.official_models || {})));
-  const ids = [...new Set([...discovered, ...(pool.allowed_models || [])])].sort();
-  form(poolName+' · 对外模型', `<p>此名单对池内全部账号生效。未开放的模型不会展示给用户，也不能通过指定池或自动路由调用。</p>
-    <label>开放方式<select name="model_mode"><option value="all" ${pool.allowed_models == null ? 'selected' : ''}>开放全部可用模型（包含以后发现的模型）</option>
-    <option value="selected" ${pool.allowed_models != null ? 'selected' : ''}>仅开放勾选模型</option></select></label>
-    <p>仅开放勾选模型时，不勾选任何模型表示暂停该池的全部模型服务。暂未获取到目录的已选项会保留，但不会绕过 Router 的实际能力校验。</p>
-    <div id="pool-model-picker"><label>筛选模型<input id="pool-model-search" type="search" placeholder="输入模型名称"></label>
-    <div class="model-tools"><button type="button" id="pool-model-all">勾选筛选结果</button><button type="button" id="pool-model-none">清空勾选</button><span id="pool-model-count"></span></div>
-    <div class="model-options">${ids.length ? ids.map(id => `<label data-model="${esc(id)}"><input name="allowed_model" type="checkbox" value="${esc(id)}" ${pool.allowed_models == null || pool.allowed_models.includes(id) ? 'checked' : ''}>${esc(id)}${discovered.has(id) ? '' : '<small class="muted"> · 暂未获取到目录</small>'}</label>`).join('') : '<p>尚无模型目录。请先添加账号并更新目录，再选择对外模型。</p>'}</div></div>`,
-    async f => save(AccountConfig.poolModels(snapshot, poolName, f.get('model_mode') === 'all' ? null : f.getAll('allowed_model'))),
-    {submit:'保存并同步'});
-  const dialog = $('#dialog'), mode = dialog.querySelector('[name=model_mode]');
-  const boxes = [...dialog.querySelectorAll('[name=allowed_model]')];
+  if (poolModelEditor && poolModelEditor.poolName !== poolName)
+    throw Error('请先保存或取消 '+poolModelEditor.poolName+' 的模型编辑');
+  if (!poolModelEditor) {
+    const snapshot = structuredClone(remote()), pool = snapshot.pools.find(p => p.name === poolName);
+    if (!pool) throw Error('账号池不存在，请刷新后重试');
+    const discovered = new Set((snapshot.catalog?.data || []).filter(c => c.pool === poolName)
+      .flatMap(c => Object.keys(c.official_models || {})));
+    const ids = [...new Set([...discovered, ...(pool.allowed_models || [])])].sort();
+    poolModelEditor = {poolName, snapshot, discovered, ids, all:pool.allowed_models == null,
+      selected:new Set(pool.allowed_models ?? ids), query:'', saving:false, error:''};
+  }
+  selectedAccountPool = poolName;
+  render();
+  $('#pool-model-catalog').scrollIntoView({block:'start'});
+}
+
+function poolModelCatalog(chosen, catalog) {
+  const edit = poolModelEditor?.poolName === selectedAccountPool ? poolModelEditor : null;
+  let content;
+  if (edit) {
+    content = `<form id="pool-model-editor"><div class="catalog-editor-heading"><strong>${esc(edit.poolName)} · 编辑开放模型</strong><span class="muted">修改保存后生效，池内所有账号共用</span></div>
+      <div class="grid"><label>开放方式<select name="model_mode"><option value="all" ${edit.all?'selected':''}>开放全部可用模型（包含以后发现的模型）</option>
+      <option value="selected" ${!edit.all?'selected':''}>仅开放勾选模型</option></select></label>
+      <label>筛选模型<input id="pool-model-search" type="search" placeholder="输入模型名称" value="${esc(edit.query)}"></label></div>
+      <div class="model-tools"><button type="button" id="pool-model-all">勾选筛选结果</button><button type="button" id="pool-model-none">清空勾选</button><span id="pool-model-count" aria-live="polite"></span></div>
+      <div class="model-options catalog-model-options">${table(['对外开放','模型','目录状态'],edit.ids.map(id =>
+        `<tr><td><input name="allowed_model" type="checkbox" value="${esc(id)}" aria-label="开放 ${esc(id)}" ${edit.selected.has(id)?'checked':''}></td><td>${esc(id)}</td><td>${edit.discovered.has(id)?'已发现':'暂未获取到目录'}</td></tr>`))}</div>
+      <p>修改勾选会切换为“仅开放勾选模型”；清空并保存会关闭该池全部模型服务。暂未获取到目录的已选模型会保留，实际调用仍须通过 Router 校验。</p>
+      <p class="error" role="alert">${esc(edit.error)}</p><div class="catalog-save-actions"><button type="button" id="pool-model-cancel">取消编辑</button><button type="submit" class="primary">${edit.saving?'正在保存…':'保存并同步'}</button></div></form>`;
+  } else {
+    content = `<p>${selectedAccountPool?'点击“编辑开放模型”，直接在本表中勾选。':'先在上方选择一个账号池，再编辑它的开放模型。'} 名单对池内所有账号生效。</p>`;
+    if (poolModelEditor) content += `<div class="notice">${esc(poolModelEditor.poolName)} 的模型名单正在编辑。${btn('继续编辑','edit-pool-models',poolModelEditor.poolName)}</div>`;
+    content += table(['账号池','模型','对外开放'],chosen.flatMap(p => [...new Set(catalog.filter(c => c.pool === p.name)
+      .flatMap(c => Object.keys(c.official_models || {})).concat(p.allowed_models || []))].sort().map(id =>
+      `<tr><td>${esc(p.name)}</td><td>${esc(id)}</td><td><input type="checkbox" disabled aria-label="${esc(p.name)} 开放 ${esc(id)}" ${p.allowed_models == null || p.allowed_models.includes(id)?'checked':''}></td></tr>`)));
+  }
+  return `<section class="panel" id="pool-model-catalog"><div class="panelhead"><h2>池内模型目录${selectedAccountPool?' · '+esc(selectedAccountPool):''}</h2><div class="actions">${!edit && selectedAccountPool?btn('编辑开放模型','edit-pool-models',selectedAccountPool,'primary'):''}${btn('更新目录','refresh')}</div></div>${content}</section>`;
+}
+
+function bindPoolModelEditor() {
+  const form = $('#pool-model-editor'), edit = poolModelEditor;
+  if (!form || !edit) return;
+  const mode = form.querySelector('[name=model_mode]'), search = form.querySelector('#pool-model-search');
+  const boxes = [...form.querySelectorAll('[name=allowed_model]')];
   const update = () => {
-    const all = mode.value === 'all';
-    dialog.querySelector('#pool-model-picker').hidden = all;
-    boxes.forEach(box => box.disabled = all);
-    dialog.querySelector('#pool-model-count').textContent = `已勾选 ${boxes.filter(box => box.checked).length} / ${ids.length}`;
+    for (const control of form.elements) control.disabled = edit.saving;
+    boxes.forEach(box => {
+      box.disabled = edit.saving;
+      box.checked = edit.all || edit.selected.has(box.value);
+      box.closest('tr').hidden = !box.value.toLowerCase().includes(edit.query.trim().toLowerCase());
+    });
+    form.querySelector('#pool-model-count').textContent = edit.all ? `开放全部 ${edit.ids.length} 个已发现或保留的模型，包含以后发现的模型` : `已勾选 ${edit.selected.size} / ${edit.ids.length}`;
   };
-  mode.onchange = update;
-  boxes.forEach(box => box.onchange = update);
-  dialog.querySelector('#pool-model-search').oninput = e => boxes.forEach(box => {
-    box.parentElement.hidden = !box.value.toLowerCase().includes(e.target.value.trim().toLowerCase());
+  mode.onchange = () => { edit.all = mode.value === 'all'; update(); };
+  boxes.forEach(box => box.onchange = () => {
+    if (edit.all) { edit.selected = new Set(edit.ids); edit.all = false; mode.value = 'selected'; }
+    if (box.checked) edit.selected.add(box.value); else edit.selected.delete(box.value);
+    update();
   });
-  dialog.querySelector('#pool-model-all').onclick = () => { boxes.filter(box => !box.parentElement.hidden).forEach(box => box.checked = true); update(); };
-  dialog.querySelector('#pool-model-none').onclick = () => { boxes.forEach(box => box.checked = false); update(); };
+  search.oninput = () => { edit.query = search.value; update(); };
+  form.querySelector('#pool-model-all').onclick = () => {
+    edit.all = false; mode.value = 'selected';
+    boxes.filter(box => !box.closest('tr').hidden).forEach(box => edit.selected.add(box.value)); update();
+  };
+  form.querySelector('#pool-model-none').onclick = () => { edit.all = false; mode.value = 'selected'; edit.selected.clear(); update(); };
+  form.querySelector('#pool-model-cancel').onclick = () => { if (!edit.saving) { poolModelEditor = null; render(); } };
+  form.onsubmit = async e => {
+    e.preventDefault();
+    if (edit.saving) return;
+    edit.saving = true; edit.error = ''; update();
+    try {
+      await save(AccountConfig.poolModels(edit.snapshot, edit.poolName, edit.all ? null : [...edit.selected]));
+      poolModelEditor = null;
+      toast(remote()?.local_sync?.state === 'pending' ? '模型名单已保存到本地，等待同步 Router' : '模型名单已保存并同步至 Router');
+    } catch (error) {
+      edit.error = error.message.includes('revision_conflict') ? '配置已变更。请取消编辑、刷新后重试；本次模型名单没有覆盖新配置。' : error.message;
+    } finally { edit.saving = false; render(); }
+  };
   update();
 }
 

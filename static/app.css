@@ -2,3 +2,5 @@
 :root dialog.wide{width:1000px}.row-actions{white-space:nowrap}.row-actions button{padding:6px 10px}.selected-row{background:#edf3ff}input[readonly],select:disabled{background:#f5f7fb;color:#697990}#import-review{margin-top:20px;max-height:300px;overflow:auto}.heading>.actions{flex-shrink:0}@media(max-width:850px){.heading{align-items:flex-start;flex-direction:column}}
 
 .model-tools{display:flex;gap:10px;align-items:center;margin:12px 0}.model-options{max-height:320px;overflow:auto;border:1px solid #e0e6ee;border-radius:7px;padding:12px}.model-options label{margin:0;padding:6px;overflow-wrap:anywhere}.model-options [hidden],[hidden]{display:none!important}
+
+#pool-model-catalog{scroll-margin-top:20px}.catalog-editor-heading{display:flex;flex-wrap:wrap;gap:16px;margin-bottom:20px}.catalog-model-options{padding:0;max-height:440px}.catalog-model-options td:first-child{width:100px}.catalog-model-options td{padding:10px 12px}.catalog-model-options input{margin:0}.catalog-model-options th{position:sticky;top:0}.catalog-save-actions{display:flex;justify-content:flex-end;gap:10px}.model-tools{flex-wrap:wrap}
