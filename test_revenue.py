@@ -53,22 +53,6 @@ class RevenueTests(unittest.TestCase):
         finally:other.db.close()
         self.assertNotIn(b'customer-1',(Path(self.tmp.name)/'records.db').read_bytes())
 
-    def test_defaults_never_reprice_receipts_or_touch_router_and_persist(self):
-        class NoRouter:
-            def call(self,*_):raise AssertionError('Default must not write Router configuration')
-        app=Application(self.store,NoRouter())
-        self.store.archive('usage','boot-1',[receipt()])
-        before=self.store.revenue()['summary']
-        app.api('PUT','/api/pricing-defaults',{'default_multiplier_millionths':0})
-        self.assertEqual(self.store.public()['default_multiplier_millionths'],0)
-        self.assertEqual(self.store.revenue()['summary'],before)
-        for invalid in [True,-1,1.5,10**15+1]:
-            with self.assertRaises(ValueError):
-                app.api('PUT','/api/pricing-defaults',{'default_multiplier_millionths':invalid})
-        other=Store(self.tmp.name)
-        try:self.assertEqual(other.public()['default_multiplier_millionths'],0)
-        finally:other.db.close()
-
     def test_deduplicate_replay_and_recovered_request_across_boots(self):
         row=receipt()
         self.store.archive('usage','boot-1',[row]);self.store.archive('usage','boot-1',[row])

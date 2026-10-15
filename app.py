@@ -91,8 +91,6 @@ class Application:
             if len(instance) > 256 or not seq.isascii() or not seq.isdigit() or len(seq) > 19:
                 raise ValueError('收入记录标识无效')
             return self.store.revenue_record(instance, int(seq))
-        if (method, path) == ('PUT', '/api/pricing-defaults'):
-            return self.store.pricing_defaults(body)
         if (method, path) == ('GET', '/api/state'):
             return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
         if (method, path) == ('PUT', '/api/settings'):

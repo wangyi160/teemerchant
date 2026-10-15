@@ -9,7 +9,7 @@ import secrets
 import sqlite3
 import threading
 from local_accounts import AccountBook
-from revenue import RevenueIndex, integer
+from revenue import RevenueIndex
 
 class Blob(ctypes.Structure):
     _fields_ = [('size', wintypes.DWORD), ('data', ctypes.POINTER(ctypes.c_ubyte))]
@@ -65,21 +65,7 @@ class Store:
         return {'id': 'm_' + digest[:32], 'credential_hash': digest}
 
     def public(self):
-        return {'default_multiplier_millionths': 1_000_000,
-                **{k: v for k, v in self.settings.items() if k != 'token'}}
-
-    def pricing_defaults(self, value):
-        if not isinstance(value, dict) or set(value) != {'default_multiplier_millionths'} or not integer(value['default_multiplier_millionths']):
-            raise ValueError('默认倍率无效')
-        with self.lock:
-            previous = self.settings.copy()
-            self.settings.update(value)
-            try:
-                self.save()
-            except Exception:
-                self.settings = previous
-                raise
-        return {'saved': True, **value}
+        return {k: v for k, v in self.settings.items() if k not in ('token', 'default_multiplier_millionths')}
 
     def archive(self, kind, instance, rows):
         with self.lock, self.db:

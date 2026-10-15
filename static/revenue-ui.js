@@ -15,27 +15,6 @@ const revenueReasons = {
   billing_observer_unavailable:'计费观察数据不可用'
 };
 
-function pricingView() {
-  return heading('费率与限速','默认倍率用于新建账号池；实际计费始终以账号池保存的倍率为准。') +
-    `<section class="panel"><div class="panelhead"><h2>新建账号池的默认倍率</h2>${btn('修改默认倍率','default-price')}</div>
-      <div class="default-rate">${usd(state.settings.default_multiplier_millionths ?? 1000000)}×</div>
-      <p>只作为新建账号池时的初始值。修改默认值不会调整已有账号池，也不会改变历史账单。</p></section>
-    <section class="panel"><div class="panelhead"><h2>账号池实际倍率</h2></div>
-    ${table(['账号池','服务','实际倍率','操作'],pools().map(p=>{
-      const rate=(settings().pool_pricing||[]).find(r=>r.pool===p.name);
-      return `<tr><td><strong>${esc(p.name)}</strong></td><td>${esc(p.provider)}</td><td>${rate?usd(rate.multiplier_millionths)+'×':'未设置'}</td><td>${btn('前往账号池','pool-price',p.name)}</td></tr>`;
-    }))}<p>在“账号与模型”中编辑实际倍率。调用开始时锁定官方报价和池倍率；输入、输出及缓存费用按这份历史快照计算。Workbuddy 使用测试基准。</p></section>
-    <section class="panel"><div class="panelhead"><h2>商户总限速</h2>${btn('调整限速','limits')}</div><p>并发 ${settings().max_concurrent} · RPM ${settings().rpm||'不限'} · TPM ${settings().tpm||'不限'}</p></section>`;
-}
-
-function pricingDefaultsForm() {
-  form('默认倍率',field('新建账号池初始倍率','multiplier',String((state.settings.default_multiplier_millionths ?? 1000000)/1e6),'text','required inputmode="decimal"')+
-    '<p>已有账号池仍使用各自的实际倍率。此默认值保存在商户本机，不参与 Router 计费。</p>',async f=>{
-      const result=await api('/api/pricing-defaults','PUT',{default_multiplier_millionths:amount(f.get('multiplier').trim())});
-      state.settings.default_multiplier_millionths=result.default_multiplier_millionths;render();
-    },{success:'默认倍率已保存；已有账号池保持原倍率'});
-}
-
 async function loadRevenue() {
   revenueData=await api('/api/revenue?'+new URLSearchParams(revenueQuery));
 }
