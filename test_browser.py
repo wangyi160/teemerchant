@@ -101,6 +101,45 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(update['pools'][0]['deployments'][0]['oauth_account'], 'credential-ref')
         self.assertEqual(update['pool_pricing'][0]['multiplier_millionths'], 200000)
 
+    def test_pool_model_selection_syncs_once_for_all_accounts_and_keeps_unavailable_choices(self):
+        pool = self.router.remote['pools'][0]
+        pool['deployments'].append({**pool['deployments'][0], 'id': 'example-002'})
+        self.router.remote['catalog']['data'] = [{'pool': 'openai', 'deployment': d['id'],
+            'official_models': {f'model-{i:02}': {} for i in range(20)}} for d in pool['deployments']]
+        from local_accounts import config_from
+        self.app.api('PUT', '/api/config', config_from(self.router.remote))
+        self.router.writes.clear()
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        self.page.locator('[data-action=edit-pool-models]').click()
+        self.page.locator('[name=model_mode]').select_option('selected')
+        self.assertEqual(self.page.locator('[name=allowed_model]').count(), 20)
+        self.page.locator('#pool-model-none').click()
+        for i in range(3):
+            self.page.locator(f'[name=allowed_model][value="model-{i:02}"]').check()
+        expect(self.page.locator('#pool-model-count')).to_have_text('已勾选 3 / 20')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expected = ['model-00', 'model-01', 'model-02']
+        self.assertEqual(self.router.writes[-1]['pools'][0]['allowed_models'], expected)
+        self.assertEqual(len(self.router.writes[-1]['pools'][0]['deployments']), 2)
+        self.router.remote['catalog']['data'] = []
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        self.page.locator('[data-action=edit-pool-models]').click()
+        self.assertEqual(self.page.locator('[name=allowed_model]:checked').count(), 3)
+        expect(self.page.locator('.model-options')).to_contain_text('暂未获取到目录')
+        self.page.locator('#pool-model-none').click()
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(self.router.writes[-1]['pools'][0]['allowed_models'], [])
+        self.page.locator('[data-action=edit-pool-models]').click()
+        self.page.locator('[name=model_mode]').select_option('all')
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertNotIn('allowed_models', self.router.writes[-1]['pools'][0])
+
     def test_expired_access_only_account_is_distinct_from_reauthorization(self):
         self.router.remote['accounts']['data'][0]['health'] = {'state': 'expired', 'last_error': 'access_token_expired'}
         self.app.accept(copy.deepcopy(self.router.remote))

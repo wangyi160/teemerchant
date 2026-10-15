@@ -37,6 +37,8 @@ function accountState(pool, deployment) {
   if (entry?.catalog?.last_error) return ['目录获取失败', 'error'];
   if (!entry?.catalog?.fetched_at) return ['等待模型目录', 'muted'];
   if (!Object.keys(entry.official_models || {}).length) return ['暂无模型', 'muted'];
+  if (Array.isArray(pool.allowed_models) && !pool.allowed_models.some(id => Object.hasOwn(entry.official_models || {}, id)))
+    return ['暂无对外模型', 'muted'];
   if (!(settings().pool_pricing || []).some(p => p.pool === pool.name)) return ['待设置倍率', 'error'];
   return ['目录已就绪', 'badge'];
 }
@@ -57,7 +59,8 @@ function accountsView() {
     const rate = (settings().pool_pricing || []).find(r => r.pool === p.name);
     return `<tr class="${selectedAccountPool === p.name ? 'selected-row' : ''}"><td>${btn(p.name,'account-pool',p.name)}</td>
       <td>${esc(p.provider)}</td><td>${p.deployments.length}</td><td>${rate ? usd(rate.multiplier_millionths)+'×' : '未设置'}</td>
-      <td>${btn('编辑账号池','edit-pool',p.name)}</td></tr>`;
+      <td>${p.allowed_models == null ? '全部' : p.allowed_models.length+' 个'}</td>
+      <td>${btn('对外模型','edit-pool-models',p.name)} ${btn('编辑账号池','edit-pool',p.name)}</td></tr>`;
   });
   const catalog = (remote().catalog?.data || []).filter(c => !selectedAccountPool || c.pool === selectedAccountPool);
   const sync = remote().local_sync;
@@ -69,14 +72,49 @@ function accountsView() {
     ${sync?.missing_credentials?.length?`<p class="error">${sync.missing_credentials.length} 个旧版账号尚缺本地凭证，可在编辑中补录；Router 中的原凭证仍保留。</p>`:''}
     <section class="panel"><div class="panelhead"><h2>账号池</h2><div class="actions">${pools().length?btn('显示全部账号','account-pool'):''}${btn('添加账号池','pool','','primary')}</div></div>
     ${pools().length?'':'<p>尚无账号池。先添加账号池并设置服务类型和倍率，再向池内添加账号。</p>'}
-    ${table(['账号池','服务','账号数量','倍率','操作'],poolRows)}</section>
+    ${table(['账号池','服务','账号数量','倍率','对外模型','操作'],poolRows)}</section>
     <section class="panel"><div class="panelhead"><h2>${selectedAccountPool ? esc(selectedAccountPool)+' · 账号' : '全部账号'}<small class="muted">（${rows.length}）</small></h2>
     <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account','','primary'):''}</div></div>
     ${selectedAccountPool && !rows.length?'<p>此账号池还没有账号，可以逐个添加或批量导入。</p>':''}
     ${table(['账号别名 / 账号池','服务 / 凭证','状态','并发 / RPM','操作'],rows)}</section>
-    <section class="panel"><div class="panelhead"><h2>官方模型目录</h2>${btn('更新目录','refresh')}</div>
-    ${table(['账号池','账号','模型'],catalog.flatMap(c => Object.keys(c.official_models || {}).map(id =>
-      `<tr><td>${esc(c.pool)}</td><td>${esc(c.deployment)}</td><td>${esc(id)}</td></tr>`)))}</section>`;
+    <section class="panel"><div class="panelhead"><h2>池内模型目录</h2>${btn('更新目录','refresh')}</div>
+    <p>对外模型名单由账号池统一设置，池内所有账号共用；实际可调用模型还须通过 Router 的可用性、权限和价格校验。</p>
+    ${table(['账号池','模型','对外策略'],chosen.flatMap(p => [...new Set(catalog.filter(c => c.pool === p.name)
+      .flatMap(c => Object.keys(c.official_models || {})).concat(p.allowed_models || []))].sort().map(id =>
+      `<tr><td>${esc(p.name)}</td><td>${esc(id)}</td><td>${p.allowed_models == null || p.allowed_models.includes(id) ? '开放' : '不开放'}</td></tr>`)))}</section>`;
+}
+
+function poolModelsForm(poolName) {
+  const snapshot = structuredClone(remote()), pool = snapshot.pools.find(p => p.name === poolName);
+  if (!pool) throw Error('账号池不存在，请刷新后重试');
+  const discovered = new Set((snapshot.catalog?.data || []).filter(c => c.pool === poolName)
+    .flatMap(c => Object.keys(c.official_models || {})));
+  const ids = [...new Set([...discovered, ...(pool.allowed_models || [])])].sort();
+  form(poolName+' · 对外模型', `<p>此名单对池内全部账号生效。未开放的模型不会展示给用户，也不能通过指定池或自动路由调用。</p>
+    <label>开放方式<select name="model_mode"><option value="all" ${pool.allowed_models == null ? 'selected' : ''}>开放全部可用模型（包含以后发现的模型）</option>
+    <option value="selected" ${pool.allowed_models != null ? 'selected' : ''}>仅开放勾选模型</option></select></label>
+    <p>仅开放勾选模型时，不勾选任何模型表示暂停该池的全部模型服务。暂未获取到目录的已选项会保留，但不会绕过 Router 的实际能力校验。</p>
+    <div id="pool-model-picker"><label>筛选模型<input id="pool-model-search" type="search" placeholder="输入模型名称"></label>
+    <div class="model-tools"><button type="button" id="pool-model-all">勾选筛选结果</button><button type="button" id="pool-model-none">清空勾选</button><span id="pool-model-count"></span></div>
+    <div class="model-options">${ids.length ? ids.map(id => `<label data-model="${esc(id)}"><input name="allowed_model" type="checkbox" value="${esc(id)}" ${pool.allowed_models == null || pool.allowed_models.includes(id) ? 'checked' : ''}>${esc(id)}${discovered.has(id) ? '' : '<small class="muted"> · 暂未获取到目录</small>'}</label>`).join('') : '<p>尚无模型目录。请先添加账号并更新目录，再选择对外模型。</p>'}</div></div>`,
+    async f => save(AccountConfig.poolModels(snapshot, poolName, f.get('model_mode') === 'all' ? null : f.getAll('allowed_model'))),
+    {submit:'保存并同步'});
+  const dialog = $('#dialog'), mode = dialog.querySelector('[name=model_mode]');
+  const boxes = [...dialog.querySelectorAll('[name=allowed_model]')];
+  const update = () => {
+    const all = mode.value === 'all';
+    dialog.querySelector('#pool-model-picker').hidden = all;
+    boxes.forEach(box => box.disabled = all);
+    dialog.querySelector('#pool-model-count').textContent = `已勾选 ${boxes.filter(box => box.checked).length} / ${ids.length}`;
+  };
+  mode.onchange = update;
+  boxes.forEach(box => box.onchange = update);
+  dialog.querySelector('#pool-model-search').oninput = e => boxes.forEach(box => {
+    box.parentElement.hidden = !box.value.toLowerCase().includes(e.target.value.trim().toLowerCase());
+  });
+  dialog.querySelector('#pool-model-all').onclick = () => { boxes.filter(box => !box.parentElement.hidden).forEach(box => box.checked = true); update(); };
+  dialog.querySelector('#pool-model-none').onclick = () => { boxes.forEach(box => box.checked = false); update(); };
+  update();
 }
 
 async function accountForm(editId = '') {

@@ -87,6 +87,12 @@ class AccountBook:
         for pool in body['pools']:
             if not isinstance(pool, dict) or not valid_name(pool.get('name')) or not isinstance(pool.get('deployments'), list):
                 raise ValueError('账号池格式无效')
+            allowed = pool.get('allowed_models')
+            if allowed is not None and (not isinstance(allowed, list) or len(allowed) > 4096
+                    or any(not isinstance(model, str) or not re.fullmatch(r'[a-zA-Z0-9._:/-]{1,256}', model)
+                           or any(part in ('', '.', '..') for part in model.split('/')) for model in allowed)
+                    or len(set(allowed)) != len(allowed)):
+                raise ValueError('对外模型列表必须是有效且不重复的模型 ID')
             for account in pool['deployments']:
                 if (not isinstance(account, dict) or not valid_name(account.get('id'))
                         or account['id'] in ids or account.get('provider') not in ('openai','anthropic','xai','workbuddy')):

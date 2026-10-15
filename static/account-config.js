@@ -127,6 +127,17 @@ const AccountConfig = (() => {
     config.pool_pricing.push({pool:poolName, multiplier_millionths:multiplier});
     return config;
   }
+  function poolModels(remote, poolName, allowed) {
+    const config = draft(remote), target = config.pools.find(p => p.name === poolName);
+    if (!target) throw Error('账号池不存在，请刷新后重试');
+    if (allowed !== null && (!Array.isArray(allowed) || allowed.length > 4096 ||
+        allowed.some(id => typeof id !== 'string' || id.length > 256 || !/^[a-zA-Z0-9._:/-]+$/.test(id) ||
+          id.split('/').some(part => !part || part === '.' || part === '..')) || new Set(allowed).size !== allowed.length))
+      throw Error('对外模型列表必须是有效且不重复的模型 ID');
+    if (allowed === null) delete target.allowed_models;
+    else target.allowed_models = [...allowed].sort();
+    return config;
+  }
   function build(remote, entries, defaults = {}, editId = null) {
     if (!Array.isArray(entries) || !entries.length || entries.length > 4096 || (editId && entries.length !== 1))
       throw Error('账号数量无效');
@@ -226,6 +237,6 @@ const AccountConfig = (() => {
     });
     return {config,rows};
   }
-  return {parse,build,draft,pool,normalizeCredential,oauthInput};
+  return {parse,build,draft,pool,poolModels,normalizeCredential,oauthInput};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = AccountConfig;

@@ -63,6 +63,24 @@ class LocalAccountTests(unittest.TestCase):
                 'pool_pricing': [{'pool': 'openai', 'multiplier_millionths': 1000000}],
                 'max_concurrent': 16, 'rpm': 0, 'tpm': 0, 'secrets': {'api-1': 'PRIVATE_TEST_KEY'}}
 
+    def test_pool_model_policy_is_durable_and_invalid_lists_are_not_saved(self):
+        for invalid in [['*'], ['x', 'x'], ['a/../b'], [42], 'all', ['x'] * 4097]:
+            body = self.config()
+            body['pools'][0]['allowed_models'] = invalid
+            with self.assertRaises(ValueError):
+                self.app.api('PUT', '/api/config', body)
+        self.assertEqual(self.router.writes, [])
+        body = self.config()
+        body['pools'][0]['allowed_models'] = ['model-a', 'model-b']
+        self.app.api('PUT', '/api/config', body)
+        self.assertEqual(self.router.writes[-1]['pools'][0]['allowed_models'], ['model-a', 'model-b'])
+        other = Store(self.tmp.name)
+        try:
+            view = other.accounts.view('https://fixture.example')
+            self.assertEqual(view['pools'][0]['allowed_models'], ['model-a', 'model-b'])
+        finally:
+            other.db.close()
+
     def test_local_write_precedes_remote_and_is_readable_after_restart(self):
         self.app.api('PUT', '/api/config', self.config())
         self.assertEqual(len(self.router.writes), 1)

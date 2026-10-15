@@ -1,6 +1,22 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {build,parse,pool,normalizeCredential,oauthInput} = require('./static/account-config.js');
+const {poolModels} = require('./static/account-config.js');
+
+test('one public model policy applies to the whole pool and survives account edits and imports',()=>{
+  const source=remote();
+  const config=poolModels(source,'existing',['model-b','model-a']);
+  assert.deepEqual(config.pools[0].allowed_models,['model-a','model-b']);
+  assert.deepEqual(config.pools[0].deployments,source.pools[0].deployments);
+  assert.deepEqual(config.pool_pricing,source.settings.pool_pricing);
+  const updated={...source,pools:config.pools};
+  assert.deepEqual(build(updated,[{id:'alias',max_concurrent:12}],{},'alias').config.pools[0].allowed_models,['model-a','model-b']);
+  assert.deepEqual(build(updated,[oauth('third')]).config.pools[0].allowed_models,['model-a','model-b']);
+  assert.deepEqual(poolModels(updated,'existing',[]).pools[0].allowed_models,[]);
+  assert.equal(poolModels(updated,'existing',null).pools[0].allowed_models,undefined);
+  for(const value of [['*'],['x','x'],['a/../b'],[''],[{}],'all',Array(4097).fill('x')])
+    assert.throws(()=>poolModels(source,'existing',value),/模型/);
+});
 const remote = () => ({merchant:{allow_test:false},settings:{revision:7,max_concurrent:16,rpm:60,tpm:1000,
   customer_defaults:{enabled:true,models:[],max_concurrent:4,rpm:0,tpm:0},
   pool_pricing:[{pool:'existing',multiplier_millionths:200000},{pool:'new-pool',multiplier_millionths:1000000}]},
