@@ -10,6 +10,7 @@ from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
 from transport import Transport
+from portal_client import bind_workstation
 
 ROOT = Path(__file__).parent
 
@@ -80,6 +81,8 @@ class Application:
             return self._api(method, path, body)
 
     def _api(self, method, path, body):
+        if (method, path) == ('POST', '/api/portal/bind'):
+            return bind_workstation(self.store, body)
         url = urlsplit(path)
         if method == 'GET' and url.path == '/api/revenue':
             return self.store.revenue(url.query)
