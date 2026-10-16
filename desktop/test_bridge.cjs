@@ -15,6 +15,8 @@ test('only the merchant workbench operation set crosses IPC', () => {
   }
   assert.throws(()=>validateRequest('POST','/api/state'));
   assert.equal(validateRequest('POST','/api/credentials').path, '/api/credentials');
+  assert.equal(validateRequest('GET','/api/credentials').path, '/api/credentials');
+  assert.throws(()=>validateRequest('GET','/api/credentials?export=all'));
   assert.throws(()=>validateRequest('POST','/api/portal/bind'));
   assert.throws(()=>validateRequest('PUT','/api/settings',[]));
   assert.throws(()=>validateRequest('PUT','/api/config',{padding:'x'.repeat(16*1024*1024)}));

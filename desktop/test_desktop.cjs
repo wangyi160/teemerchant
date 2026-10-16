@@ -8,6 +8,58 @@ const {execFileSync} = require('node:child_process');
 const {_electron} = require('playwright-core');
 const ROOT = path.resolve(__dirname, '..');
 
+test('saved merchant credentials are visible, copyable and prefilled without leaking into status', {timeout:60000}, async()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'teemerchant-credentials-'));
+  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+  const packaged=process.env.TEEMERCHANT_TEST_EXE;
+  const secret='a'.repeat(64),id='m_'+require('node:crypto').createHash('sha256').update(secret).digest('hex').slice(0,32);
+  let app;
+  try{
+    app=await _electron.launch({cwd:ROOT,env,...(packaged?{executablePath:packaged}:{}),
+      args:[...(packaged?[]:[ROOT]),'--data='+directory,'--start-hidden']});
+    // Capture the clipboard API call without changing the user's real clipboard.
+    await app.evaluate(({clipboard})=>{clipboard.writeText=value=>{global.credentialCopied=value;};});
+    const page=await app.firstWindow();
+    await page.locator('aside [data-id=connection]').click();
+    assert.equal(await page.locator('#merchant-saved-id').inputValue(),'');
+    assert.equal(await page.locator('#merchant-saved-secret').inputValue(),'');
+    assert.equal(await page.locator('[data-action=connect]').isDisabled(),true);
+    await page.locator('[data-action=merchant-credentials]').click();
+    await page.locator('#dialog [name=merchant_id]').fill(id);
+    await page.locator('#dialog [name=merchant_secret]').fill(secret);
+    await page.getByRole('button',{name:'保存接入凭证',exact:true}).click();
+    await page.locator('#dialog').waitFor({state:'hidden'});
+    assert.equal(await page.locator('#merchant-saved-id').inputValue(),id);
+    assert.match(await page.locator('#merchant-credential-status').innerText(),/已保存/);
+    assert.equal(await page.locator('#merchant-saved-secret').inputValue(),'********');
+    await page.locator('[data-action=merchant-copy-id]').click();
+    await page.waitForFunction(()=>document.querySelector('#toast').textContent==='Merchant ID 已复制');
+    assert.equal(await app.evaluate(()=>global.credentialCopied),id);
+    await page.locator('[data-action=merchant-copy-secret]').click();
+    await page.waitForFunction(()=>document.querySelector('#toast').textContent==='Merchant Secret 已复制');
+    assert.equal(await app.evaluate(()=>global.credentialCopied),secret);
+    assert.equal(await page.locator('#merchant-saved-secret').inputValue(),'********');
+    await page.locator('[data-action=merchant-secret]').click();
+    await page.waitForFunction(()=>document.querySelector('#merchant-saved-secret').type==='text');
+    assert.equal(await page.locator('#merchant-saved-secret').inputValue(),secret);
+    await page.locator('[data-action=merchant-secret]').click();
+    assert.equal(await page.locator('#merchant-saved-secret').inputValue(),'********');
+    await page.locator('[data-action=merchant-credentials]').click();
+    assert.equal(await page.locator('#dialog [name=merchant_id]').inputValue(),id);
+    assert.equal(await page.locator('#dialog [name=merchant_secret]').inputValue(),secret);
+    await page.getByRole('button',{name:'取消',exact:true}).click();
+    const state=await page.evaluate(()=>window.teemerchant.request('GET','/api/state'));
+    assert.equal(JSON.stringify(state).includes(secret),false);
+    fs.mkdirSync(path.join(ROOT,'desktop-test-results'),{recursive:true});
+    await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());
+    await page.screenshot({path:path.join(ROOT,'desktop-test-results','credentials.png')});
+  }finally{
+    await app?.close();
+    assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
+});
+
 test('desktop account workflow, persistent identity, IPC isolation and tray lifecycle', {timeout:120000}, async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'teemerchant-desktop-'));
   const env = {...process.env}; delete env.ELECTRON_RUN_AS_NODE;

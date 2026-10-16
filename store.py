@@ -44,7 +44,7 @@ class Store:
         if self.path.exists():
             self.settings = json.loads(protect(self.path.read_bytes(), True))
         else:
-            self.settings = {'token': secrets.token_hex(32), 'router': '', 'tdx_policy': '', 'snp_policy': '', 'minimum_revision': 0}
+            self.settings = {'token': secrets.token_hex(32), 'router': '', 'tdx_policy': '', 'snp_policy': '', 'minimum_revision': 0, 'credentials_saved': False}
             self.save()
         if 'transport' in self.settings:
             self.settings.pop('transport')
@@ -70,6 +70,16 @@ class Store:
 
     def public(self):
         return {k: v for k, v in self.settings.items() if k not in ('token', 'default_multiplier_millionths')}
+
+    def credentials(self, reveal=False):
+        with self.lock:
+            # Older profiles already held locally generated/enrolled or imported
+            # credentials. Preserve those; a fresh profile needs Portal credentials.
+            saved = bool(self.settings.get('credentials_saved', bool(self.settings.get('token'))))
+            result = {'saved': saved, 'merchant_id': self.enrollment()['id'] if saved else ''}
+            if reveal:
+                result['merchant_secret'] = self.settings['token'] if saved else ''
+            return result
 
     def policy_path(self, value):
         path = Path(value)
@@ -136,6 +146,7 @@ class Store:
                 raise ValueError('本机已有商户资料，不能替换为其他商户身份；请使用原 Merchant ID 和 Merchant Secret')
             previous = self.settings.copy()
             self.settings['token'] = body['merchant_secret']
+            self.settings['credentials_saved'] = True
             self.settings.pop('portal_url', None)
             self.settings.pop('portal_username', None)
             try:

@@ -30,6 +30,7 @@ class Application:
         if revision < self.store.settings['minimum_revision']:
             raise RuntimeError('Router 状态早于本机已确认版本，已拒绝回退')
         self.store.settings['minimum_revision'] = revision
+        self.store.settings['credentials_saved'] = True
         self.store.save()
         self.store.accounts.observe(self.store.settings['router'], result)
         self.remote, self.connected = self.store.accounts.view(self.store.settings['router']), True
@@ -80,6 +81,8 @@ class Application:
             return self._api(method, path, body)
 
     def _api(self, method, path, body):
+        if (method, path) == ('GET', '/api/credentials'):
+            return self.store.credentials(reveal=True)
         if (method, path) == ('POST', '/api/credentials'):
             self.store.import_credentials(body)
             self.transport.close()
@@ -98,7 +101,7 @@ class Application:
                 raise ValueError('收入记录标识无效')
             return self.store.revenue_record(instance, int(seq))
         if (method, path) == ('GET', '/api/state'):
-            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
+            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
         if (method, path) == ('PUT', '/api/settings'):
             self.store.save_connection(body)
             self.transport.close()
@@ -107,6 +110,8 @@ class Application:
         if (method, path) == ('POST', '/api/verify'):
             return self.transport.call('VERIFY', '')
         if (method, path) == ('POST', '/api/connect'):
+            if not self.store.credentials()['saved']:
+                raise ValueError('请先填写平台签发的 Merchant ID 和 Merchant Secret')
             return self.accept(self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']}))
         if (method, path) == ('GET', '/api/merchant'):
             return self.accept(self.transport.call('GET', '/merchant/state'))

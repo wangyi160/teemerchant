@@ -25,7 +25,7 @@ class CredentialsTests(unittest.TestCase):
         self.store.db.close()
         self.tmp.cleanup()
 
-    def test_import_persists_encrypted_and_never_returns_secret(self):
+    def test_import_persists_encrypted_and_state_never_returns_secret(self):
         data = issued()
         result = self.app.api('POST', '/api/credentials', data)
         self.assertEqual(result['merchant_id'], data['merchant_id'])
@@ -36,6 +36,30 @@ class CredentialsTests(unittest.TestCase):
         try:
             self.assertEqual(reopened.settings['token'], data['merchant_secret'])
             self.assertEqual(reopened.accounts.identity, data['merchant_id'])
+        finally:
+            reopened.db.close()
+
+    def test_explicit_local_view_retrieves_credentials_without_router_request(self):
+        data = issued()
+        self.store.import_credentials(data)
+        with patch.object(self.app.transport, 'call', side_effect=AssertionError('Must stay local')):
+            metadata = self.app.api('GET', '/api/state', {})['credentials']
+            self.assertEqual(metadata, {'saved':True, 'merchant_id':data['merchant_id']})
+            self.assertEqual(self.app.api('GET', '/api/credentials', {}), {'saved':True, **data})
+
+    def test_fresh_profile_has_no_merchant_credentials_and_cannot_connect(self):
+        self.assertEqual(self.app.api('GET', '/api/credentials', {}),
+                         {'saved':False,'merchant_id':'','merchant_secret':''})
+        with patch.object(self.app.transport, 'call', side_effect=AssertionError('Must not send placeholder token')):
+            with self.assertRaises(ValueError): self.app.api('POST', '/api/connect', {})
+
+    def test_legacy_saved_credentials_remain_available(self):
+        self.store.settings.pop('credentials_saved')
+        self.store.save()
+        reopened = Store(self.tmp.name)
+        try:
+            self.assertTrue(reopened.credentials()['saved'])
+            self.assertEqual(reopened.credentials(reveal=True)['merchant_secret'], self.store.settings['token'])
         finally:
             reopened.db.close()
 

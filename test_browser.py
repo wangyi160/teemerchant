@@ -84,6 +84,38 @@ class BrowserTests(unittest.TestCase):
         self.tmp.cleanup()
         self.assertEqual(self.errors, [])
 
+    def test_merchant_credentials_show_locally_refill_edit_and_clear_on_navigation(self):
+        secret = self.store.settings['token']
+        identity = self.store.enrollment()['id']
+        requested = []
+        self.page.on('request', lambda request: requested.append(request.url) if request.url.endswith('/api/credentials') else None)
+        self.page.locator('aside [data-id=connection]').click()
+        expect(self.page.locator('#merchant-saved-id')).to_have_value(identity)
+        expect(self.page.locator('#merchant-credential-status')).to_contain_text('当前连接使用此凭证')
+        expect(self.page.locator('#merchant-saved-secret')).to_have_value('********')
+        self.assertEqual(requested, [])
+        denied = self.page.request.get(self.origin + '/api/credentials')
+        self.assertEqual(denied.status, 403)
+        self.assertNotIn(secret, denied.text())
+        self.page.locator('[data-action=merchant-secret]').click()
+        expect(self.page.locator('#merchant-saved-secret')).to_have_value(secret)
+        expect(self.page.locator('#merchant-saved-secret')).to_have_attribute('type','text')
+        self.page.locator('[data-action=merchant-secret]').click()
+        expect(self.page.locator('#merchant-saved-secret')).to_have_value('********')
+        self.page.locator('[data-action=merchant-secret]').click()
+        self.page.locator('aside [data-id=accounts]').click()
+        self.page.locator('aside [data-id=connection]').click()
+        expect(self.page.locator('#merchant-saved-secret')).to_have_value('********')
+        self.page.locator('[data-action=merchant-credentials]').click()
+        expect(self.page.locator('#dialog [name=merchant_id]')).to_have_value(identity)
+        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_value(secret)
+        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_attribute('type','password')
+        self.page.locator('[data-action=merchant-edit-secret]').click()
+        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_attribute('type','text')
+        self.page.get_by_role('button', name='取消', exact=True).click()
+        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_count(0)
+        self.assertNotIn(secret, json.dumps(self.app.api('GET','/api/state',{})))
+
     def test_limits_preserve_pool_pricing(self):
         self.page.get_by_role('button', name='限速', exact=True).click()
         expect(self.page.get_by_role('heading', name='限速', exact=True)).to_be_visible()
