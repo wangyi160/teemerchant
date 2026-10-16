@@ -100,11 +100,8 @@ class Application:
         if (method, path) == ('GET', '/api/state'):
             return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
         if (method, path) == ('PUT', '/api/settings'):
-            if set(body) != {'router', 'tdx_policy', 'snp_policy', 'transport'} or any(not isinstance(v, str) or len(v) > 4096 for v in body.values()):
-                raise ValueError('连接设置无效')
+            self.store.save_connection(body)
             self.transport.close()
-            self.store.settings.update(body)
-            self.store.save()
             self.remote, self.connected = self.store.accounts.view(self.store.settings['router']), False
             return {'saved': True}
         if (method, path) == ('POST', '/api/verify'):
@@ -196,7 +193,7 @@ def handler(application, origin):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--port', type=int, default=8910)
-    parser.add_argument('--data', default=str(Path(os.environ.get('LOCALAPPDATA', '.')) / 'teemerchant'))
+    parser.add_argument('--data', default=str(ROOT / 'data'))
     parser.add_argument('--no-browser', action='store_true')
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:

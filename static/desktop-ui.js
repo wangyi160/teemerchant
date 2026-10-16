@@ -23,7 +23,7 @@ if(window.teemerchant){
         input.insertAdjacentHTML('afterend',`<button type="button" class="secondary" data-action="desktop-file" data-id="${name}">选择文件…</button>`);
       }
       document.querySelector('[name=transport]').insertAdjacentHTML('afterend','<button type="button" class="secondary" data-action="desktop-builtin">使用内置组件</button>');
-      const note=document.createElement('p');note.className='muted';note.textContent='验证组件已随应用提供。首次接入请选择你审核过的 TEE 信任策略，再保存连接。';
+      const note=document.createElement('p');note.className='muted';note.textContent='验证组件已内置。保存连接时，所选 TEE 策略会复制到程序旁的 data/policies；配置、账号和账单也保存在 data 中。请选择你审核过的信任策略。';
       document.querySelector('#connection').append(note);
     }
   };

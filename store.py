@@ -68,6 +68,52 @@ class Store:
     def public(self):
         return {k: v for k, v in self.settings.items() if k not in ('token', 'default_multiplier_millionths')}
 
+    def policy_path(self, value):
+        path = Path(value)
+        if path.is_absolute():
+            return path.resolve(strict=True)
+        resolved = (self.directory / path).resolve(strict=True)
+        if not resolved.is_relative_to(self.directory):
+            raise ValueError('策略相对路径必须位于 data 目录中')
+        return resolved
+
+    def save_connection(self, body):
+        if (not isinstance(body, dict) or set(body) != {'router', 'tdx_policy', 'snp_policy', 'transport'}
+                or any(not isinstance(v, str) or len(v) > 4096 for v in body.values())):
+            raise ValueError('连接设置无效')
+        with self.lock:
+            settings = dict(body)
+            for kind in ('tdx_policy', 'snp_policy'):
+                if not body[kind]:
+                    continue
+                try:
+                    with self.policy_path(body[kind]).open('rb') as stream:
+                        raw = stream.read(8 * 1024 * 1024 + 1)
+                    if len(raw) > 8 * 1024 * 1024 or not isinstance(json.loads(raw), dict):
+                        raise ValueError()
+                except (OSError, ValueError):
+                    raise ValueError('无法读取 TEE 策略，请选择有效的 JSON 策略文件') from None
+                # Preserve exact approved bytes. Immutable names plus an atomic
+                # settings write keep the previous trust policy on any failure.
+                relative = Path('policies') / (kind + '-' + hashlib.sha256(raw).hexdigest() + '.json')
+                target = self.directory / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.exists() or target.read_bytes() != raw:
+                    temporary = target.with_suffix('.tmp')
+                    with temporary.open('wb') as stream:
+                        stream.write(raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(temporary, target)
+                settings[kind] = relative.as_posix()
+            previous = self.settings.copy()
+            self.settings.update(settings)
+            try:
+                self.save()
+            except Exception:
+                self.settings = previous
+                raise
+
     def import_credentials(self, body):
         if (not isinstance(body, dict) or set(body) != {'merchant_id', 'merchant_secret'}
                 or not all(isinstance(v, str) for v in body.values())

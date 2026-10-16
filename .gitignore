@@ -14,3 +14,4 @@ release/
 *.spec
 .merchant.lock
 desktop-test-results/
+data/

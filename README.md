@@ -2,13 +2,15 @@
 
 Windows Electron 商户桌面工作台，采用 MIT 开源许可。左侧导航包括账号与模型、客户授权、限速、收入、调用记录、拒答记录和连接与身份。用户代理 [teeproxy](https://github.com/wangyi160/teeproxy) 仍是独立程序。
 
-## 安装和使用
+## 解压和使用
 
-从 [Releases](https://github.com/wangyi160/teemerchant/releases) 下载 Windows x64 安装包，安装后打开桌面上的 teemerchant。也可解压 ZIP 后运行 `teemerchant.exe`，请保留解压目录中的其他文件。安装包内置管理引擎、Python 运行库及 teeproxy TEE 验证组件；使用者无需安装 Python、Node.js 或单独启动服务器。
+从 [Releases](https://github.com/wangyi160/teemerchant/releases) 下载 Windows x64 ZIP，完整解压到可写文件夹后运行 `teemerchant.exe`。只发布便携 ZIP，无需安装程序。程序内置管理引擎、Python 运行库及 teeproxy TEE 验证组件；使用者无需安装 Python、Node.js 或单独启动服务器。
 
-窗口关闭后继续在系统托盘运行；点击托盘图标恢复窗口，通过托盘菜单的“退出”结束程序。已有商户启动时会使用保存的连接设置和信任策略尝试连接一次；失败后仍可离线管理本地账号，并在“连接与身份”中重试。待同步的账号修改不会因重新打开程序而自动重发。程序不提供本地 HTTP 服务，界面通过受限 IPC 和私有进程管道访问管理引擎。此版本的 Windows 安装包尚未进行代码签名，发布页同时提供 SHA-256 校验文件。
+窗口关闭后继续在系统托盘运行；点击托盘图标恢复窗口，通过托盘菜单的“退出”结束程序。已有商户启动时会使用保存的连接设置和信任策略尝试连接一次；失败后仍可离线管理本地账号，并在“连接与身份”中重试。待同步的账号修改不会因重新打开程序而自动重发。程序不提供本地 HTTP 服务，界面通过受限 IPC 和私有进程管道访问管理引擎。Windows 程序尚未进行代码签名，发布页同时提供 SHA-256 校验文件。
 
-旧版本升级时，先关闭原来的 Python 商户服务。桌面版自动沿用 `%LOCALAPPDATA%/teemerchant` 中当前 Windows 用户的身份、连接设置、加密账号库和账单归档，不需要重新登记商户。程序对数据目录加锁，避免两个工作台同时写入。可用 `--data=绝对路径` 指定另一个数据目录；不同目录代表不同的本地商户身份。卸载程序保留本地商户资料。
+配置、商户身份、TEE 策略、账号库、账单和界面缓存默认全部保存在 `teemerchant.exe` 旁的 `data/`，不依赖启动时的工作目录，也不自动读写旧版 AppData 商户目录。升级时先退出程序，保留并备份 `data/`，再用新 ZIP 覆盖程序文件。ZIP 不包含任何用户数据。移动程序时连同整个目录一起移动；删除目录会同时删除其中的数据。
+
+从 0.1.3 及更早版本迁移时，先退出旧程序，将 `%LOCALAPPDATA%/teemerchant` 内的商户资料复制到新目录的 `data/`。启动新程序后重新选择已有的 TEE 策略并保存连接，策略会复制到 `data/policies/` 并以相对路径引用。确认身份、账号和账单完整后，再处理旧目录。程序对数据目录加锁，避免两个工作台同时写入；可用 `--data=绝对路径` 显式指定另一个数据目录。
 
 1. 在“连接与身份”填写 Router HTTPS 地址，并选择自己审核的 TDX 或 SNP 策略文件。默认使用内置验证组件，也可指定兼容的 teeproxy.exe；实际支持的证明类型取决于验证组件的编译特性。
 2. 新商户先在 Router Portal 注册并等待管理员审核，注册无需 JSON。通过后，平台签发 Merchant ID 和 Merchant Secret 并同步至 Router。在 Portal「连接指南」显式查看、复制自己的接入凭证，填入工作台「连接与身份 → 商户接入凭证」。工作台不需要 Portal 登录名或密码。Secret 在本机由 Windows DPAPI 加密保存，只有 TEE 验证通过后才发送至 Router。平台使用 SQLCipher 加密保存签发凭证，Router 只接收身份摘要；上游账号凭证仍由商户本机管理。
@@ -23,7 +25,7 @@ Windows Electron 商户桌面工作台，采用 MIT 开源许可。左侧导航�
 
 API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`credential`），不是任意第三方客户端的凭证文件格式。每个账号须配置网络出口代理，可在代理栏或 OAuth JSON 的 `proxy` 中填写 `http://`、`https://` 或 `socks5h://` 地址；仅 Workbuddy 测试账号允许 `direct://`。代理地址是账号的网络出口，模型服务地址仍由 router 固定为官方域名。OpenAI OAuth 使用 `provider: openai`，由账号 credential 决定官方登录方式。支持 OpenAI、Anthropic、xAI；Workbuddy 需要平台单独启用测试权限。
 
-身份、连接设置、账号资料和归档正文用当前 Windows 用户的 DPAPI 加密，默认保存在 `%LOCALAPPDATA%/teemerchant`。账号库为 `accounts.dpapi`，包括凭证、代理、账号池配置和待同步修改；磁盘上不存明文凭证。SQLite 只在事务提交后确认 router 用量 / 拒答前缀。每 10 秒归档一次；写盘失败不确认删除，重复记录不重复保存，记录内容变化则停止同步。界面显示最近 200 条，数据库保存完整归档。
+身份、连接设置、账号资料和归档正文用当前 Windows 用户的 DPAPI 加密，默认保存在程序目录的 `data/`。账号库为 `accounts.dpapi`，包括凭证、代理、账号池配置和待同步修改；磁盘上不存明文凭证。SQLite 只在事务提交后确认 router 用量 / 拒答前缀。每 10 秒归档一次；写盘失败不确认删除，重复记录不重复保存，记录内容变化则停止同步。界面显示最近 200 条，数据库保存完整归档。
 
 ## 账号管理与批量导入
 
@@ -147,7 +149,7 @@ npm run pack
 npm run dist
 ```
 
-`pack` 输出 `release/win-unpacked`；`dist` 输出安装包和 ZIP。组件来源、哈希和许可随程序放入 `resources`。构建脚本从 Cargo 缓存收集 teeproxy 锁定依赖的许可文件；先在 teeproxy 源码中运行 `cargo fetch --locked`，非默认缓存目录可用 `--cargo-sources C:/path/to/registry/src` 指定。`scripts/build_icon.py` 可重新生成仓库中的程序图标。运行时无需额外 Python 包；构建依赖由 `requirements-build.txt` 和 `package-lock.json` 固定。
+`pack` 输出 `release/win-unpacked`；`dist` 只输出便携 ZIP。不要在构建目录中运行默认配置后直接发布，该运行会创建 `data/`；打包测试应使用隔离目录。组件来源、哈希和许可随程序放入 `resources`。构建脚本从 Cargo 缓存收集 teeproxy 锁定依赖的许可文件；先在 teeproxy 源码中运行 `cargo fetch --locked`，非默认缓存目录可用 `--cargo-sources C:/path/to/registry/src` 指定。`scripts/build_icon.py` 可重新生成仓库中的程序图标。运行时无需额外 Python 包；构建依赖由 `requirements-build.txt` 和 `package-lock.json` 固定。
 
 保留可选的旧版开发入口 `python app.py`，仅监听 `127.0.0.1:8910`，并检查 Host、Origin 和 CSRF token。该入口需要自行安装 Python 和 teeproxy，连接设置中必须填写实际 teeproxy.exe 路径，不能使用桌面版的 `builtin` 标记；请勿与桌面版同时使用同一数据目录。
 

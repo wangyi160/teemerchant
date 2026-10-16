@@ -36,7 +36,7 @@ class Transport:
         values = {'listen': '127.0.0.1:0', 'router': settings['router'], 'router_key_env': 'TEEMERCHANT_UNUSED'}
         for name in ('tdx_policy', 'snp_policy'):
             if settings[name]:
-                values[name] = str(Path(settings[name]).resolve(strict=True))
+                values[name] = str(self.store.policy_path(settings[name]))
         config.write_text('\n'.join(f'{key} = {json.dumps(value)}' for key, value in values.items()), encoding='utf8')
         self.process = subprocess.Popen([str(executable), 'merchant-transport', '--config', str(config)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,

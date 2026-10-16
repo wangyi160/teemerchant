@@ -1,18 +1,31 @@
 'use strict';
 const {app, BrowserWindow, Menu, Tray, nativeImage, protocol, ipcMain, dialog, clipboard} = require('electron');
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const path = require('node:path');
 const {Backend} = require('./bridge.cjs');
 const HOME = 'teemerchant://app/';
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
 protocol.registerSchemesAsPrivileged([{scheme: 'teemerchant', privileges: {standard: true, secure: true, supportFetchAPI: true}}]);
 app.setAppUserModelId('org.teerouter.teemerchant');
-// Native data is shared with the prior merchant workbench; browser caches are separate.
-const local = process.env.LOCALAPPDATA;
+// Portable storage follows the executable, independently of the working directory.
 const dataArg = process.argv.find(v => v.startsWith('--data='));
-const directory = path.resolve(dataArg ? dataArg.slice(7) : path.join(local || app.getPath('userData'), 'teemerchant'));
+const programDirectory = app.isPackaged ? path.dirname(app.getPath('exe')) : app.getAppPath();
+const directory = path.resolve(dataArg ? dataArg.slice(7) : path.join(programDirectory, 'data'));
+try {
+  if (dataArg && !path.isAbsolute(dataArg.slice(7))) throw Error('Data path must be absolute');
+  for (const suffix of ['desktop', 'desktop/crashes', 'desktop/logs']) {
+    fsSync.mkdirSync(path.join(directory, suffix), {recursive:true});
+  }
+  fsSync.accessSync(directory, fsSync.constants.W_OK);
+} catch {
+  dialog.showErrorBox('teemerchant 无法打开数据目录', '请将完整 ZIP 解压到可写文件夹后运行。数据保存在程序旁的 data 文件夹；指定 --data 时必须使用可写的绝对路径。');
+  app.exit(1);
+}
 app.setPath('userData', path.join(directory, 'desktop'));
+app.setPath('sessionData', path.join(directory, 'desktop'));
 app.setPath('crashDumps', path.join(directory, 'desktop', 'crashes'));
+app.setAppLogsPath(path.join(directory, 'desktop', 'logs'));
 let window, tray, backend, quitting = false, stopped = false;
 const haveLock = app.requestSingleInstanceLock();
 if (!haveLock) app.quit();
@@ -89,7 +102,7 @@ async function start() {
 if (haveLock) {
   app.on('second-instance', show);
   app.whenReady().then(start).catch(async () => {
-    await dialog.showMessageBox({type:'error', title:'teemerchant 无法启动', message:'无法打开商户工作台', detail:'请先关闭旧版商户工作台，并确认安装文件完整且当前 Windows 用户有权访问本地数据。'});
+    await dialog.showMessageBox({type:'error', title:'teemerchant 无法启动', message:'无法打开商户工作台', detail:'请先关闭其他使用同一数据目录的工作台，并确认 ZIP 已完整解压、程序旁的 data 文件夹可写。'});
     app.quit();
   });
   app.on('window-all-closed', () => {});
