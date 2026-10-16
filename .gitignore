@@ -15,3 +15,4 @@ release/
 .merchant.lock
 desktop-test-results/
 data/
+native/target/

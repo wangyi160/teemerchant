@@ -44,7 +44,10 @@ class Store:
         if self.path.exists():
             self.settings = json.loads(protect(self.path.read_bytes(), True))
         else:
-            self.settings = {'token': secrets.token_hex(32), 'router': '', 'tdx_policy': '', 'snp_policy': '', 'transport': '', 'minimum_revision': 0}
+            self.settings = {'token': secrets.token_hex(32), 'router': '', 'tdx_policy': '', 'snp_policy': '', 'minimum_revision': 0}
+            self.save()
+        if 'transport' in self.settings:
+            self.settings.pop('transport')
             self.save()
         self.db = sqlite3.connect(self.directory / 'records.db', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS records(kind TEXT, instance TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(kind,instance,seq))')
@@ -78,7 +81,7 @@ class Store:
         return resolved
 
     def save_connection(self, body):
-        if (not isinstance(body, dict) or set(body) != {'router', 'tdx_policy', 'snp_policy', 'transport'}
+        if (not isinstance(body, dict) or set(body) != {'router', 'tdx_policy', 'snp_policy'}
                 or any(not isinstance(v, str) or len(v) > 4096 for v in body.values())):
             raise ValueError('连接设置无效')
         with self.lock:

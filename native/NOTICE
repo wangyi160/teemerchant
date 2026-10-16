@@ -1,0 +1,13 @@
+The TDX/SNP cryptographic appraisal and attested TLS protocol were adapted from
+the MIT-licensed teeproxy verifier at revision
+75665881d39e2bfddcc52dd1268bf9ea3c45ab08:
+https://github.com/wangyi160/teeproxy
+The original license is preserved in native/LICENSE.
+
+This is teemerchant's own in-process merchant-only library. It contains no
+teeproxy executable, desktop UI, agent proxy, routing or user model API gateway.
+The teellm wire-domain and attestation endpoint remain for Router compatibility.
+
+Intel TDX uses dcap-qvl; AMD SEV-SNP uses sev and OpenSSL. Dependencies retain
+their own licenses. Public signed test fixtures include attribution and licenses
+under tests/fixtures; historical test evidence is never a production allowlist.

@@ -18,12 +18,11 @@ if(window.teemerchant){
     footer.textContent='桌面工作台 · 本地加密保存';
     document.querySelector('header').insertAdjacentHTML('beforeend',btn('收起到托盘','desktop-minimize'));
     if(section==='connection'){
-      for(const name of ['transport','tdx_policy','snp_policy']){
+      for(const name of ['tdx_policy','snp_policy']){
         const input=document.querySelector(`[name=${name}]`);
         input.insertAdjacentHTML('afterend',`<button type="button" class="secondary" data-action="desktop-file" data-id="${name}">选择文件…</button>`);
       }
-      document.querySelector('[name=transport]').insertAdjacentHTML('afterend','<button type="button" class="secondary" data-action="desktop-builtin">使用内置组件</button>');
-      const note=document.createElement('p');note.className='muted';note.textContent='验证组件已内置。保存连接时，所选 TEE 策略会复制到程序旁的 data/policies；配置、账号和账单也保存在 data 中。请选择你审核过的信任策略。';
+      const note=document.createElement('p');note.className='muted';note.textContent='teemerchant 会直接验证 Router 的 TEE。保存连接时，所选信任策略会复制到程序旁的 data/policies；配置、账号和账单也保存在 data 中。';
       document.querySelector('#connection').append(note);
     }
   };
@@ -35,7 +34,6 @@ if(window.teemerchant){
         if(selected)document.querySelector(`[name=${button.dataset.id}]`).value=selected;
       }
       if(button.dataset.action==='desktop-minimize')await window.teemerchant.minimize();
-      if(button.dataset.action==='desktop-builtin')document.querySelector('[name=transport]').value='builtin';
     }catch(error){toast(error.message);}
   });
 }

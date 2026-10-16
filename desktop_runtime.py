@@ -29,7 +29,7 @@ class DataLock:
 
 
 class ChildJob:
-    """Closing/crashing the engine also terminates its private TEE transport child."""
+    """Keep any future engine subprocesses within its Windows lifetime boundary."""
     def __init__(self):
         size = ctypes.c_size_t
         class Basic(ctypes.Structure):

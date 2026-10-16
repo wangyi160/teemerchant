@@ -29,7 +29,7 @@ test('desktop account workflow, persistent identity, IPC isolation and tray life
     assert.equal(denied.ok,false);
     assert.equal(await page.evaluate(()=>fetch('https://example.com').then(()=>false,()=>true)),true);
     const initial=await page.evaluate(()=>window.teemerchant.request('GET','/api/state'));
-    assert.equal(initial.value.settings.transport,'builtin');
+    assert.equal(initial.value.settings.transport,undefined);
     // No HTTP listener is created by Electron or its private management engine.
     const pid=await app.evaluate(()=>process.pid);
     // Playwright itself starts inspector/CDP listeners; inspect only the private engine here.

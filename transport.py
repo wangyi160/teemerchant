@@ -1,25 +1,76 @@
-"""Use teeproxy's private merchant pipe. Never send a credential through ordinary HTTP."""
+"""Merchant-only attested TLS, implemented in-process by teemerchant's native library."""
+import ctypes
 import json
 from pathlib import Path
-import subprocess
+import sys
 import threading
 from urllib.parse import urlsplit
 
+
+def library_path():
+    if getattr(sys, 'frozen', False):
+        return Path(sys._MEIPASS) / 'teemerchant_attestation.dll'
+    return Path(__file__).resolve().parent / 'native' / 'target' / 'release' / 'teemerchant_attestation.dll'
+
+
+class NativeClient:
+    def __init__(self, config):
+        self.handle = 0
+        try:
+            self.library = ctypes.CDLL(str(library_path().resolve(strict=True)))
+        except OSError:
+            raise RuntimeError('内置 TEE 模块无法加载，请重新解压完整的 teemerchant ZIP') from None
+        lib = self.library
+        lib.tm_abi_version.argtypes, lib.tm_abi_version.restype = [], ctypes.c_uint32
+        lib.tm_create.argtypes, lib.tm_create.restype = [ctypes.c_void_p, ctypes.c_size_t], ctypes.c_void_p
+        lib.tm_request.argtypes, lib.tm_request.restype = [ctypes.c_uint64, ctypes.c_void_p, ctypes.c_size_t], ctypes.c_void_p
+        lib.tm_close.argtypes, lib.tm_close.restype = [ctypes.c_uint64], None
+        lib.tm_free_response.argtypes, lib.tm_free_response.restype = [ctypes.c_void_p], None
+        if lib.tm_abi_version() != 1:
+            raise RuntimeError('内置 TEE 模块版本不匹配，请重新解压完整的 teemerchant ZIP')
+        result = self.invoke(lib.tm_create, config)
+        if type(result.get('handle')) is not int or result['handle'] <= 0:
+            raise RuntimeError('Router 地址或本地 TEE 信任策略无效，请选择经过审核的发布策略')
+        self.handle = result['handle']
+
+    def invoke(self, function, body, *prefix):
+        raw = json.dumps(body, separators=(',', ':')).encode('utf-8')
+        if len(raw) > 20 * 1024 * 1024:
+            raise ValueError('商户请求过大')
+        buffer = ctypes.create_string_buffer(raw)
+        try:
+            pointer = function(*prefix, buffer, len(raw))
+            if not pointer:
+                raise RuntimeError('内置 TEE 模块响应无效')
+            try:
+                result = json.loads(ctypes.string_at(pointer))
+                if not isinstance(result, dict):
+                    raise RuntimeError('内置 TEE 模块响应无效')
+                return result
+            finally:
+                self.library.tm_free_response(pointer)
+        finally:
+            ctypes.memset(buffer, 0, len(buffer))
+
+    def request(self, body):
+        return self.invoke(self.library.tm_request, body, self.handle)
+
+    def close(self):
+        if self.handle:
+            self.library.tm_close(self.handle)
+            self.handle = 0
+
+
 class Transport:
-    def __init__(self, store, bundled_transport=None):
-        self.store, self.process = store, None
-        self.bundled_transport = bundled_transport
+    def __init__(self, store):
+        self.store, self.client = store, None
         self.lock = threading.RLock()
 
     def close(self):
         with self.lock:
-            if self.process:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                self.process = None
+            if self.client:
+                self.client.close()
+                self.client = None
 
     def start(self):
         settings = self.store.settings
@@ -28,50 +79,22 @@ class Transport:
             raise ValueError('请填写 Router 的 HTTPS 根地址')
         if not settings['tdx_policy'] and not settings['snp_policy']:
             raise ValueError('请选择独立审核的 TEE 发布策略')
-        selected = self.bundled_transport if settings['transport'] == 'builtin' else settings['transport']
-        if not selected:
-            raise ValueError('内置验证组件仅在桌面版提供，请选择 teeproxy.exe')
-        executable = Path(selected).resolve(strict=True)
-        config = self.store.directory / 'transport.toml'
-        values = {'listen': '127.0.0.1:0', 'router': settings['router'], 'router_key_env': 'TEEMERCHANT_UNUSED'}
+        config = {'endpoint': settings['router']}
         for name in ('tdx_policy', 'snp_policy'):
-            if settings[name]:
-                values[name] = str(self.store.policy_path(settings[name]))
-        config.write_text('\n'.join(f'{key} = {json.dumps(value)}' for key, value in values.items()), encoding='utf8')
-        self.process = subprocess.Popen([str(executable), 'merchant-transport', '--config', str(config)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW)
-        if self.read() != {'ready': True, 'scope': 'merchant'}:
-            self.close()
-            raise RuntimeError('商户验证组件未就绪，请使用支持商户通道的 teeproxy')
-
-    def read(self):
-        process = self.process
-        timer = threading.Timer(120, process.kill)
-        timer.daemon = True
-        timer.start()
-        try:
-            line = process.stdout.readline(40 * 1024 * 1024 + 1)
-            if not line.endswith(b'\n') or len(line) > 40 * 1024 * 1024:
-                raise RuntimeError('TEE 管理连接中断；写入结果未知，请查询状态后再重试')
-            return json.loads(line)
-        finally:
-            timer.cancel()
+            config[name] = str(self.store.policy_path(settings[name])) if settings[name] else None
+        self.client = NativeClient(config)
 
     def call(self, method, path, body=None):
         with self.lock:
-            if self.process is None or self.process.poll() is not None:
-                self.close()
+            if self.client is None:
                 self.start()
-            request = {'method': method, 'path': path, 'token': self.store.settings['token'], 'body': body}
             try:
-                self.process.stdin.write(json.dumps(request, separators=(',', ':')).encode() + b'\n')
-                self.process.stdin.flush()
-                result = self.read()
-            except (BrokenPipeError, OSError, ValueError):
+                result = self.client.request({'method':method,'path':path,'token':self.store.settings['token'],'body':body})
+            except Exception:
                 self.close()
-                raise RuntimeError('TEE 管理连接中断；没有自动重发写入') from None
+                raise RuntimeError('TEE 管理连接失败；没有自动重发写入，请查询状态后再重试') from None
             if 'error' in result:
+                self.close()
                 raise RuntimeError('TEE 验证或管理连接失败：' + str(result['error']))
             if result['status'] >= 300:
                 error = result['body'].get('error', {})

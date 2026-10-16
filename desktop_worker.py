@@ -1,9 +1,7 @@
 """Private JSON-lines pipe for Electron. Never starts a web server or opens a port."""
 import argparse
-import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
-from pathlib import Path
 import sys
 import threading
 
@@ -33,7 +31,7 @@ def serve(application, source, sink):
         except (ValueError, RuntimeError) as error:
             send({'id': request['id'], 'error': str(error)})
         except Exception:
-            send({'id': request['id'], 'error': '本地管理操作失败，请检查配置与验证组件'})
+            send({'id': request['id'], 'error': '本地管理操作失败，请检查连接配置'})
         finally:
             slots.release()
 
@@ -71,23 +69,13 @@ def serve(application, source, sink):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', required=True)
-    parser.add_argument('--bundled-transport')
     args = parser.parse_args()
     job = ChildJob()
     lock = DataLock(args.data)
     store = None
     try:
         store = Store(args.data)
-        bundled = str(Path(args.bundled_transport).resolve(strict=True)) if args.bundled_transport else None
-        selected = store.settings['transport']
-        equivalent = False
-        if bundled and selected and selected != 'builtin' and Path(selected).is_file():
-            equivalent = hashlib.sha256(Path(selected).read_bytes()).digest() == hashlib.sha256(Path(bundled).read_bytes()).digest()
-        # Relocatable built-in component; preserve a different explicitly selected verifier.
-        if bundled and (not selected or equivalent):
-            store.settings['transport'] = 'builtin'
-            store.save()
-        serve(Application(store, Transport(store, bundled)), sys.stdin.buffer, sys.stdout.buffer)
+        serve(Application(store, Transport(store)), sys.stdin.buffer, sys.stdout.buffer)
     finally:
         if store:
             store.db.close()

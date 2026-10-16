@@ -9,6 +9,23 @@ from transport import Transport
 
 
 class PortableTests(unittest.TestCase):
+    def test_legacy_transport_path_removed_without_changing_identity_or_archives(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = Store(temporary)
+            identity = store.enrollment()
+            store.settings.update(transport='C:/obsolete/teeproxy.exe', minimum_revision=17)
+            store.save()
+            store.archive('usage', 'fixture', [{'seq':1,'event':{'user_id':'fixture'}}])
+            store.db.close()
+            reopened = Store(temporary)
+            try:
+                self.assertNotIn('transport', reopened.settings)
+                self.assertEqual(reopened.enrollment(), identity)
+                self.assertEqual(reopened.settings['minimum_revision'], 17)
+                self.assertEqual(len(reopened.records('usage')), 1)
+            finally:
+                reopened.db.close()
+
     def test_policies_and_identity_survive_directory_move_and_external_file_removal(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -19,7 +36,7 @@ class PortableTests(unittest.TestCase):
             policy.write_bytes(raw)
             store = Store(original)
             identity = store.enrollment()
-            store.save_connection({'router':'https://router.example', 'transport':'builtin',
+            store.save_connection({'router':'https://router.example',
                                    'tdx_policy':str(policy), 'snp_policy':''})
             relative = store.settings['tdx_policy']
             self.assertFalse(Path(relative).is_absolute())
@@ -36,12 +53,12 @@ class PortableTests(unittest.TestCase):
                 self.assertEqual(len(store.records('usage')), 1)
                 self.assertEqual(store.policy_path(relative).read_bytes(), raw)
                 # Transport resolves stored relative paths against data, never CWD.
-                with patch('transport.subprocess.Popen'), patch.object(Transport, 'read', return_value={'ready':True,'scope':'merchant'}):
-                    transport = Transport(store, bundled_transport=__file__)
+                with patch('transport.NativeClient') as native:
+                    transport = Transport(store)
                     transport.start()
-                config = (relocated / 'transport.toml').read_text(encoding='utf-8')
-                self.assertIn(json.dumps(str((relocated / relative).resolve())), config)
-                self.assertNotIn(str(original), config)
+                    self.assertEqual(native.call_args.args[0]['tdx_policy'], str((relocated / relative).resolve()))
+                    self.assertFalse((relocated / 'transport.toml').exists())
+                    transport.close()
             finally:
                 store.db.close()
 
@@ -51,7 +68,7 @@ class PortableTests(unittest.TestCase):
             policy = root / 'policy.json'
             policy.write_text('{"version":1}')
             store = Store(root / 'data')
-            body = {'router':'https://router.example','transport':'builtin','tdx_policy':str(policy),'snp_policy':''}
+            body = {'router':'https://router.example','tdx_policy':str(policy),'snp_policy':''}
             store.save_connection(body)
             previous = store.settings.copy()
             old_bytes = store.policy_path(previous['tdx_policy']).read_bytes()

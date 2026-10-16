@@ -42,8 +42,7 @@ async function start() {
   const assets = path.join(app.getAppPath(), 'static');
   const resources = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'build', 'resources');
   const executable = path.join(resources, 'engine', 'teemerchant-engine.exe');
-  const bundled = path.join(resources, 'transport', 'teeproxy.exe');
-  backend = new Backend(executable, ['--data', directory, '--bundled-transport', bundled]);
+  backend = new Backend(executable, ['--data', directory]);
   await backend.ready;
   protocol.handle('teemerchant', async request => {
     const url = new URL(request.url);
@@ -77,9 +76,9 @@ async function start() {
   });
   ipcMain.handle('merchant:choose-file', async (event, kind) => {
     trusted(event);
-    if (!['tdx_policy','snp_policy','transport'].includes(kind)) throw Error('不支持的文件类型');
-    const result = await dialog.showOpenDialog(window, {title:kind==='transport'?'选择 TEE 验证组件':'选择已审核的 TEE 信任策略',
-      properties:['openFile'], filters:[kind==='transport'?{name:'Windows 程序',extensions:['exe']}:{name:'JSON 策略',extensions:['json']}]});
+    if (!['tdx_policy','snp_policy'].includes(kind)) throw Error('不支持的文件类型');
+    const result = await dialog.showOpenDialog(window, {title:'选择已审核的 TEE 信任策略',
+      properties:['openFile'], filters:[{name:'JSON 策略',extensions:['json']}]});
     return result.canceled ? null : result.filePaths[0];
   });
   ipcMain.handle('merchant:copy-text', (event, text) => { trusted(event); if (typeof text !== 'string' || text.length > 1024*1024) throw Error('复制内容过大'); clipboard.writeText(text); });
