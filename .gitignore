@@ -8,3 +8,9 @@ dist/
 *.dpapi
 transport.toml
 *.tmp
+node_modules/
+build/
+release/
+*.spec
+.merchant.lock
+desktop-test-results/

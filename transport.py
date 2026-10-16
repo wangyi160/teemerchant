@@ -6,8 +6,9 @@ import threading
 from urllib.parse import urlsplit
 
 class Transport:
-    def __init__(self, store):
+    def __init__(self, store, bundled_transport=None):
         self.store, self.process = store, None
+        self.bundled_transport = bundled_transport
         self.lock = threading.RLock()
 
     def close(self):
@@ -27,7 +28,10 @@ class Transport:
             raise ValueError('请填写 Router 的 HTTPS 根地址')
         if not settings['tdx_policy'] and not settings['snp_policy']:
             raise ValueError('请选择独立审核的 TEE 发布策略')
-        executable = Path(settings['transport']).resolve(strict=True)
+        selected = self.bundled_transport if settings['transport'] == 'builtin' else settings['transport']
+        if not selected:
+            raise ValueError('内置验证组件仅在桌面版提供，请选择 teeproxy.exe')
+        executable = Path(selected).resolve(strict=True)
         config = self.store.directory / 'transport.toml'
         values = {'listen': '127.0.0.1:0', 'router': settings['router'], 'router_key_env': 'TEEMERCHANT_UNUSED'}
         for name in ('tdx_policy', 'snp_policy'):

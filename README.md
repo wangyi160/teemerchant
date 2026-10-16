@@ -1,19 +1,17 @@
-# TEE Merchant
+# teemerchant
 
-Windows 上运行的独立商户工作台。左侧导航包括账号与模型、客户授权、限速、收入、调用记录、拒答记录和连接与身份。界面由本机 HTTP 服务提供，在浏览器打开；用户代理 teeproxy 仍是独立的 Windows 原生程序。
+Windows Electron 商户桌面工作台，采用 MIT 开源许可。左侧导航包括账号与模型、客户授权、限速、收入、调用记录、拒答记录和连接与身份。用户代理 [teeproxy](https://github.com/wangyi160/teeproxy) 仍是独立程序。
 
-## 启动
+## 安装和使用
 
-安装 Python 3.12+ 和包含 `merchant-transport` 的 teeproxy，然后运行：
+从 [Releases](https://github.com/wangyi160/teemerchant/releases) 下载 Windows x64 安装包，安装后打开桌面上的 teemerchant。也可解压 ZIP 后运行 `teemerchant.exe`，请保留解压目录中的其他文件。安装包内置管理引擎、Python 运行库及 teeproxy TEE 验证组件；使用者无需安装 Python、Node.js 或单独启动服务器。
 
-```powershell
-python app.py
-```
+窗口关闭后继续在系统托盘运行；点击托盘图标恢复窗口，通过托盘菜单的“退出”结束程序。已有商户启动时会使用保存的连接设置和信任策略尝试连接一次；失败后仍可离线管理本地账号，并在“连接与身份”中重试。待同步的账号修改不会因重新打开程序而自动重发。程序不提供本地 HTTP 服务，界面通过受限 IPC 和私有进程管道访问管理引擎。此版本的 Windows 安装包尚未进行代码签名，发布页同时提供 SHA-256 校验文件。
 
-工作台默认打开 `http://127.0.0.1:8910`。仅监听本机，检查 Host、Origin 和页面 CSRF token。可用 `--port` 改端口、`--data` 指定数据目录、`--no-browser` 不打开窗口。运行时无第三方 Python 依赖。
+旧版本升级时，先关闭原来的 Python 商户服务。桌面版自动沿用 `%LOCALAPPDATA%/teemerchant` 中当前 Windows 用户的身份、连接设置、加密账号库和账单归档，不需要重新登记商户。程序对数据目录加锁，避免两个工作台同时写入。可用 `--data=绝对路径` 指定另一个数据目录；不同目录代表不同的本地商户身份。卸载程序保留本地商户资料。
 
-1. 在“连接与身份”填 Router HTTPS 地址、teeproxy.exe 路径和自己审核的 TDX 或 SNP 策略文件路径。
-2. 复制公开登记信息给平台管理员。平台登记商户和允许接入的用户；不要发送私钥或上游凭证给平台管理员。
+1. 在“连接与身份”填写 Router HTTPS 地址，并选择自己审核的 TDX 或 SNP 策略文件。默认使用内置验证组件，也可指定兼容的 teeproxy.exe；实际支持的证明类型取决于验证组件的编译特性。
+2. 新商户复制公开登记信息（商户 ID 和密钥摘要），在 Router Portal 提交商户申请，等待平台管理员审核。已有商户继续使用原身份；不要发送私钥或上游凭证给平台管理员。
 3. 点击“验证 TEE”和“连接商户”，先创建账号池并设置服务类型与倍率，再向池内添加官方账号、设置默认客户权限。
 
 “客户授权”只显示实际调用过本商户模型账号的用户，不显示平台预授权名单。首次调用须已获平台授权，并受默认客户权限及限额约束；调用后可单独调整权限、限速或停用。查询模型列表不会新增客户。已使用关系独立保存，归档和清空调用队列不会令客户消失。
@@ -130,15 +128,40 @@ xai 账号池支持 Grok 的原生 OAuth 缓存 JSON。单个账号选择“OAut
 
 当前身份绑定 Windows 用户，本版尚无跨设备密钥迁移界面。保护 Windows 用户配置与 DPAPI 恢复材料；丢失身份会无法解锁商户恢复胶囊。商户费率不是签名金融凭证，记录用于外部账务与审计。更多边界和 API 见 [teerouter 多商户文档](https://github.com/wangyi160/teerouter/blob/main/docs/MERCHANTS.md)。
 
+## 源码开发与构建
+
+构建环境：Windows x64、Python 3.12+、Node.js 22+。应用通过 [Electron IPC](https://www.electronjs.org/docs/latest/tutorial/ipc) 调用管理引擎；渲染进程启用沙箱、上下文隔离和严格 CSP，不提供 Node.js 或任意网络访问。原有业务模块由 PyInstaller 打包；账号管理、DPAPI 存储与 TEE 通道复用同一套实现。管理引擎退出时，其 Windows Job Object 会结束关联的 TEE 传输子进程。
+
+```powershell
+python -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements-build.txt
+npm ci
+```
+
+先从 [teeproxy](https://github.com/wangyi160/teeproxy) 的已审阅版本准备 Windows x64 验证组件和对应源码。独立核对二进制 SHA-256 后传给构建脚本；不要仅复制未经审核的二进制并把本地计算值当作可信依据。此发行版内置 teeproxy v0.14.1（源码 `75665881d39e2bfddcc52dd1268bf9ea3c45ab08`），二进制 SHA-256 为 `ebe04e9967b599b9cd92233f3e1767d25fdfc80e239149058fb07ed54f26d3f4`。
+
+```powershell
+.venv/Scripts/python.exe scripts/build_engine.py --teeproxy C:/build/teeproxy.exe --teeproxy-source C:/src/teeproxy --teeproxy-sha256 <已核对的SHA256>
+npm start
+npm run pack
+npm run dist
+```
+
+`pack` 输出 `release/win-unpacked`；`dist` 输出安装包和 ZIP。组件来源、哈希和许可随程序放入 `resources`。构建脚本从 Cargo 缓存收集 teeproxy 锁定依赖的许可文件；先在 teeproxy 源码中运行 `cargo fetch --locked`，非默认缓存目录可用 `--cargo-sources C:/path/to/registry/src` 指定。`scripts/build_icon.py` 可重新生成仓库中的程序图标。运行时无需额外 Python 包；构建依赖由 `requirements-build.txt` 和 `package-lock.json` 固定。
+
+保留可选的旧版开发入口 `python app.py`，仅监听 `127.0.0.1:8910`，并检查 Host、Origin 和 CSRF token。该入口需要自行安装 Python 和 teeproxy，连接设置中必须填写实际 teeproxy.exe 路径，不能使用桌面版的 `builtin` 标记；请勿与桌面版同时使用同一数据目录。
+
 ## 验证
 
 ```powershell
-python -m unittest -v
-node --check static/app.js
-node --check static/account-ui.js
-node --test test_accounts.cjs
+.venv/Scripts/python.exe -m unittest -v
+npm test
+npm run test:desktop
+# 可选：验证已经打包的程序
+$env:TEEMERCHANT_TEST_EXE = "$PWD/release/win-unpacked/teemerchant.exe"
+npm run test:desktop
 ```
 
-测试包括 DPAPI 持久化、归档先于确认、重复归档、写盘失败、身份与版本回退拒绝。TEE / TLS 传输测试位于 teeproxy；多商户权限、统一 key、价格、备份和隔离测试位于 teerouter。测试使用受控上游，不代表真实账号或生产审计。
+测试包括 DPAPI 持久化、归档先于确认、重复归档、写盘失败、身份与版本回退拒绝，以及桌面进程生命周期、IPC 路径限制、账号编辑、批量导入、收入显示、重启恢复和托盘操作。桌面测试需要先构建管理引擎，使用临时目录及测试凭证，不连接真实 Router。TEE / TLS 传输测试位于 teeproxy；多商户权限、统一 key、价格、备份和隔离测试位于 teerouter。测试使用受控上游，不代表真实账号或生产审计。
 
 账号配置测试覆盖批量校验、凭证保留及轮换、旧倍率保留、账号移动、共享凭证与别名冲突。本地账号库测试验证先落盘后发送、磁盘失败不发送、远端失败保留修改、重启和离线读取、Router 隔离、恢复范围及本地版本冲突。可选浏览器测试 `python -m unittest -v test_browser` 需要 Playwright 和 Microsoft Edge，使用独立临时目录及模拟 Router，不修改真实商户账号。

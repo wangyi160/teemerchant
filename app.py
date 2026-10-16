@@ -195,6 +195,8 @@ def main():
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         parser.error('port must be 1024..65535')
+    from desktop_runtime import DataLock
+    data_lock = DataLock(args.data)
     application = Application(Store(args.data))
     origin = f'http://127.0.0.1:{args.port}'
     server = ThreadingHTTPServer(('127.0.0.1', args.port), handler(application, origin))
@@ -210,6 +212,8 @@ def main():
         stop.set()
         application.transport.close()
         server.server_close()
+        application.store.db.close()
+        data_lock.close()
 
 if __name__ == '__main__':
     main()

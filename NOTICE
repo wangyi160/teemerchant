@@ -1,0 +1,19 @@
+teemerchant is distributed under the MIT license in LICENSE.
+
+The desktop distribution bundles Electron (MIT) and Chromium and Node.js components
+under their respective licenses. Electron's LICENSE.electron.txt and
+LICENSES.chromium.html are included by the desktop packager.
+
+The private merchant engine bundles CPython and standard-library components.
+CPython is under the Python Software Foundation license. The bundled Python
+distribution includes its license; PyInstaller is GPL-2.0-or-later with a bootloader
+exception allowing distribution of applications under their own license.
+
+The TEE transport is built from the open-source teeproxy project:
+https://github.com/wangyi160/teeproxy
+Its LICENSE, NOTICE, dependency lockfile and source revision accompany the binary
+under resources/transport. Its dependencies retain their own licenses; locked-crate
+license files and a manifest are included under resources/transport/dependency-notices.
+
+No merchant identities, account credentials, TEE trust policies or deployment
+configuration are included in a public desktop release.

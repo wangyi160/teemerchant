@@ -1,0 +1,35 @@
+{
+  "name": "teemerchant",
+  "version": "0.1.0",
+  "description": "Local merchant desktop workbench for TEE Router",
+  "author": "teemerchant contributors",
+  "license": "MIT",
+  "repository": {"type": "git", "url": "https://github.com/wangyi160/teemerchant.git"},
+  "main": "desktop/main.cjs",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/start.cjs",
+    "build:engine": "python scripts/build_engine.py",
+    "test": "node --test test_accounts.cjs desktop/test_bridge.cjs",
+    "test:desktop": "node --test desktop/test_desktop.cjs",
+    "pack": "electron-builder --dir --win --x64",
+    "dist": "electron-builder --win nsis zip --x64"
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "electron-builder": "26.15.3",
+    "playwright-core": "1.64.1"
+  },
+  "build": {
+    "appId": "org.teerouter.teemerchant",
+    "productName": "teemerchant",
+    "copyright": "Copyright © 2026 teemerchant contributors",
+    "asar": true,
+    "directories": {"output": "release", "buildResources": "desktop/assets"},
+    "files": ["desktop/*.cjs", "!desktop/test_*.cjs", "desktop/assets/icon.png", "static/**", "package.json", "LICENSE", "NOTICE", "README.md"],
+    "extraResources": [{"from": "build/resources", "to": ".", "filter": ["**/*"]}],
+    "win": {"icon": "desktop/assets/icon.ico", "target": ["nsis", "zip"], "artifactName": "teemerchant-${version}-windows-${arch}.${ext}"},
+    "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "deleteAppDataOnUninstall": false, "artifactName": "teemerchant-${version}-windows-${arch}-setup.${ext}"},
+    "publish": null
+  }
+}
