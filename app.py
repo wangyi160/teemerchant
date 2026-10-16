@@ -10,7 +10,6 @@ from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
 from transport import Transport
-from portal_client import bind_workstation
 
 ROOT = Path(__file__).parent
 
@@ -81,8 +80,12 @@ class Application:
             return self._api(method, path, body)
 
     def _api(self, method, path, body):
-        if (method, path) == ('POST', '/api/portal/bind'):
-            return bind_workstation(self.store, body)
+        if (method, path) == ('POST', '/api/credentials'):
+            self.store.import_credentials(body)
+            self.transport.close()
+            self.remote = self.store.accounts.view(self.store.settings['router'])
+            self.connected = False
+            return {'saved': True, 'merchant_id': self.store.enrollment()['id']}
         url = urlsplit(path)
         if method == 'GET' and url.path == '/api/revenue':
             return self.store.revenue(url.query)

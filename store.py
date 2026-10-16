@@ -4,6 +4,7 @@ from ctypes import wintypes
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -66,6 +67,35 @@ class Store:
 
     def public(self):
         return {k: v for k, v in self.settings.items() if k not in ('token', 'default_multiplier_millionths')}
+
+    def import_credentials(self, body):
+        if (not isinstance(body, dict) or set(body) != {'merchant_id', 'merchant_secret'}
+                or not all(isinstance(v, str) for v in body.values())
+                or not re.fullmatch(r'm_[a-f0-9]{32}', body['merchant_id'])
+                or not re.fullmatch(r'[a-f0-9]{64}', body['merchant_secret'])):
+            raise ValueError('请填写平台签发的 Merchant ID 和 Merchant Secret')
+        digest = hashlib.sha256(body['merchant_secret'].encode()).hexdigest()
+        if not secrets.compare_digest(body['merchant_id'], 'm_' + digest[:32]):
+            raise ValueError('Merchant ID 与 Merchant Secret 不匹配')
+        with self.lock:
+            same = secrets.compare_digest(self.settings['token'], body['merchant_secret'])
+            # A new empty profile has no account file. Changing only the atomic
+            # settings file makes initial import crash-safe; never rewrite a vault.
+            if not same and (self.accounts.path.exists() or self.accounts.data['routers']
+                             or self.settings['minimum_revision']
+                             or self.db.execute('SELECT 1 FROM records LIMIT 1').fetchone()):
+                raise ValueError('本机已有商户资料，不能替换为其他商户身份；请使用原 Merchant ID 和 Merchant Secret')
+            previous = self.settings.copy()
+            self.settings['token'] = body['merchant_secret']
+            self.settings.pop('portal_url', None)
+            self.settings.pop('portal_username', None)
+            try:
+                self.save()
+            except Exception:
+                self.settings = previous
+                raise
+            if not same:
+                self.accounts = AccountBook(self.directory, body['merchant_id'], protect)
 
     def archive(self, kind, instance, rows):
         with self.lock, self.db:

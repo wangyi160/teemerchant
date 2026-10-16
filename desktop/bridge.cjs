@@ -6,7 +6,7 @@ const MAX = 40 * 1024 * 1024;
 function validateRequest(method, path, body = {}) {
   const fixed = new Set(['GET /api/state', 'PUT /api/settings', 'POST /api/verify', 'POST /api/connect',
     'GET /api/merchant', 'PUT /api/config', 'POST /api/config/sync', 'POST /api/refresh',
-    'POST /api/sync', 'GET /api/records/usage', 'GET /api/records/refusals', 'POST /api/portal/bind']);
+    'POST /api/sync', 'GET /api/records/usage', 'GET /api/records/refusals', 'POST /api/credentials']);
   if (typeof method !== 'string' || typeof path !== 'string' || path.length > 4096 || !body ||
       typeof body !== 'object' || Array.isArray(body)) throw Error('无效的桌面操作');
   if (!fixed.has(`${method} ${path}`) && !(method === 'GET' &&
