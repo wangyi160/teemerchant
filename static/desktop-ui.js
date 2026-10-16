@@ -22,7 +22,7 @@ if(window.teemerchant){
         const input=document.querySelector(`[name=${name}]`);
         input.insertAdjacentHTML('afterend',`<button type="button" class="secondary" data-action="desktop-file" data-id="${name}">选择文件…</button>`);
       }
-      const note=document.createElement('p');note.className='muted';note.textContent='teemerchant 会直接验证 Router 的 TEE。保存连接时，所选信任策略会复制到程序旁的 data/policies；配置、账号和账单也保存在 data 中。';
+      const note=document.createElement('p');note.className='muted';note.textContent='teemerchant 会直接验证 Router 的 TEE。所选信任策略、配置、账号和账单都保存在程序旁的 data 中，按商户隔离。';
       document.querySelector('#connection').append(note);
     }
   };

@@ -69,9 +69,9 @@ async function start() {
   window.webContents.on('will-attach-webview', event => event.preventDefault());
   // Downloaded import examples use a native save dialog, never an automatic file write.
   session.on('will-download', (_event, item) => item.setSaveDialogOptions({title:'保存账号导入示例', defaultPath:'merchant-accounts.example.json', filters:[{name:'JSON',extensions:['json']}]}));
-  ipcMain.handle('merchant:request', async (event, method, route, body) => {
+  ipcMain.handle('merchant:request', async (event, method, route, body, identity) => {
     trusted(event);
-    try { return {ok:true, value:await backend.call(method, route, body)}; }
+    try { return {ok:true, value:await backend.call(method, route, body, identity)}; }
     catch (error) { return {ok:false, error:error.message}; }
   });
   ipcMain.handle('merchant:choose-file', async (event, kind) => {

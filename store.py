@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import secrets
 import sqlite3
+import tempfile
 import threading
 from local_accounts import AccountBook
 from revenue import RevenueIndex
@@ -36,8 +37,15 @@ def protect(value, decrypt=False):
         kernel.LocalFree(target.data)
 
 class Store:
-    def __init__(self, directory):
-        self.directory = Path(directory).resolve()
+    def __init__(self, directory, *, _profile=False):
+        self.root_directory = Path(directory).resolve()
+        self.directory = self.root_directory
+        selection = self.root_directory / 'active-merchant.json'
+        if not _profile and selection.exists():
+            identity = json.loads(selection.read_text(encoding='utf-8'))['merchant_id']
+            self.directory = self._profile_directory(identity)
+            if not (self.directory / 'settings.dpapi').is_file():
+                raise ValueError('当前商户资料缺失，请恢复完整 data 目录')
         self.directory.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
         self.path = self.directory / 'settings.dpapi'
@@ -49,11 +57,82 @@ class Store:
         if 'transport' in self.settings:
             self.settings.pop('transport')
             self.save()
+        if not _profile and selection.exists() and self.enrollment()['id'] != identity:
+            raise ValueError('当前商户资料的身份不一致')
+        self.accounts = AccountBook(self.directory, self.enrollment()['id'], protect)
         self.db = sqlite3.connect(self.directory / 'records.db', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS records(kind TEXT, instance TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(kind,instance,seq))')
         self.db.commit()
         self.revenue_index = RevenueIndex()
-        self.accounts = AccountBook(self.directory, self.enrollment()['id'], protect)
+
+    def _profile_directory(self, identity):
+        if not isinstance(identity, str) or not re.fullmatch(r'm_[a-f0-9]{32}', identity):
+            raise ValueError('商户 ID 无效')
+        legacy = self.root_directory / 'settings.dpapi'
+        if legacy.exists():
+            settings = json.loads(protect(legacy.read_bytes(), True))
+            if 'm_' + hashlib.sha256(settings['token'].encode()).hexdigest()[:32] == identity:
+                return self.root_directory
+        directory = (self.root_directory / 'merchants' / identity).resolve()
+        if not directory.is_relative_to(self.root_directory):
+            raise ValueError('商户资料路径无效')
+        return directory
+
+    def profiles(self):
+        """Only identity metadata is exposed; each vault and ledger stays private."""
+        with self.lock:
+            paths = [self.root_directory / 'settings.dpapi']
+            paths.extend(sorted((self.root_directory / 'merchants').glob('m_*/settings.dpapi')))
+            result = []
+            for path in paths:
+                if not path.exists():
+                    continue
+                settings = json.loads(protect(path.read_bytes(), True))
+                if not settings.get('credentials_saved', bool(settings.get('token'))):
+                    continue
+                identity = 'm_' + hashlib.sha256(settings['token'].encode()).hexdigest()[:32]
+                if path.parent != self._profile_directory(identity):
+                    raise ValueError('已保存的商户资料身份不一致')
+                result.append({'merchant_id': identity, 'active': identity == self.enrollment()['id']})
+            return result
+
+    def _activate(self, candidate):
+        """Commit the selection only after the target vault and database open.
+
+        Existing root-layout data remains untouched. A crash before the atomic
+        pointer write retains the old identity; afterwards restart opens the new
+        one. No credentials or pending changes are moved between identities.
+        """
+        try:
+            selection = self.root_directory / 'active-merchant.json'
+            tmp = selection.with_suffix('.tmp')
+            with tmp.open('w', encoding='utf-8') as file:
+                json.dump({'merchant_id': candidate.enrollment()['id']}, file)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(tmp, selection)
+        except Exception:
+            candidate.db.close()
+            raise
+        previous_db = self.db
+        for field in ('directory', 'path', 'settings', 'accounts', 'db', 'revenue_index'):
+            setattr(self, field, getattr(candidate, field))
+        previous_db.close()
+
+    def switch_profile(self, body):
+        if not isinstance(body, dict) or set(body) != {'merchant_id'}:
+            raise ValueError('请选择已保存的商户')
+        with self.lock:
+            directory = self._profile_directory(body['merchant_id'])
+            if not (directory / 'settings.dpapi').is_file():
+                raise ValueError('本机尚未保存该商户，请先添加接入凭证')
+            if body['merchant_id'] == self.enrollment()['id']:
+                return
+            candidate = Store(directory, _profile=True)
+            if candidate.enrollment()['id'] != body['merchant_id'] or not candidate.credentials()['saved']:
+                candidate.db.close()
+                raise ValueError('已保存的商户资料身份不一致')
+            self._activate(candidate)
 
     def save(self):
         with self.lock:
@@ -138,12 +217,32 @@ class Store:
             raise ValueError('Merchant ID 与 Merchant Secret 不匹配')
         with self.lock:
             same = secrets.compare_digest(self.settings['token'], body['merchant_secret'])
-            # A new empty profile has no account file. Changing only the atomic
-            # settings file makes initial import crash-safe; never rewrite a vault.
-            if not same and (self.accounts.path.exists() or self.accounts.data['routers']
+            # Only the initial, unused placeholder identity can be replaced in
+            # place. Saved merchants always keep their own encrypted files.
+            if not same and (self.credentials()['saved'] or self.accounts.path.exists() or self.accounts.data['routers']
                              or self.settings['minimum_revision']
                              or self.db.execute('SELECT 1 FROM records LIMIT 1').fetchone()):
-                raise ValueError('本机已有商户资料，不能替换为其他商户身份；请使用原 Merchant ID 和 Merchant Secret')
+                directory = self._profile_directory(body['merchant_id'])
+                if (directory / 'settings.dpapi').exists():
+                    self.switch_profile({'merchant_id': body['merchant_id']})
+                    return
+                directory.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix='.preparing-', dir=directory.parent) as temporary:
+                    candidate = Store(temporary, _profile=True)
+                    try:
+                        candidate.import_credentials(body)
+                        # Reuse the approved connection, copying exact policy
+                        # bytes. Revision, accounts and archives start empty.
+                        connection = {k: self.settings[k] for k in ('router', 'tdx_policy', 'snp_policy')}
+                        for key in ('tdx_policy', 'snp_policy'):
+                            if connection[key]:
+                                connection[key] = str(self.policy_path(connection[key]))
+                        candidate.save_connection(connection)
+                    finally:
+                        candidate.db.close()
+                    os.replace(temporary, directory)
+                self._activate(Store(directory, _profile=True))
+                return
             previous = self.settings.copy()
             self.settings['token'] = body['merchant_secret']
             self.settings['credentials_saved'] = True

@@ -26,7 +26,7 @@ def serve(application, source, sink):
 
     def execute(request):
         try:
-            result = application.api(request['method'], request['path'], request.get('body', {}))
+            result = application.api(request['method'], request['path'], request.get('body', {}), request.get('identity'))
             send({'id': request['id'], 'result': result})
         except (ValueError, RuntimeError) as error:
             send({'id': request['id'], 'error': str(error)})
@@ -48,7 +48,8 @@ def serve(application, source, sink):
                     break  # Invalid framing; never attempt to reinterpret trailing bytes.
                 try:
                     request = json.loads(line)
-                    if (not isinstance(request, dict) or set(request) - {'id', 'method', 'path', 'body'}
+                    if (not isinstance(request, dict) or set(request) - {'id', 'method', 'path', 'body', 'identity'}
+                            or ('identity' in request and not isinstance(request['identity'], str))
                             or type(request.get('id')) is not int or not 1 <= request['id'] <= 2**53-1
                             or request.get('method') not in ('GET', 'POST', 'PUT', 'DELETE')
                             or not isinstance(request.get('path'), str) or len(request['path']) > 4096

@@ -8,6 +8,62 @@ const {execFileSync} = require('node:child_process');
 const {_electron} = require('playwright-core');
 const ROOT = path.resolve(__dirname, '..');
 
+test('switching saved merchants isolates accounts, drafts and revenue and survives restart', {timeout:120000}, async()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'teemerchant-profiles-'));
+  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+  const packaged=process.env.TEEMERCHANT_TEST_EXE;
+  const launch=()=>_electron.launch({cwd:ROOT,env,...(packaged?{executablePath:packaged}:{}),
+    args:[...(packaged?[]:[ROOT]),'--data='+directory,'--start-hidden']});
+  const secret='b'.repeat(64),id='m_'+require('node:crypto').createHash('sha256').update(secret).digest('hex').slice(0,32);
+  let app;
+  try{
+    execFileSync(path.join(ROOT,'.venv','Scripts','python.exe'),[path.join(__dirname,'seed_fixture.py'),directory]);
+    app=await launch();let page=await app.firstWindow();
+    await page.locator('aside [data-id=revenue]').click();
+    assert.match(await page.locator('.revenue-cards').innerText(),/\$0\.000050/);
+    const initial=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
+    await page.locator('aside [data-id=connection]').click();
+    await page.evaluate(()=>{selectedAccountPool='old-pool';poolModelEditor={pool:'old-pool'};records=[{id:42}];});
+    await page.locator('[data-action=merchant-add]').click();
+    assert.equal(await page.locator('#dialog [name=merchant_id]').inputValue(),'');
+    assert.equal(await page.locator('#dialog [name=merchant_secret]').inputValue(),'');
+    await page.locator('#dialog [name=merchant_id]').fill(id);
+    await page.locator('#dialog [name=merchant_secret]').fill(secret);
+    await page.getByRole('button',{name:'保存接入凭证',exact:true}).click();
+    await page.locator('#dialog').waitFor({state:'hidden'});
+    assert.equal(await page.locator('#merchant-saved-id').inputValue(),id);
+    assert.equal(await page.locator('#merchant-profile option').count(),2);
+    assert.deepEqual(await page.evaluate(()=>[records,selectedAccountPool,poolModelEditor,revenueData]),[[],null,null,null]);
+    const switched=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
+    assert.equal(switched.connected,false);assert.equal(switched.remote,null);
+    assert.equal(switched.settings.minimum_revision,0);
+    assert.equal(switched.settings.router,initial.settings.router);
+    await page.locator('aside [data-id=revenue]').click();
+    assert.match(await page.locator('.revenue-cards').innerText(),/\$0\.000000/);
+    await app.close();app=await launch();page=await app.firstWindow();
+    await page.locator('aside [data-id=connection]').click();
+    assert.equal(await page.locator('#merchant-saved-id').inputValue(),id);
+    await page.locator('#merchant-profile').selectOption(initial.enrollment.id);
+    await page.locator('[data-action=merchant-switch]').click();
+    await page.waitForFunction(id=>document.querySelector('#merchant-saved-id')?.value===id,initial.enrollment.id);
+    const restored=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
+    assert.deepEqual(restored.remote,initial.remote);
+    assert.equal(restored.connected,false);
+    assert.equal(restored.settings.minimum_revision,initial.settings.minimum_revision);
+    assert.equal(JSON.stringify(restored).includes(secret),false);
+    await page.locator('aside [data-id=revenue]').click();
+    assert.match(await page.locator('.revenue-cards').innerText(),/\$0\.000050/);
+    await page.locator('aside [data-id=connection]').click();
+    fs.mkdirSync(path.join(ROOT,'desktop-test-results'),{recursive:true});
+    await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());
+    await page.screenshot({path:path.join(ROOT,'desktop-test-results','merchant-profiles.png')});
+  }finally{
+    await app?.close();
+    assert.equal(path.dirname(path.resolve(directory)),path.resolve(os.tmpdir()));
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
+});
+
 test('saved merchant credentials are visible, copyable and prefilled without leaking into status', {timeout:60000}, async()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'teemerchant-credentials-'));
   const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
@@ -129,8 +185,8 @@ test('desktop account workflow, persistent identity, IPC isolation and tray life
     assert.match(await page.locator('.revenue-cards').innerText(),/\$0\.000050/);
     await page.locator('aside [data-id=accounts]').click();
     fs.mkdirSync(path.join(ROOT,'desktop-test-results'),{recursive:true});
-    await page.screenshot({path:path.join(ROOT,'desktop-test-results',packaged?'packaged.png':'development.png')});
     await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());
+    await page.screenshot({path:path.join(ROOT,'desktop-test-results',packaged?'packaged.png':'development.png')});
     await page.locator('[data-action=desktop-minimize]').click();
     assert.equal(await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].isVisible()),false);
     assert.deepEqual(errors,[]);

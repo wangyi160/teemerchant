@@ -72,22 +72,29 @@ class Application:
             self.last_error = ''
         return {'saved': True}
 
-    def api(self, method, path, body):
+    def api(self, method, path, body, identity=None):
         # Status remains responsive while a remote archive operation is waiting.
         if (method, path) == ('GET', '/api/state'):
             with self.store.lock:
                 return self._api(method, path, body)
         with self.state_lock:
+            if identity is not None and identity != self.store.enrollment()['id']:
+                raise ValueError('当前商户已切换，请刷新页面后重新操作')
             return self._api(method, path, body)
 
     def _api(self, method, path, body):
         if (method, path) == ('GET', '/api/credentials'):
             return self.store.credentials(reveal=True)
-        if (method, path) == ('POST', '/api/credentials'):
-            self.store.import_credentials(body)
-            self.transport.close()
-            self.remote = self.store.accounts.view(self.store.settings['router'])
-            self.connected = False
+        if method == 'POST' and path in ('/api/credentials', '/api/merchant-profile'):
+            with self.store.lock:
+                if path == '/api/credentials':
+                    self.store.import_credentials(body)
+                else:
+                    self.store.switch_profile(body)
+                self.transport.close()
+                self.remote = self.store.accounts.view(self.store.settings['router'])
+                self.connected = False
+                self.last_error = ''
             return {'saved': True, 'merchant_id': self.store.enrollment()['id']}
         url = urlsplit(path)
         if method == 'GET' and url.path == '/api/revenue':
@@ -101,7 +108,7 @@ class Application:
                 raise ValueError('收入记录标识无效')
             return self.store.revenue_record(instance, int(seq))
         if (method, path) == ('GET', '/api/state'):
-            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
+            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'profiles': self.store.profiles(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
         if (method, path) == ('PUT', '/api/settings'):
             self.store.save_connection(body)
             self.transport.close()
@@ -135,11 +142,12 @@ class Application:
 
     def background(self, stop):
         while not stop.wait(10):
-            if self.connected:
-                try:
-                    self.sync()
-                except Exception as error:
-                    self.last_error = str(error)
+            with self.state_lock:
+                if self.connected:
+                    try:
+                        self.sync()
+                    except Exception as error:
+                        self.last_error = str(error)
 
 def handler(application, origin):
     class Handler(BaseHTTPRequestHandler):
@@ -183,7 +191,7 @@ def handler(application, origin):
                 if length < 0 or length > 16 * 1024 * 1024 or self.headers.get('Transfer-Encoding'):
                     return self.respond(413, {'error': '请求过大'})
                 body = json.loads(self.rfile.read(length)) if length else {}
-                return self.respond(200, application.api(self.command, self.path, body))
+                return self.respond(200, application.api(self.command, self.path, body, self.headers.get('X-Merchant-ID')))
             except (ValueError, RuntimeError) as error:
                 return self.respond(400, {'error': str(error)})
             except Exception:

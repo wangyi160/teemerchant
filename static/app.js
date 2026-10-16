@@ -8,9 +8,30 @@ const table=(heads,rows)=>`<div class="scroll"><table><thead><tr>${heads.map(h=>
 const remote=()=>state.remote, settings=()=>remote()?.settings, pools=()=>remote()?.pools||[];
 const usd=n=>(n/1e6).toLocaleString("en-US",{maximumFractionDigits:6});
 function amount(v){if(!/^\d+(\.\d{1,6})?$/.test(v))throw Error("倍率最多保留 6 位小数");const [a,b=""]=v.split('.');const n=Number(a)*1e6+Number(b.padEnd(6,'0'));if(!Number.isSafeInteger(n)||n>1e15)throw Error("倍率超出范围");return n;}
-async function api(path,method="GET",body){if(window.teemerchant){const r=await window.teemerchant.request(method,path,body);if(!r.ok)throw Error(r.error);return r.value;}const r=await fetch(path,{method,headers:{"Content-Type":"application/json","X-CSRF-Token":$('meta[name=csrf]').content},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.json();if(!r.ok)throw Error(value.error||"操作失败");return value;}
+async function api(path,method="GET",body){
+  const identity=path==='/api/state'?undefined:state?.enrollment.id;
+  let value;
+  if(window.teemerchant){
+    const r=await window.teemerchant.request(method,path,body,identity);if(!r.ok)throw Error(r.error);value=r.value;
+  }else{
+    const headers={"Content-Type":"application/json","X-CSRF-Token":$('meta[name=csrf]').content};
+    if(identity)headers['X-Merchant-ID']=identity;
+    const r=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
+    value=await r.json();if(!r.ok)throw Error(value.error||"操作失败");
+  }
+  if(identity&&state?.enrollment.id!==identity)throw Error('商户已切换，请重新操作');
+  return value;
+}
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),6000);}
-async function reload(){state=await api('/api/state');render();}
+async function reload(){
+  const next=await api('/api/state');
+  if(state&&state.enrollment.id!==next.enrollment.id){
+    records=[];selectedAccountPool=null;poolModelEditor=null;
+    revenueData=null;revenueQuery={start:'',end:'',pool:'',offset:'0'};
+    section='connection';
+  }
+  state=next;render();
+}
 function draft(){return AccountConfig.draft(remote());}
 async function save(value){const result=await api('/api/config','PUT',value);state.remote=result;state.settings.minimum_revision=result.settings.revision;render();return result;}
 function form(title,html,action,options={}){
@@ -39,11 +60,12 @@ function connection(){
   const s=state.settings,c=state.credentials,saved=!!c?.saved;
   const status=saved?(state.connected?'已保存 · 当前连接使用此凭证':'已保存 · 尚未连接 Router'):'尚未填写商户凭证';
   return heading('连接与身份','连接时会先验证 Router 的 TEE，再使用下方保存的商户凭证认证。')+
-    `<section class="panel"><div class="panelhead"><h2>商户接入凭证</h2>${btn(saved?'编辑凭证':'填写接入凭证','merchant-credentials','','primary')}</div>
+    `<section class="panel"><div class="panelhead"><h2>商户接入凭证</h2><div class="actions">${saved?btn('添加商户','merchant-add'):''}${btn(saved?'编辑凭证':'填写接入凭证','merchant-credentials','','primary')}</div></div>
+      ${(state.profiles||[]).length>1?`<label for="merchant-profile">本机已保存的商户</label><div class="actions"><select id="merchant-profile">${state.profiles.map(p=>`<option value="${esc(p.merchant_id)}" ${p.active?'selected':''}>${esc(p.merchant_id)}${p.active?'（当前）':''}</option>`).join('')}</select>${btn('切换商户','merchant-switch')}</div>`:''}
       <p id="merchant-credential-status">${status}</p><div class="grid credentials-grid">
       <div><label for="merchant-saved-id">Merchant ID</label><input id="merchant-saved-id" value="${esc(c?.merchant_id||'')}" readonly placeholder="尚未填写" autocomplete="off"><div class="actions"><button data-action="merchant-copy-id" ${saved?'':'disabled'}>复制 ID</button></div></div>
       <div><label for="merchant-saved-secret">Merchant Secret</label><input id="merchant-saved-secret" type="password" value="${saved?'********':''}" readonly placeholder="尚未填写" autocomplete="off"><div class="actions"><button data-action="merchant-secret" ${saved?'':'disabled'}>显示</button><button data-action="merchant-copy-secret" ${saved?'':'disabled'}>复制 Secret</button></div></div>
-      </div><p class="muted">${saved?'凭证已加密保存在本机，重新打开程序时会沿用。已有账号库不能替换为其他商户身份。':'在 Portal 注册商户并通过审核后，填写平台签发的 Merchant ID 和 Merchant Secret。'}</p></section>`+
+      </div><p class="muted">${saved?'可添加或切换商户。每个商户的凭证、账号、账单和待同步修改分别保存；切换后点击「连接商户」，不会自动上传原商户的账号。':'在 Portal 注册商户并通过审核后，填写平台签发的 Merchant ID 和 Merchant Secret。'}</p></section>`+
     `<section class="panel"><div class="panelhead"><h2>Router 连接</h2></div><form id="connection"><div class="grid">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${field('本地 TDX 信任策略路径','tdx_policy',s.tdx_policy)}${field('本地 SNP 信任策略路径','snp_policy',s.snp_policy)}</div><div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}<button data-action="connect" ${saved?'':'disabled'}>连接商户</button></div><p class="muted">「验证 TEE」只检查 Router；「连接商户」会同时完成 TEE 验证和商户认证。</p></form></section>`;
 }
 async function copyMerchantValue(value){
@@ -63,12 +85,12 @@ async function copyMerchantSecret(){
   if(!c.saved||c.merchant_id!==identity||state.credentials?.merchant_id!==identity)throw Error('凭证已变更，请刷新后重试');
   await copyMerchantValue(c.merchant_secret);toast('Merchant Secret 已复制');
 }
-async function merchantCredentialsForm(){
-  const c=await api('/api/credentials');
+async function merchantCredentialsForm(add=false){
+  const c=add?{saved:false,merchant_id:'',merchant_secret:''}:await api('/api/credentials');
   form(c.saved?'编辑商户接入凭证':'填写商户接入凭证',field('Merchant ID','merchant_id',c.merchant_id,'text','required autocomplete="off" placeholder="m_…"')+
     field('Merchant Secret','merchant_secret',c.merchant_secret,'password','required autocomplete="off"')+
     btn('显示 Secret','merchant-edit-secret')+
-    '<p>此处回填本机保存的凭证。保存后点击「连接商户」，验证 Router 并完成商户认证。</p>',async f=>{
+    '<p>填写另一商户的凭证会切换身份，原商户的资料仍会保留，可随时切回。保存后点击「连接商户」完成认证。</p>',async f=>{
       try{await api('/api/credentials','POST',Object.fromEntries(f));await reload();}
       finally{f.delete('merchant_secret');}
     },{submit:'保存接入凭证',success:'接入凭证已加密保存，请连接商户'});
@@ -93,6 +115,12 @@ function customerForm(id){
 }
 
 async function action(a,id){
+if(a==='merchant-add')return merchantCredentialsForm(true);
+if(a==='merchant-switch'){
+  const id=$('#merchant-profile').value;
+  if(id===state.credentials.merchant_id)return;
+  await api('/api/merchant-profile','POST',{merchant_id:id});await reload();toast('已切换商户，本地资料已恢复；请连接商户');return;
+}
 if(a==='merchant-secret')return toggleMerchantSecret();
 if(a==='merchant-copy-secret')return copyMerchantSecret();
 if(a==='merchant-copy-id'){await copyMerchantValue(state.credentials.merchant_id);toast('Merchant ID 已复制');return;}

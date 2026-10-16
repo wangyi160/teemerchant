@@ -3,10 +3,10 @@ const {spawn} = require('node:child_process');
 const {EventEmitter} = require('node:events');
 const MAX = 40 * 1024 * 1024;
 
-function validateRequest(method, path, body = {}) {
+function validateRequest(method, path, body = {}, identity) {
   const fixed = new Set(['GET /api/state', 'PUT /api/settings', 'POST /api/verify', 'POST /api/connect',
     'GET /api/merchant', 'PUT /api/config', 'POST /api/config/sync', 'POST /api/refresh',
-    'POST /api/sync', 'GET /api/records/usage', 'GET /api/records/refusals', 'GET /api/credentials', 'POST /api/credentials']);
+    'POST /api/sync', 'GET /api/records/usage', 'GET /api/records/refusals', 'GET /api/credentials', 'POST /api/credentials', 'POST /api/merchant-profile']);
   if (typeof method !== 'string' || typeof path !== 'string' || path.length > 4096 || !body ||
       typeof body !== 'object' || Array.isArray(body)) throw Error('无效的桌面操作');
   if (!fixed.has(`${method} ${path}`) && !(method === 'GET' &&
@@ -14,7 +14,8 @@ function validateRequest(method, path, body = {}) {
     throw Error('桌面接口未授权');
   }
   if (Buffer.byteLength(JSON.stringify(body), 'utf8') > 15 * 1024 * 1024) throw Error('请求过大');
-  return {method, path, body};
+  if(identity!==undefined && (typeof identity!=='string'||!/^m_[a-f0-9]{32}$/.test(identity)))throw Error('商户身份无效');
+  return {method, path, body, ...(identity===undefined?{}:{identity})};
 }
 
 class Backend extends EventEmitter {
@@ -58,8 +59,8 @@ class Backend extends EventEmitter {
     this.pending.clear();
     if (!this.stopping) { this.stopping = true; this.child.kill(); this.emit('unavailable', message); }
   }
-  async call(method, path, body = {}) {
-    const request = validateRequest(method, path, body);
+  async call(method, path, body = {}, identity) {
+    const request = validateRequest(method, path, body, identity);
     await this.ready;
     if (this.stopping) throw Error('本地组件已退出，请重启应用');
     if (this.pending.size >= 8) throw Error('操作较多，请等待当前任务完成');
