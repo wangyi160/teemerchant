@@ -117,22 +117,8 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_count(0)
         self.assertNotIn(secret, json.dumps(self.app.api('GET','/api/state',{})))
 
-    def test_limits_preserve_pool_pricing(self):
-        self.page.get_by_role('button', name='限速', exact=True).click()
-        expect(self.page.get_by_role('heading', name='限速', exact=True)).to_be_visible()
-        expect(self.page.locator('main')).not_to_contain_text('倍率')
-        expect(self.page.locator('main')).not_to_contain_text('费率')
-        self.page.get_by_role('button', name='调整限速').click()
-        self.page.locator('[name=max_concurrent]').fill('8')
-        self.page.locator('[name=rpm]').fill('120')
-        self.page.locator('[name=tpm]').fill('100000')
-        self.page.get_by_role('button', name='保存', exact=True).click()
-        expect(self.page.locator('#dialog')).not_to_be_visible()
-        self.assertEqual(len(self.router.writes),1)
-        update=self.router.writes[0]
-        self.assertEqual((update['max_concurrent'],update['rpm'],update['tpm']),(8,120,100000))
-        self.assertEqual(update['pool_pricing'],[{'pool':'openai','multiplier_millionths':200000}])
-        self.page.locator('aside [data-id=accounts]').click()
+    def test_no_merchant_total_limits_and_pool_pricing_remains_editable(self):
+        expect(self.page.locator('aside [data-id=limits]')).to_have_count(0)
         self.page.locator('[data-action=edit-pool][data-id=openai]').click()
         expect(self.page.locator('[name=multiplier]')).to_have_value('0.2')
         self.page.get_by_role('button', name='取消', exact=True).click()
