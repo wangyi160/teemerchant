@@ -49,22 +49,12 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
     }
     for(const pool of ['openai','claude','grok']){
       await page.locator('[data-action=account]').click();await page.locator('#oauth-setup [name=pool]').selectOption(pool);
-      await page.locator('#oauth-setup [name=id]').fill(pool+'-oauth');await page.locator('#oauth-setup [name=proxy]').fill('socks5h://proxy.example:1080');
-      await page.locator('#oauth-setup [name=kind]').selectOption('oauth');
-      await page.locator('#oauth-setup [name=credential]').fill('{"access_token":"DRAFT_ONLY"}');
-      await page.locator('#oauth-setup [name=kind]').selectOption('authorize');
-      assert.equal(await page.locator('[name=credential]').isVisible(),false);assert.equal(await page.locator('[name=credential]').isDisabled(),true);
-      await page.locator('#oauth-setup [name=kind]').selectOption('oauth');
-      assert.equal(await page.locator('[name=credential]').inputValue(),'{"access_token":"DRAFT_ONLY"}');
-      assert.equal(await page.locator('[name=credential]').isDisabled(),false);
-      assert.equal(await page.locator('[name=id]').inputValue(),pool+'-oauth');
-      assert.equal(await page.locator('[name=proxy]').inputValue(),'socks5h://proxy.example:1080');
-      await page.locator('#oauth-setup [name=kind]').selectOption('authorize');
+      assert.equal(await page.locator('[name=kind]').count(),0);
+      assert.equal(await page.locator('#dialog p:not([role=alert])').count(),0);
       if(pool==='openai'){
         await page.locator('[name=pool]').selectOption('workbuddy');
-        assert.equal(await page.locator('[name=kind]').inputValue(),'api');
-        assert.equal(await page.locator('[name=kind] option[value=authorize]').evaluate(el=>el.disabled),true);
-        await page.locator('[name=pool]').selectOption('openai');await page.locator('[name=kind]').selectOption('authorize');
+        assert.equal(await page.locator('#account-authorize').isVisible(),false);
+        await page.locator('[name=pool]').selectOption('openai');
         await page.locator('[name=enabled]').uncheck();
         fs.mkdirSync(path.join(ROOT,'desktop-test-results'),{recursive:true});
         await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());
@@ -72,26 +62,41 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
       }
       assert.equal(await page.locator('[name=save_refresh]').isChecked(),pool!=='claude');
       if(pool==='grok')await page.locator('[name=save_refresh]').uncheck();
-      await page.getByRole('button',{name:'前往官方授权',exact:true}).click();await page.locator('#oauth-open').waitFor();
-      assert.equal(await page.locator('#oauth-save').count(),0);
+      // Authorization is independent of required alias/proxy fields and never saves.
+      await page.locator('#account-authorize').click();await page.locator('#oauth-open').waitFor();
+      assert.equal(await page.locator('[name=credential]').isVisible(),true);
+      assert.equal(await page.getByRole('button',{name:'保存并同步',exact:true}).isDisabled(),true);
+      await page.locator('[name=id]').fill(pool+'-oauth');await page.locator('[name=proxy]').fill('socks5h://proxy.example:1080');
       if(pool==='claude'){
-        await page.locator('#oauth-code-form [name=code]').fill('FIXTURE_CODE#wrong');await page.getByRole('button',{name:'提交授权码',exact:true}).click();
-        await page.waitForFunction(()=>document.querySelector('#oauth-progress [role=alert]').textContent.includes('不匹配'));
-        await page.locator('#oauth-code-form [name=code]').fill('FIXTURE_CODE');await page.getByRole('button',{name:'提交授权码',exact:true}).click();
+        await page.locator('[name=code]').fill('FIXTURE_CODE#wrong');await page.locator('#oauth-submit').click();
+        await page.waitForFunction(()=>document.querySelector('#dialog [role=alert]').textContent.includes('不匹配'));
+        await page.locator('[name=code]').fill('FIXTURE_CODE');await page.locator('#oauth-submit').click();
       }else await finishCallback();
-      await page.locator('#oauth-save').waitFor();assert.doesNotMatch(await page.locator('#dialog').innerText(),/PRIVATE_DESKTOP/);
+      await page.waitForFunction(()=>document.querySelector('[name=credential]').value.includes('PRIVATE_DESKTOP_OAUTH_ACCESS'));
+      const draft=JSON.parse(await page.locator('[name=credential]').inputValue());
+      assert.equal(draft.credential.refresh_token,pool==='openai'?'PRIVATE_DESKTOP_OAUTH_REFRESH':undefined);
+      assert.ok(draft.credential.expires_at);
+      const before=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
+      assert.equal(before.remote.pools.find(p=>p.name===pool).deployments.some(d=>d.id===pool+'-oauth'),false);
+      if(pool==='openai'){
+        assert.equal(draft.credential.account_id,'fixture-workspace');
+        draft.credential.access_token='PRIVATE_EDITED_ACCESS';
+        await page.locator('[name=credential]').fill(JSON.stringify(draft,null,2));
+      }
       if(pool==='openai'){
         fs.mkdirSync(path.join(ROOT,'desktop-test-results'),{recursive:true});
         await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());
         await page.screenshot({path:path.join(ROOT,'desktop-test-results','oauth-ready.png')});
       }
-      await page.locator('#oauth-save').click();await page.locator('#dialog').waitFor({state:'hidden'});
+      await page.getByRole('button',{name:'保存并同步',exact:true}).click();await page.locator('#dialog').waitFor({state:'hidden'});
       await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('等待同步'));
     }
     const s=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
     for(const pool of ['openai','claude','grok'])assert.ok(s.remote.pools.find(p=>p.name===pool).deployments.some(d=>d.id===pool+'-oauth'));
     assert.equal(s.remote.pools.find(p=>p.name==='openai').deployments.find(d=>d.id==='openai-oauth').enabled,false);
     assert.doesNotMatch(JSON.stringify(s),/PRIVATE_DESKTOP/);
+    const edited=await page.evaluate(id=>window.teemerchant.request('GET','/api/accounts/openai-oauth',{},id),s.enrollment.id);
+    assert.equal(JSON.parse(edited.value.credential_text).credential.access_token,'PRIVATE_EDITED_ACCESS');
     const local=await page.evaluate(id=>window.teemerchant.request('GET','/api/accounts/grok-oauth',{},id),s.enrollment.id);
     assert.ok(local.ok);const credential=JSON.parse(local.value.credential_text).credential;assert.equal(credential.refresh_token,undefined);
     assert.equal(credential.access_token,'PRIVATE_DESKTOP_OAUTH_ACCESS');
@@ -99,20 +104,32 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
     await page.locator('[data-action=account-pool][data-id=grok]').click();await page.locator('[data-action=oauth-renew][data-id=grok-oauth]').click();
     assert.equal(await page.locator('[name=id]').inputValue(),'grok-oauth');assert.equal(await page.locator('[name=proxy]').inputValue(),'socks5h://proxy.example:1080');
     assert.equal(await page.locator('[name=save_refresh]').isChecked(),false);
-    await page.getByRole('button',{name:'前往官方授权',exact:true}).click();await page.locator('#oauth-open').waitFor();
+    const previous=await page.locator('[name=credential]').inputValue();
+    await page.locator('#account-authorize').click();await page.locator('#oauth-open').waitFor();
+    await page.locator('#oauth-cancel').click();
+    await page.waitForFunction(()=>!document.querySelector('#account-authorize').disabled);
+    assert.equal(await page.locator('[name=credential]').inputValue(),previous);
+    await page.locator('#account-authorize').click();await page.locator('#oauth-open').waitFor();
     await page.keyboard.press('Escape');await page.locator('#dialog').waitFor({state:'hidden'});
-    await page.locator('[data-action=oauth-renew][data-id=grok-oauth]').click();await page.getByRole('button',{name:'前往官方授权',exact:true}).click();await page.locator('#oauth-open').waitFor();
-    await finishCallback();await page.locator('#oauth-save').waitFor();await page.locator('#oauth-save').click();await page.locator('#dialog').waitFor({state:'hidden'});
+    await page.locator('[data-action=oauth-renew][data-id=grok-oauth]').click();await page.locator('#account-authorize').click();await page.locator('#oauth-open').waitFor();
+    await finishCallback();await page.waitForFunction(()=>document.querySelector('#oauth-progress [role=status]')?.textContent==='已授权');
+    await page.getByRole('button',{name:'保存并同步',exact:true}).click();await page.locator('#dialog').waitFor({state:'hidden'});
+    // Discarding a successful authorization still leaves the account store untouched.
+    await page.locator('[data-action=account]').click();await page.locator('[name=pool]').selectOption('openai');
+    await page.locator('#account-authorize').click();await page.locator('#oauth-open').waitFor();await finishCallback();
+    await page.waitForFunction(()=>document.querySelector('#oauth-progress [role=status]')?.textContent==='已授权');
+    const revision=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value.remote.local_revision;
+    await page.locator('[name=id]').fill('discarded');await page.keyboard.press('Escape');await page.locator('#dialog').waitFor({state:'hidden'});
+    assert.equal((await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value.remote.local_revision,revision);
     await page.locator('[data-action=account]').click();await page.locator('[name=pool]').selectOption('openai');
     await page.locator('[name=id]').fill('manual-json');await page.locator('[name=proxy]').fill('https://proxy.example');
-    await page.locator('[name=kind]').selectOption('authorize');await page.locator('[name=kind]').selectOption('oauth');
     await page.locator('[name=credential]').fill('{"provider":"openai","credential":{"access_token":"PRIVATE_MANUAL_JSON"}}');
     await page.getByRole('button',{name:'保存并同步',exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector('#dialog').open||document.querySelector('#dialog [role=alert]')?.textContent);
     assert.equal(await page.locator('#dialog').isVisible(),false,await page.evaluate(()=>document.querySelector('#dialog [role=alert]')?.textContent||''));
     const manual=await page.evaluate(id=>window.teemerchant.request('GET','/api/accounts/manual-json',{},id),s.enrollment.id);
     assert.equal(JSON.parse(manual.value.credential_text).credential.access_token,'PRIVATE_MANUAL_JSON');
-    assert.deepEqual(errors,[]);assert.equal(await app.evaluate(()=>global.testOAuth.exchanges),4);
+    assert.deepEqual(errors,[]);assert.equal(await app.evaluate(()=>global.testOAuth.exchanges),5);
     await app.close();app=await launch();const restored=(await (await app.firstWindow()).evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
     assert.equal(restored.remote.local_sync.state,'pending');assert.equal(restored.remote.pools.find(p=>p.name==='grok').deployments.length,1);
   }finally{

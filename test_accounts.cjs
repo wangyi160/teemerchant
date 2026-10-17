@@ -1,7 +1,17 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
-const {build,parse,pool,normalizeCredential,oauthInput} = require('./static/account-config.js');
+const {build,parse,pool,normalizeCredential,oauthInput,accountInput} = require('./static/account-config.js');
 const {poolModels} = require('./static/account-config.js');
+
+test('one JSON editor infers credentials and rejects mixed or mismatched provider input',()=>{
+  assert.deepEqual(accountInput(JSON.stringify({provider:'workbuddy',credential:{api_key:'FIXTURE_KEY'}}),'workbuddy'),
+    {kind:'api',api_key:'FIXTURE_KEY',proxy:undefined});
+  assert.deepEqual(accountInput(JSON.stringify({provider:'openai',credential:{access_token:'FIXTURE_ACCESS'},proxy:'https://proxy.example'}),'openai'),
+    {kind:'oauth',credential:{access_token:'FIXTURE_ACCESS'},proxy:'https://proxy.example'});
+  for(const credential of [{api_key:'x',access_token:'y'},{api_key:''},{api_key:12}])
+    assert.throws(()=>accountInput(JSON.stringify({provider:'xai',credential}),'xai'));
+  assert.throws(()=>accountInput(JSON.stringify({provider:'anthropic',credential:{access_token:'x'}}),'openai'));
+});
 
 test('one public model policy applies to the whole pool and survives account edits and imports',()=>{
   const source=remote();

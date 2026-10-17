@@ -27,7 +27,7 @@ Windows Electron 商户桌面工作台，采用 MIT 开源许可。左侧导航�
 
 所有商户 API 由管理引擎在进程内调用自身的原生模块执行，模块源码位于 `native/`，不打包或启动 teeproxy。验证硬件证明、随机挑战、启动测量和 TLS 绑定后，才在同一条已验证连接发送商户凭证。验证失败不发送商户数据，写入请求丢失响应时不会自动重发。正式部署须使用独立审核的信任策略，不能只从服务器下载策略后直接信任。升级时自动移除旧版验证程序路径设置，账号与商户资料保持原样。
 
-API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`credential`），不是任意第三方客户端的凭证文件格式。每个账号须配置网络出口代理，可在代理栏或 OAuth JSON 的 `proxy` 中填写 `http://`、`https://` 或 `socks5h://` 地址；仅 Workbuddy 测试账号允许 `direct://`。代理地址是账号的网络出口，模型服务地址仍由 router 固定为官方域名。OpenAI OAuth 使用 `provider: openai`，由账号 credential 决定官方登录方式。支持 OpenAI、Anthropic、xAI；Workbuddy 需要平台单独启用测试权限。
+凭证统一使用 JSON（`provider`、`credential`）；OAuth 对象包含 `access_token` 等字段，API key 账号使用例如 `{ "provider": "workbuddy", "credential": { "api_key": "REPLACE_KEY" } }`，无需选择凭证类型。每个账号须配置网络出口代理，可在代理栏或 JSON 的 `proxy` 中填写 `http://`、`https://` 或 `socks5h://` 地址；仅 Workbuddy 测试账号允许 `direct://`。代理地址是账号的网络出口，模型服务地址仍由 router 固定为官方域名。OpenAI OAuth 使用 `provider: openai`，由账号 credential 决定官方登录方式。支持 OpenAI、Anthropic、xAI；Workbuddy 需要平台单独启用测试权限。
 
 身份、连接设置、账号资料和归档正文用当前 Windows 用户的 DPAPI 加密，默认保存在程序目录的 `data/`。账号库为 `accounts.dpapi`，包括凭证、代理、账号池配置和待同步修改；磁盘上不存明文凭证。SQLite 只在事务提交后确认 router 用量 / 拒答前缀。每 10 秒归档一次；写盘失败不确认删除，重复记录不重复保存，记录内容变化则停止同步。界面显示最近 200 条，数据库保存完整归档。
 
@@ -35,7 +35,7 @@ API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`cr
 
 ### 官方 OAuth 绑定
 
-桌面版统一从 **添加账号** 进入，在“添加方式”选择 **JSON 导入**、**OAuth 授权** 或 **API key**。切换方式保留账号池、账号别名、代理和限额，也保留尚未提交的 JSON；Workbuddy 只提供 API key。选择 OAuth 授权后，填写 ChatGPT、Claude 或 Grok 账号池、别名和网络代理，点击“前往官方授权”，在系统浏览器中登录。ChatGPT/Grok 会自动接收回调；Claude 登录后粘贴一次官方页面给出的授权码，程序自动换取凭证，无需手工整理 JSON。授权成功后点击“保存并同步”，先写入本地加密账号库，再通过已验证的 TEE 连接同步到 Router。Router 离线时明确显示等待同步。
+桌面版从 **添加账号** 进入，可直接粘贴凭证 JSON，也可点击凭证栏旁的独立 **OAuth 授权** 按钮。选择 ChatGPT、Claude 或 Grok 账号池后即可授权，账号别名、代理和限额可稍后填写。ChatGPT/Grok 自动接收回调；Claude 登录后粘贴官方页面给出的授权码。授权成功后，access token、可选的 refresh token、到期时间等内容直接显示在当前 JSON 编辑框中，允许检查和修改；此时尚未写入账号。点击 **保存并同步** 才写入本地加密账号库，再通过已验证的 TEE 连接同步到 Router。取消或关闭窗口会丢弃未保存的编辑。Router 离线时显示等待同步。Workbuddy 使用 JSON 填写凭证，没有 OAuth 按钮。
 
 已有 OAuth 账号可点击 **重新授权**，保留账号 ID、所属池、倍率、开放模型及启用状态。可选择是否保存 refresh token；重新授权默认沿用本地原凭证的选择，未保存时到期后手动重新授权。ChatGPT/Grok 保存 refresh token 后由 Router 续期；Claude 当前仍需手动重新授权，保存 refresh token 也不会自动续期。
 
@@ -69,7 +69,7 @@ Router 的用户目录只展示开放且通过能力、授权校验的模型；�
 
 点击账号的“编辑”会直接从本地账号库读取并明文回填凭证和代理，不向 Router 请求凭证明文。可调整所属池、并发、RPM、启用状态和凭证；账号 ID、服务和凭证类型固定。凭证或代理未修改时不重复发送，留空仍表示保留原值。更换 OAuth 凭证时提交完整凭证对象，避免把不同身份的令牌拼接。共享凭证涉及多个部署时，界面会阻止只针对其中一个部署的凭证轮换及共享出口、限额变更。移动账号不会删除原池、原费率或历史记录。
 
-ChatGPT/Grok OAuth 自动续期由 Router 执行，Claude 使用外部重新授权；本地保存最近导入、绑定或恢复的凭证版本，编辑其他字段不会把本地旧令牌覆盖到 Router。普通状态查询不包含凭证，只有编辑该账号时才读取本地明文。旧版本未留存本地凭证的账号会明确提示缺失，需要重新授权、从商户自己的加密备份恢复或补录，不能凭空回填。
+ChatGPT/Grok OAuth 自动续期由 Router 执行，Claude 使用外部重新授权；本地保存最近导入、绑定或恢复的凭证版本，编辑其他字段不会把本地旧令牌覆盖到 Router。普通状态查询不包含凭证，账号编辑框按用户操作显示本地凭证或刚取得的 OAuth 凭证。旧版本未留存本地凭证的账号需要重新授权、从商户自己的加密备份恢复或补录，不能凭空回填。
 
 也可只提供 `access_token`，省略 `refresh_token`，由商户手动更新。Router 不会自动刷新这类账号；到期后账号列表显示“已过期”，停止使用该账号。JWT 会读取自带 `exp`；其他令牌可提供 `expires_at`（Unix 秒），xai 也接受带时区的 ISO 时间。如果没有任何可读取的到期时间，只能在官方拒绝凭证后显示“需重新授权”。编辑已有账号时提交完整的 access-token-only 凭证对象，会替换原凭证并移除旧刷新令牌。已经过期的令牌不会因重新导入而延长有效期。
 
@@ -123,7 +123,7 @@ VLESS 请直接在账号代理栏或批量 JSON 的 `proxy` 中填写分享链�
 
 ### Grok 原生 OAuth 凭证
 
-xai 账号池支持 Grok 的原生 OAuth 缓存 JSON。单个账号选择“OAuth 账号 JSON”，可在凭证框直接粘贴原始 JSON，另填账号别名和代理；也可继续使用 `{ "provider": "xai", "credential": {...} }` 统一格式。批量导入时，把原始 JSON 完整放入每条账号的 `credential`：
+xai 账号池支持 Grok 的原生 OAuth 缓存 JSON。单个账号可在凭证框直接粘贴原始 JSON，另填账号别名和代理；也可继续使用 `{ "provider": "xai", "credential": {...} }` 统一格式。批量导入时，把原始 JSON 完整放入每条账号的 `credential`：
 
 ```json
 [

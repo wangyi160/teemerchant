@@ -152,12 +152,12 @@ test('desktop account workflow, persistent identity, IPC isolation and tray life
     await page.locator('#dialog').waitFor({state:'hidden'});
     await page.locator('[data-action=account]').click();
     await page.locator('[name=id]').fill('desktop-account');
-    await page.locator('[name=credential]').fill('FAKE_DESKTOP_API_KEY');
+    await page.locator('[name=credential]').fill(JSON.stringify({provider:'xai',credential:{api_key:'FAKE_DESKTOP_API_KEY'}}));
     await page.locator('[name=proxy]').fill('http://proxy.example:8080');
     await page.getByRole('button',{name:'保存并同步',exact:true}).click();
     await page.locator('#dialog').waitFor({state:'hidden'});
     await page.locator('[data-action=edit-account][data-id=desktop-account]').click();
-    assert.equal(await page.locator('[name=credential]').inputValue(),'FAKE_DESKTOP_API_KEY');
+    assert.equal(JSON.parse(await page.locator('[name=credential]').inputValue()).credential.api_key,'FAKE_DESKTOP_API_KEY');
     await page.locator('[name=max_concurrent]').fill('3');
     await page.getByRole('button',{name:'保存并同步',exact:true}).click();
     await page.locator('#dialog').waitFor({state:'hidden'});

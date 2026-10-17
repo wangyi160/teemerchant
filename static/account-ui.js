@@ -14,12 +14,11 @@ function poolForm(editName = '') {
   const rate = snapshot.settings.pool_pricing?.find(p => p.pool === editName);
   const providers = ['openai','anthropic','xai',...(snapshot.merchant.allow_test ? ['workbuddy'] : [])];
   form(existing ? '编辑账号池' : '添加账号池',
-    `<p>${existing ? '账号池标识和服务类型固定；倍率适用于池内全部账号和模型。' : '先创建账号池，再添加或批量导入账号。同一池内的账号使用相同服务类型和倍率。'}</p><div class="grid">`+
+    `<div class="grid">`+
     field('账号池名称（路由标识）','name',existing?.name || '','text',`required maxlength="80" pattern="[a-zA-Z0-9_.-]+" ${existing?'readonly':''}`)+
     `<label>服务类型<select name="provider" ${existing?'disabled':''}>${providers.map(p =>
       `<option value="${p}" ${p === existing?.provider?'selected':''}>${p}</option>`).join('')}</select></label></div>`+
-    field('实际倍率（Workbuddy 使用测试基准）','multiplier',rate?String(rate.multiplier_millionths/1e6):existing?'':'1','text','required inputmode="decimal"')+
-    '<p>以此账号池保存的倍率计费，例如 0.2 表示基准价的 20%，1 表示原价。空池不会提供模型服务。</p>', async f => {
+    field('实际倍率','multiplier',rate?String(rate.multiplier_millionths/1e6):existing?'':'1','text','required inputmode="decimal"'), async f => {
       const name = f.get('name').trim();
       await save(AccountConfig.pool(snapshot,{name,provider:existing?.provider || f.get('provider'),
         multiplier_millionths:amount(f.get('multiplier').trim())},editName || null));
@@ -67,16 +66,14 @@ function accountsView() {
   const sync = remote().local_sync;
   const pending = sync?.state === 'pending';
   const syncLabel = pending ? '本地已保存 · 等待同步' : sync?.state === 'remote_changed' ? 'Router 配置有变化，请核对本地配置后保存同步' : '本地账号配置 · 已与 Router 同步';
-  return heading('账号与模型','先管理账号池，再选择池管理其中的账号。资料保存在本机，连接后同步到 Router。',
+  return heading('账号与模型','',
     pending?btn('同步账号配置','sync-config'):'') +
     `<div class="notice">${syncLabel} · Router v${settings().revision} · ${pools().length} 个账号池 / ${all.length} 个账号。${sync?.error?`<br><span class="error">${esc(sync.error)}${sync.error.includes('revision_conflict')?'；请刷新并核对配置后重新保存。':''}</span>`:''}</div>
-    ${sync?.missing_credentials?.length?`<p class="error">${sync.missing_credentials.length} 个旧版账号尚缺本地凭证，可在编辑中补录；Router 中的原凭证仍保留。</p>`:''}
+    ${sync?.missing_credentials?.length?`<p class="error">${sync.missing_credentials.length} 个账号缺少本地凭证</p>`:''}
     <section class="panel"><div class="panelhead"><h2>账号池</h2><div class="actions">${pools().length?btn('显示全部账号','account-pool'):''}${btn('添加账号池','pool','','primary')}</div></div>
-    ${pools().length?'':'<p>尚无账号池。先添加账号池并设置服务类型和倍率，再向池内添加账号。</p>'}
     ${table(['账号池','服务','账号数量','倍率','对外模型','操作'],poolRows)}</section>
     <section class="panel"><div class="panelhead"><h2>${selectedAccountPool ? esc(selectedAccountPool)+' · 账号' : '全部账号'}<small class="muted">（${rows.length}）</small></h2>
     <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account','','primary'):''}</div></div>
-    ${selectedAccountPool && !rows.length?'<p>此账号池还没有账号，可以逐个添加或批量导入。</p>':''}
     ${table(['账号别名 / 账号池','服务 / 凭证','状态','并发 / RPM','操作'],rows)}</section>
     ${poolModelCatalog(chosen, catalog)}`;
 }
@@ -102,17 +99,16 @@ function poolModelCatalog(chosen, catalog) {
   const edit = poolModelEditor?.poolName === selectedAccountPool ? poolModelEditor : null;
   let content;
   if (edit) {
-    content = `<form id="pool-model-editor"><div class="catalog-editor-heading"><strong>${esc(edit.poolName)} · 编辑开放模型</strong><span class="muted">修改保存后生效，池内所有账号共用</span></div>
+    content = `<form id="pool-model-editor"><div class="catalog-editor-heading"><strong>${esc(edit.poolName)} · 编辑开放模型</strong></div>
       <div class="grid"><label>开放方式<select name="model_mode"><option value="all" ${edit.all?'selected':''}>开放全部可用模型（包含以后发现的模型）</option>
       <option value="selected" ${!edit.all?'selected':''}>仅开放勾选模型</option></select></label>
       <label>筛选模型<input id="pool-model-search" type="search" placeholder="输入模型名称" value="${esc(edit.query)}"></label></div>
       <div class="model-tools"><button type="button" id="pool-model-all">勾选筛选结果</button><button type="button" id="pool-model-none">清空勾选</button><span id="pool-model-count" aria-live="polite"></span></div>
       <div class="model-options catalog-model-options">${table(['对外开放','模型','目录状态'],edit.ids.map(id =>
         `<tr><td><input name="allowed_model" type="checkbox" value="${esc(id)}" aria-label="开放 ${esc(id)}" ${edit.selected.has(id)?'checked':''}></td><td>${esc(id)}</td><td>${edit.discovered.has(id)?'已发现':'暂未获取到目录'}</td></tr>`))}</div>
-      <p>修改勾选会切换为“仅开放勾选模型”；清空并保存会关闭该池全部模型服务。成功获取完整目录后，已不存在的模型会自动从开放名单移除并同步 Router；目录获取失败时保留原配置。</p>
       <p class="error" role="alert">${esc(edit.error)}</p><div class="catalog-save-actions"><button type="button" id="pool-model-cancel">取消编辑</button><button type="submit" class="primary">${edit.saving?'正在保存…':'保存并同步'}</button></div></form>`;
   } else {
-    content = `<p>${selectedAccountPool?'点击“编辑开放模型”，直接在本表中勾选。':'先在上方选择一个账号池，再编辑它的开放模型。'} 名单对池内所有账号生效；成功获取完整目录后，自动清理上游已移除的模型。</p>`;
+    content = '';
     if (poolModelEditor) content += `<div class="notice">${esc(poolModelEditor.poolName)} 的模型名单正在编辑。${btn('继续编辑','edit-pool-models',poolModelEditor.poolName)}</div>`;
     content += table(['账号池','模型','对外开放'],chosen.flatMap(p => [...new Set(catalog.filter(c => c.pool === p.name)
       .flatMap(c => Object.keys(c.official_models || {})).concat(p.allowed_models || []))].sort().map(id =>
@@ -164,43 +160,45 @@ function bindPoolModelEditor() {
 }
 
 async function accountForm(editId = '') {
+  const identity = state.enrollment.id, router = state.settings.router;
   const snapshot = structuredClone(remote());
   if (!snapshot.pools.length) throw Error('请先添加账号池');
   const originalPool = snapshot.pools.find(p => p.deployments.some(d => d.id === editId));
   const account = originalPool?.deployments.find(d => d.id === editId);
   if (editId && !account) throw Error('请刷新账号列表后重试');
   const local = account ? await api('/api/accounts/'+encodeURIComponent(editId)) : null;
+  if (state.enrollment.id !== identity || state.settings.router !== router) throw Error('商户连接已变化，请重新打开');
   if (local && local.local_revision !== snapshot.local_revision) throw Error('本地配置已变更，请刷新后再编辑');
-  const originalCredential = local?.credential_text || '', originalProxy = local?.proxy || '';
   const available = snapshot.pools.filter(p => !account || p.provider === account.provider);
   const kind = account?.oauth_account && account.provider !== 'workbuddy' ? 'oauth' : 'api';
-  const canAuthorize = !account && !!window.teemerchant?.oauth;
+  const originalCredential = local?.credential_text ? (kind === 'api' ? JSON.stringify({provider:account.provider,credential:{api_key:local.credential_text}},null,2) : local.credential_text) : '';
+  const originalProxy = local?.proxy || '';
+  const canAuthorize = !!window.teemerchant?.oauth && (!account || kind === 'oauth');
+  let oauthEditor;
   form(account ? '编辑账号' : '添加上游账号',
-    `<p>${account ? (local.credential_present?'已读取本机保存的账号资料。未修改的凭证不会重复发送到 Router。':'旧版账号尚无本地凭证，可在此补录；留空会保留 Router 中的原凭证。') : '账号 ID 是对外展示的别名，勿填写真实邮箱。'} 保存时先写入本地账号库。</p><div class="grid">`+
+    `<div class="grid">`+
     field('账号 ID（别名）','id',account?.id || '','text',`required maxlength="128" pattern="[a-zA-Z0-9_.-]+" ${account?'readonly':''}`)+
     poolSelect(available,originalPool?.name || selectedAccountPool)+
-    `<label>${account?'凭证类型':'添加方式'}<select name="kind" ${account?'disabled':''}><option value="api" ${kind==='api'?'selected':''}>API key</option><option value="oauth" ${kind==='oauth'?'selected':''}>JSON 导入</option>${canAuthorize?'<option value="authorize">OAuth 授权</option>':''}</select></label></div>
-    <p>服务类型和倍率继承所属账号池。需要新池时，请先在账号池列表中添加。</p>
-    <div id="account-manual-credential">
-    <label>凭证（本地保存）<textarea name="credential" ${account?'':'required'} autocomplete="off" spellcheck="false" placeholder="API key，或包含 provider 和 credential 的 OAuth JSON；xai 支持直接粘贴 Grok 原生凭证 JSON">${esc(originalCredential)}</textarea></label>
-    <p>OAuth 可只提供 access_token，省略 refresh_token 时不自动续期，到期后显示“已过期”，需手动更新凭证。JWT 会读取自带的到期时间；不含到期时间的令牌可填写 expires_at（Unix 秒）。</p>
-    <p>xai 池选择 JSON 导入后，可直接粘贴 Grok 原生凭证 JSON，程序会自动转换 key 和到期时间；账号别名、网络代理仍在本窗口填写。</p></div>`+
-    (canAuthorize?'<div id="account-oauth-options" hidden><p>在官方页面登录授权后自动获取凭证，无需填写 JSON。登录使用本机浏览器和系统网络；下方代理供 Router 访问上游。</p><label><input type="checkbox" name="save_refresh">保存 refresh token</label><p id="oauth-refresh-hint"></p></div>':'')+
-    field('账号网络代理（本地保存）','proxy',originalProxy,'text','autocomplete="off" placeholder="支持 http(s)://、socks5h:// 或 vless:// 链接"')+
-    '<p class="hint">VLESS 支持 TLS + TCP / XHTTP，可直接粘贴节点分享链接。节点证书必须有效；不支持的参数会提示错误。代理失败不会直连。Workbuddy 测试账号可填 direct://。</p>'+
+    `</div><div class="panelhead"><label for="account-credential">凭证 JSON</label>${canAuthorize?'<div id="account-oauth-actions" class="actions"><label><input type="checkbox" name="save_refresh">保留 refresh token</label><button type="button" id="account-authorize">OAuth 授权</button></div>':''}</div>
+    <textarea id="account-credential" name="credential" rows="10" ${account?'':'required'} autocomplete="off" spellcheck="false">${esc(originalCredential)}</textarea>
+    ${canAuthorize?'<div id="oauth-progress" aria-live="polite" hidden></div>':''}`+
+    field('账号网络代理','proxy',originalProxy,'text','autocomplete="off"')+
     `<div class="grid">`+field('并发上限','max_concurrent',account?.max_concurrent ?? 16,'number','required min="1" max="4096"')+
     field('RPM（0 为不限）','rpm',account?.rpm ?? 0,'number','required min="0" max="10000000"')+`</div>
     <label><input name="enabled" type="checkbox" ${!account || account.enabled?'checked':''}>启用账号</label>`, async f => {
+      oauthEditor?.ensureReady();
+      if (state.enrollment.id !== identity || state.settings.router !== router) throw Error('商户连接已变化，请重新打开');
       const entry = {id:f.get('id'),pool:f.get('pool'),provider:available.find(p=>p.name===f.get('pool'))?.provider,
-        kind:account ? kind : f.get('kind'),max_concurrent:Number(f.get('max_concurrent')),
+        kind:account ? kind : undefined,max_concurrent:Number(f.get('max_concurrent')),
         rpm:Number(f.get('rpm')),enabled:f.has('enabled')};
       const raw = f.get('credential').trim();
       if (raw && raw !== originalCredential.trim()) {
-        if (entry.kind === 'api') entry.api_key = raw;
-        else {
-          const value = AccountConfig.oauthInput(raw,entry.provider);
-          const original = originalCredential ? AccountConfig.oauthInput(originalCredential,entry.provider).credential : null;
-          if (JSON.stringify(value.credential) !== JSON.stringify(original)) entry.credential = value.credential;
+        const value = AccountConfig.accountInput(raw,entry.provider);
+        const original = originalCredential ? AccountConfig.accountInput(originalCredential,entry.provider) : null;
+        entry.kind = value.kind;
+        if (JSON.stringify(value) !== JSON.stringify(original)) {
+          if (value.kind === 'api') entry.api_key = value.api_key;
+          else entry.credential = value.credential;
           if (value.proxy) entry.proxy = value.proxy;
         }
       }
@@ -209,21 +207,9 @@ async function accountForm(editId = '') {
     },{submit:'保存并同步'});
   if(canAuthorize){
     const dialog=$('#dialog'),setup=dialog.querySelector('form');setup.id='oauth-setup';
-    dialog.insertAdjacentHTML('beforeend','<div id="oauth-progress" hidden></div>');
-    const updateMode=()=>{
-      const provider=available.find(p=>p.name===setup.elements.pool.value)?.provider;
-      const official=['openai','anthropic','xai'].includes(provider);
-      for(const option of setup.elements.kind.options)if(option.value!=='api')option.disabled=!official;
-      if(!official&&setup.elements.kind.value!=='api')setup.elements.kind.value='api';
-      const authorizing=setup.elements.kind.value==='authorize';
-      $('#account-manual-credential').hidden=authorizing;$('#account-oauth-options').hidden=!authorizing;
-      setup.elements.credential.disabled=authorizing;setup.elements.credential.required=!authorizing;
-      setup.querySelector('[type=submit]').textContent=authorizing?'前往官方授权':'保存并同步';
-    };
-    setup.elements.kind.addEventListener('change',updateMode);setup.elements.pool.addEventListener('change',updateMode);
-    updateMode();
-    attachOAuthForm({dialog,setup,progress:$('#oauth-progress'),identity:state.enrollment.id,available,
-      isOAuth:()=>setup.elements.kind.value==='authorize'});
+    let previousRefresh=false;
+    if(originalCredential){try{const c=AccountConfig.oauthInput(originalCredential,account.provider).credential;previousRefresh=!!(c.refresh_token||c.claudeAiOauth?.refreshToken);}catch{}}
+    oauthEditor=attachOAuthForm({dialog,setup,progress:$('#oauth-progress'),identity,available,account,editId,previousRefresh});
   }
 }
 
@@ -231,10 +217,7 @@ function batchAccountForm() {
   const snapshot = structuredClone(remote());
   if (!snapshot.pools.length) throw Error('请先添加账号池');
   let preview = null, fileGeneration = 0;
-  form('批量导入账号',`<p>每个账号对象必须包含 id、proxy，以及 credential（OAuth）或 api_key。代理与该账号单独绑定，不使用默认代理。服务类型和倍率继承账号池；单项可指定另一个已有池。</p>
-    ${poolSelect(snapshot.pools,selectedAccountPool,'默认账号池')}
-    <p>proxy 推荐填写为对象：scheme、host、port，以及可选的 username、password；也兼容代理 URL。仅 Workbuddy 测试账号允许填写 "direct://"。已有账号请使用“编辑”。</p>
-    <p>Grok 原生凭证可原样放入每条账号的 credential 中；仍须为每条账号填写 id 和 proxy。可省略 refresh_token，仅使用 access_token，到期后手动更新。</p>
+  form('批量导入账号',`${poolSelect(snapshot.pools,selectedAccountPool,'默认账号池')}
     <label>选择 JSON 文件（支持多选）<input id="import-files" type="file" accept=".json,application/json" multiple></label>
     <div class="panelhead"><span class="muted">账号 JSON</span><button id="import-example" type="button">下载示例</button></div>
     <label><textarea name="entries" rows="12" required spellcheck="false" autocomplete="off" placeholder='[{"id":"account-001","proxy":{"scheme":"socks5h","host":"proxy-1.example","port":1080,"username":"user1","password":"…"},"api_key":"…"}]'></textarea></label>

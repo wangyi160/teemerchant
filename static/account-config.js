@@ -128,6 +128,15 @@ const AccountConfig = (() => {
       throw Error('请填写匹配的 provider 和 credential；xai 账号也可直接粘贴 Grok 原生凭证 JSON');
     return {...value,credential:normalizeCredential(provider,value.credential)};
   }
+  function accountInput(text, provider) {
+    const value = oauthInput(text, provider);
+    if (Object.hasOwn(value.credential, 'api_key')) {
+      if (Object.keys(value.credential).length !== 1 || typeof value.credential.api_key !== 'string' || !value.credential.api_key.trim())
+        throw Error('api_key 凭证格式无效');
+      return {kind:'api',api_key:value.credential.api_key,proxy:value.proxy};
+    }
+    return {kind:'oauth',credential:value.credential,proxy:value.proxy};
+  }
   function draft(remote) {
     if (!remote) throw Error('请先验证并连接 Router');
     const s = remote.settings;
@@ -264,6 +273,6 @@ const AccountConfig = (() => {
     });
     return {config,rows};
   }
-  return {parse,build,draft,pool,poolModels,normalizeCredential,oauthInput};
+  return {parse,build,draft,pool,poolModels,normalizeCredential,oauthInput,accountInput};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = AccountConfig;

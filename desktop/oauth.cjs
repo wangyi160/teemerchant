@@ -3,7 +3,7 @@ const http=require('node:http');
 const crypto=require('node:crypto');
 const AccountConfig=require('../static/account-config.js');
 const {PROVIDERS,officialEndpoint,authorizationUrl,exchangeRequest,normalizeTokens}=require('./oauth-providers.cjs');
-const TERMINAL=new Set(['cancelled','expired','failed','saved']);
+const TERMINAL=new Set(['cancelled','expired','failed','saved','delivered']);
 const digest=value=>crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const same=(a,b)=>{
   if(typeof a!=='string'||typeof b!=='string')return false;
@@ -94,12 +94,12 @@ class OAuthController {
   }
   async start(body,identity){
     if(this.active&&!TERMINAL.has(this.active.status))throw Error('已有授权正在进行，请先完成或取消');
-    if(!body||Object.keys(body).some(k=>!['entry','edit_id','save_refresh'].includes(k))||typeof body.save_refresh!=='boolean')throw Error('授权参数无效');
+    if(!body||Object.keys(body).some(k=>!['entry','edit_id','save_refresh','credentials_only'].includes(k))||typeof body.save_refresh!=='boolean'||(body.credentials_only!==undefined&&typeof body.credentials_only!=='boolean'))throw Error('授权参数无效');
     const entry=body.entry;
     if(!entry||typeof entry!=='object'||Array.isArray(entry)||Object.keys(entry).some(k=>!['id','pool','proxy','max_concurrent','rpm','enabled'].includes(k)))throw Error('账号参数无效');
     const editId=body.edit_id||null;
     if(editId!==null&&(typeof editId!=='string'||editId!==entry.id))throw Error('重新授权的账号标识无效');
-    const flow={id:crypto.randomBytes(24).toString('base64url'),identity,entry:structuredClone(entry),editId,saveRefresh:body.save_refresh,
+    const flow={id:crypto.randomBytes(24).toString('base64url'),identity,entry:structuredClone(entry),editId,saveRefresh:body.save_refresh,credentialsOnly:body.credentials_only===true,
       status:'starting',deadline:Date.now()+this.timeout,abort:new AbortController(),credential:null};
     this.active=flow;
     flow.timer=setTimeout(()=>{if(flow.status!=='saving')this.end(flow,'expired','授权已超时，请重新开始');},this.timeout);flow.timer.unref();
@@ -108,7 +108,7 @@ class OAuthController {
       const pool=state.remote.pools.find(p=>p.name===entry.pool);
       if(!pool||!Object.hasOwn(PROVIDERS,pool.provider))throw Error('请先选择 ChatGPT、Claude 或 Grok 账号池');
       flow.provider=pool.provider;flow.config={...PROVIDERS[pool.provider]};flow.router=state.settings.router;
-      AccountConfig.build(state.remote,[{...entry,kind:'oauth',credential:{access_token:'pending-oauth'}}],{},editId);
+      if(!flow.credentialsOnly)AccountConfig.build(state.remote,[{...entry,kind:'oauth',credential:{access_token:'pending-oauth'}}],{},editId);
       flow.material=await this.material(state,entry,editId);if(!this.valid(flow))throw Error('授权已取消');
       flow.verifier=crypto.randomBytes(flow.provider==='xai'?96:32).toString('base64url');
       flow.state=crypto.randomBytes(32).toString('base64url');flow.nonce=crypto.randomBytes(24).toString('base64url');
@@ -195,8 +195,24 @@ class OAuthController {
       flow.verifier='';flow.state='';flow.nonce='';flow.url='';this.stopListener(flow);
     }catch(error){if(this.valid(flow))this.end(flow,'failed',error.message);}
   }
+  async result(id,identity){
+    const flow=this.require(id,identity);
+    if(flow.status!=='ready'||!flow.credential)throw Error('请先完成官方授权');
+    try{
+      const state=await this.context(identity);
+      if(state.settings.router!==flow.router)throw Error('Router 地址已变化，请重新授权');
+      if(flow.material!==await this.material(state,flow.entry,flow.editId))throw Error('账号资料已修改，请刷新后重新授权');
+      if(!this.valid(flow)||flow.status!=='ready')throw Error('授权已结束');
+      if(state.remote.pools.find(p=>p.name===flow.entry.pool)?.provider!==flow.provider)throw Error('账号池已变化，请重新选择');
+      if(flow.credential.expires_at<=Date.now()/1000+30)throw Error('授权令牌已过期，请重新登录');
+      // Explicit one-time delivery to the originating account editor. No persistence here.
+      const value={provider:flow.provider,credential:structuredClone(flow.credential)};
+      this.end(flow,'delivered');return value;
+    }catch(error){if(this.valid(flow))this.end(flow,'failed',error.message);throw error;}
+  }
   async save(id,identity){
     const flow=this.require(id,identity);
+    if(flow.credentialsOnly)throw Error('请在账号表单中保存凭证');
     if(flow.status==='saved')return this.status(id,identity);
     if(flow.status!=='ready'||!flow.credential)throw Error('请先完成官方授权');
     flow.status='saving';
@@ -222,6 +238,7 @@ class OAuthController {
     if(action==='cancel')return this.cancel(body.id,identity);
     if(action==='open')return this.open(body.id,identity);
     if(action==='submit')return this.submit(body.id,identity,body.code);
+    if(action==='result')return this.result(body.id,identity);
     if(action==='save')return this.save(body.id,identity);
     throw Error('不支持的 OAuth 操作');
   }

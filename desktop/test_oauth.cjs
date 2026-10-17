@@ -78,6 +78,32 @@ for(const provider of ['openai','anthropic','xai']){
     await f.controller.save(s.id,identity);assert.equal(f.writes.length,1);
   });
 }
+test('credential-only authorization returns editable tokens once without writing an account',async t=>{
+  const f=fixture();t.after(()=>f.controller.dispose());
+  const s=await f.start({entry:{pool:'pool'},credentials_only:true});
+  await complete(f,s);
+  assert.doesNotMatch(JSON.stringify(f.controller.status(s.id,identity)),/PRIVATE_REFRESH|signature/);
+  await assert.rejects(()=>f.controller.dispatch('result',{id:s.id},'m_'+'b'.repeat(32)));
+  await assert.rejects(()=>f.controller.save(s.id,identity));
+  const value=await f.controller.dispatch('result',{id:s.id},identity);
+  assert.equal(value.provider,'openai');assert.equal(value.credential.refresh_token,'PRIVATE_REFRESH');
+  assert.equal(value.credential.account_id,'real-workspace');assert.match(value.credential.access_token,/signature/);
+  assert.equal(f.writes.length,0);assert.equal(f.controller.active.credential,null);
+  assert.equal(f.controller.status(s.id,identity).status,'delivered');
+  await assert.rejects(()=>f.controller.dispatch('result',{id:s.id},identity));
+});
+test('credential result is refused after merchant, router, pool or existing account changes',async t=>{
+  for(const change of ['merchant','router','pool','account']){
+    const f=fixture();t.after(()=>f.controller.dispose());
+    const s=await f.start({entry:{id:'old',pool:'pool'},edit_id:'old',credentials_only:true});await complete(f,s);
+    if(change==='merchant')f.state.enrollment.id='m_'+'b'.repeat(32);
+    if(change==='router')f.state.settings.router='https://changed.example';
+    if(change==='pool')f.state.remote.pools[0].provider='anthropic';
+    if(change==='account')f.local.credential_text='changed';
+    await assert.rejects(()=>f.controller.dispatch('result',{id:s.id},identity));
+    assert.equal(f.writes.length,0);assert.equal(f.controller.active.credential,null);
+  }
+});
 test('callback rejects wrong state, Unicode state, duplicate parameters, host, path and unsupported method without consuming login',async t=>{
   const f=fixture();t.after(()=>f.controller.dispose());const s=await f.start();
   for(const state of ['wrong','中'.repeat(43),''])assert.equal((await callback(s.auth_url,{state})).status,400);

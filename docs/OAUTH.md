@@ -1,12 +1,12 @@
 # Desktop OAuth binding
 
-Open **添加账号** and choose **OAuth 授权** under **添加方式** for an existing
-ChatGPT, Claude or Grok pool. The same form offers **JSON 导入** and **API key**;
-switching methods preserves the shared account fields and unsubmitted JSON.
-Existing OAuth accounts offer **重新授权**. Workbuddy continues to use an API key.
-Choose a pool, an account alias and the account's egress proxy, then sign in in the
-official site opened in the system browser. No provider password is entered into
-teemerchant. Manual and batch JSON import remain available.
+Open **添加账号**, choose a ChatGPT, Claude or Grok pool and click the independent
+**OAuth 授权** button beside the credential JSON editor. No credential-method
+selector is shown. Authorization can run before filling in the alias or proxy.
+On completion the actual tokens and metadata fill the editable JSON textarea;
+the account is not yet saved. Existing accounts use the same editor through
+**编辑** or **重新授权**. Manual and batch JSON import remain available. Workbuddy
+uses a JSON credential containing `api_key`, without an OAuth button.
 
 | Pool provider | Authorization | Callback | Renewal in Router |
 | --- | --- | --- | --- |
@@ -40,8 +40,12 @@ The main process generates public CLI client IDs, PKCE secrets, state and URLs.
 Client IDs are not secrets. Only HTTPS official hosts are allowed for discovery
 and token exchange; redirects, arbitrary endpoints and certificate bypasses are
 not supported. Responses are bounded and response bodies are never surfaced as
-errors. The renderer receives only authorization progress, the temporary browser
-URL, expiry and refresh capability. It receives no OAuth tokens through this flow.
+errors. Progress queries never include tokens. After authorization an explicit,
+one-time `result` IPC action validates the originating merchant, Router, pool and
+existing account fingerprint before returning the credential to the local editor.
+The controller then clears its copy. The normal account save path persists only
+the JSON the user confirms, with local/remote revision checks. Closing the editor
+discards the credential; token retrieval alone performs no configuration write.
 
 ChatGPT/Grok listeners bind only to loopback during an active login. The handler
 checks method, path, Host, state and a single code, and consumes each code once.
