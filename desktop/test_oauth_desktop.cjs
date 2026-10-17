@@ -36,7 +36,8 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
       };
     });
     await page.locator('aside [data-id=accounts]').click();
-    for(const [pool,provider] of [['claude','anthropic'],['grok','xai']]){
+    assert.equal(await page.locator('[data-action=oauth-bind]').count(),0);
+    for(const [pool,provider] of [['claude','anthropic'],['grok','xai'],['workbuddy','workbuddy']]){
       await page.locator('[data-action=pool]').click();await page.locator('[name=name]').fill(pool);
       await page.locator('[name=provider]').selectOption(provider);await page.getByRole('button',{name:'保存并同步',exact:true}).click();await page.locator('#dialog').waitFor({state:'hidden'});
     }
@@ -47,8 +48,28 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
       assert.equal(status,200);
     }
     for(const pool of ['openai','claude','grok']){
-      await page.locator('[data-action=oauth-bind]').click();await page.locator('#oauth-setup [name=pool]').selectOption(pool);
+      await page.locator('[data-action=account]').click();await page.locator('#oauth-setup [name=pool]').selectOption(pool);
       await page.locator('#oauth-setup [name=id]').fill(pool+'-oauth');await page.locator('#oauth-setup [name=proxy]').fill('socks5h://proxy.example:1080');
+      await page.locator('#oauth-setup [name=kind]').selectOption('oauth');
+      await page.locator('#oauth-setup [name=credential]').fill('{"access_token":"DRAFT_ONLY"}');
+      await page.locator('#oauth-setup [name=kind]').selectOption('authorize');
+      assert.equal(await page.locator('[name=credential]').isVisible(),false);assert.equal(await page.locator('[name=credential]').isDisabled(),true);
+      await page.locator('#oauth-setup [name=kind]').selectOption('oauth');
+      assert.equal(await page.locator('[name=credential]').inputValue(),'{"access_token":"DRAFT_ONLY"}');
+      assert.equal(await page.locator('[name=credential]').isDisabled(),false);
+      assert.equal(await page.locator('[name=id]').inputValue(),pool+'-oauth');
+      assert.equal(await page.locator('[name=proxy]').inputValue(),'socks5h://proxy.example:1080');
+      await page.locator('#oauth-setup [name=kind]').selectOption('authorize');
+      if(pool==='openai'){
+        await page.locator('[name=pool]').selectOption('workbuddy');
+        assert.equal(await page.locator('[name=kind]').inputValue(),'api');
+        assert.equal(await page.locator('[name=kind] option[value=authorize]').evaluate(el=>el.disabled),true);
+        await page.locator('[name=pool]').selectOption('openai');await page.locator('[name=kind]').selectOption('authorize');
+        await page.locator('[name=enabled]').uncheck();
+        fs.mkdirSync(path.join(ROOT,'desktop-test-results'),{recursive:true});
+        await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());
+        await page.screenshot({path:path.join(ROOT,'desktop-test-results','account-add-oauth.png')});
+      }
       assert.equal(await page.locator('[name=save_refresh]').isChecked(),pool!=='claude');
       if(pool==='grok')await page.locator('[name=save_refresh]').uncheck();
       await page.getByRole('button',{name:'前往官方授权',exact:true}).click();await page.locator('#oauth-open').waitFor();
@@ -69,6 +90,7 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
     }
     const s=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
     for(const pool of ['openai','claude','grok'])assert.ok(s.remote.pools.find(p=>p.name===pool).deployments.some(d=>d.id===pool+'-oauth'));
+    assert.equal(s.remote.pools.find(p=>p.name==='openai').deployments.find(d=>d.id==='openai-oauth').enabled,false);
     assert.doesNotMatch(JSON.stringify(s),/PRIVATE_DESKTOP/);
     const local=await page.evaluate(id=>window.teemerchant.request('GET','/api/accounts/grok-oauth',{},id),s.enrollment.id);
     assert.ok(local.ok);const credential=JSON.parse(local.value.credential_text).credential;assert.equal(credential.refresh_token,undefined);
@@ -81,6 +103,15 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
     await page.keyboard.press('Escape');await page.locator('#dialog').waitFor({state:'hidden'});
     await page.locator('[data-action=oauth-renew][data-id=grok-oauth]').click();await page.getByRole('button',{name:'前往官方授权',exact:true}).click();await page.locator('#oauth-open').waitFor();
     await finishCallback();await page.locator('#oauth-save').waitFor();await page.locator('#oauth-save').click();await page.locator('#dialog').waitFor({state:'hidden'});
+    await page.locator('[data-action=account]').click();await page.locator('[name=pool]').selectOption('openai');
+    await page.locator('[name=id]').fill('manual-json');await page.locator('[name=proxy]').fill('https://proxy.example');
+    await page.locator('[name=kind]').selectOption('authorize');await page.locator('[name=kind]').selectOption('oauth');
+    await page.locator('[name=credential]').fill('{"provider":"openai","credential":{"access_token":"PRIVATE_MANUAL_JSON"}}');
+    await page.getByRole('button',{name:'保存并同步',exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('#dialog').open||document.querySelector('#dialog [role=alert]')?.textContent);
+    assert.equal(await page.locator('#dialog').isVisible(),false,await page.evaluate(()=>document.querySelector('#dialog [role=alert]')?.textContent||''));
+    const manual=await page.evaluate(id=>window.teemerchant.request('GET','/api/accounts/manual-json',{},id),s.enrollment.id);
+    assert.equal(JSON.parse(manual.value.credential_text).credential.access_token,'PRIVATE_MANUAL_JSON');
     assert.deepEqual(errors,[]);assert.equal(await app.evaluate(()=>global.testOAuth.exchanges),4);
     await app.close();app=await launch();const restored=(await (await app.firstWindow()).evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
     assert.equal(restored.remote.local_sync.state,'pending');assert.equal(restored.remote.pools.find(p=>p.name==='grok').deployments.length,1);

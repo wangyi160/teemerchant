@@ -14,7 +14,7 @@ async function oauthForm(editId='') {
   let previousRefresh=false;
   if(local?.credential_text){try{const c=AccountConfig.oauthInput(local.credential_text,account.provider).credential;previousRefresh=!!(c.refresh_token||c.claudeAiOauth?.refreshToken);}catch{}}
   const selected=originalPool?.name||available.find(p=>p.name===selectedAccountPool)?.name||available[0].name;
-  const dialog=$('#dialog');let current=null,poll=null,busy=false,closed=false,lastView='';
+  const dialog=$('#dialog');
   dialog.classList.remove('wide');delete dialog.dataset.busy;
   dialog.innerHTML=`<h2>${account?'重新授权':'OAuth 绑定账号'}</h2><form id="oauth-setup">
     <p>在官方页面登录授权，程序自动获取凭证。账号 ID 是展示给用户的别名，无需填写真实邮箱。</p>
@@ -25,23 +25,32 @@ async function oauthForm(editId='') {
     <label><input type="checkbox" name="save_refresh">保存 refresh token</label><p id="oauth-refresh-hint"></p>
     <p class="error" role="alert"></p><div class="actions"><button type="button" id="oauth-close">取消</button><button type="submit" class="primary">前往官方授权</button></div></form><div id="oauth-progress" hidden></div>`;
   const setup=$('#oauth-setup'),progress=$('#oauth-progress');
+  attachOAuthForm({dialog,setup,progress,identity,available,account,editId,previousRefresh});
+  dialog.showModal();
+}
+function attachOAuthForm({dialog,setup,progress,identity,available,account=null,editId='',previousRefresh=false,isOAuth=()=>true}) {
+  let current=null,poll=null,busy=false,closed=false,lastView='',disabledControls=[];
+  const manualSubmit=setup.onsubmit;
   const refreshHint=()=>{
-    const provider=available.find(p=>p.name===setup.elements.pool.value).provider;
+    const provider=available.find(p=>p.name===setup.elements.pool.value)?.provider;
     setup.elements.save_refresh.checked=account?previousRefresh:provider!=='anthropic';
     $('#oauth-refresh-hint').textContent=provider==='anthropic'?
       'Claude 当前需在令牌到期后点击“重新授权”；即使保存 refresh token，Router 也不会自动续期。':
       '勾选后 Router 可用 refresh token 续期；不勾选则只保存访问凭证，到期后需重新授权。';
   };
-  refreshHint();setup.elements.pool.onchange=refreshHint;
+  refreshHint();setup.elements.pool.addEventListener('change',refreshHint);
   const call=async(action,body)=>{
     const result=await window.teemerchant.oauth(action,body,identity);
     if(!result.ok)throw Error(result.error);return result.value;
   };
-  const setBusy=value=>{busy=value;if(value)dialog.dataset.busy='true';else delete dialog.dataset.busy;
-    dialog.querySelectorAll('button,input,select').forEach(el=>el.disabled=value);};
+  const setBusy=value=>{
+    busy=value;
+    if(value){dialog.dataset.busy='true';disabledControls=Array.from(dialog.querySelectorAll('button,input,select,textarea'),el=>[el,el.disabled]);disabledControls.forEach(([el])=>el.disabled=true);}
+    else{delete dialog.dataset.busy;disabledControls.forEach(([el,disabled])=>el.disabled=disabled);disabledControls=[];}
+  };
   const error=message=>{const target=(progress.hidden?setup:progress).querySelector('[role=alert]');if(target)target.textContent=message;};
   const close=async()=>{
-    if(busy)return;
+    if(busy||dialog.dataset.busy)return;
     setBusy(true);
     try{if(current&&!['saved','cancelled','failed','expired'].includes(current.status))await call('cancel',{id:current.id});dialog.close();}
     catch(e){error(e.message);}finally{if(!closed)setBusy(false);}
@@ -53,7 +62,8 @@ async function oauthForm(editId='') {
     delete dialog.dataset.busy;
   };
   dialog.addEventListener('cancel',onCancel);dialog.addEventListener('close',onClose);
-  $('#oauth-close').onclick=close;
+  const cancelButton=setup.querySelector('#oauth-close, [data-action=close]');
+  cancelButton.removeAttribute('data-action');cancelButton.id='oauth-close';cancelButton.onclick=close;
   async function operation(action,body={}) {
     if(busy)return;setBusy(true);clearTimeout(poll);
     try{
@@ -97,18 +107,18 @@ async function oauthForm(editId='') {
     },1000);
   }
   setup.onsubmit=async e=>{
+    if(!isOAuth())return manualSubmit(e);
     e.preventDefault();if(busy)return;
     const f=new FormData(setup),entry={id:f.get('id').trim(),pool:f.get('pool'),proxy:f.get('proxy').trim(),max_concurrent:Number(f.get('max_concurrent')),rpm:Number(f.get('rpm'))};
+    if(setup.elements.enabled)entry.enabled=f.has('enabled');
     setBusy(true);error('');
     try{current=await call('start',{entry,edit_id:editId||null,save_refresh:f.has('save_refresh')});paint();}
     catch(e){error(e.message);}
     finally{setBusy(false);schedule();}
   };
-  dialog.showModal();
 }
 const actionBeforeOAuth=action;
 action=async(a,id)=>{
-  if(a==='oauth-bind')return oauthForm();
   if(a==='oauth-renew')return oauthForm(id);
   return actionBeforeOAuth(a,id);
 };

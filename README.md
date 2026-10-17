@@ -35,7 +35,7 @@ API key 直接填入；OAuth 导入使用 router 账号格式（`provider`、`cr
 
 ### 官方 OAuth 绑定
 
-桌面版在账号列表提供 **OAuth 绑定**：选择 ChatGPT、Claude 或 Grok 账号池，填写账号别名和网络代理，点击“前往官方授权”，在系统浏览器中登录。ChatGPT/Grok 会自动接收回调；Claude 登录后粘贴一次官方页面给出的授权码，程序自动换取凭证，无需手工整理 JSON。授权成功后点击“保存并同步”，先写入本地加密账号库，再通过已验证的 TEE 连接同步到 Router。Router 离线时明确显示等待同步。
+桌面版统一从 **添加账号** 进入，在“添加方式”选择 **JSON 导入**、**OAuth 授权** 或 **API key**。切换方式保留账号池、账号别名、代理和限额，也保留尚未提交的 JSON；Workbuddy 只提供 API key。选择 OAuth 授权后，填写 ChatGPT、Claude 或 Grok 账号池、别名和网络代理，点击“前往官方授权”，在系统浏览器中登录。ChatGPT/Grok 会自动接收回调；Claude 登录后粘贴一次官方页面给出的授权码，程序自动换取凭证，无需手工整理 JSON。授权成功后点击“保存并同步”，先写入本地加密账号库，再通过已验证的 TEE 连接同步到 Router。Router 离线时明确显示等待同步。
 
 已有 OAuth 账号可点击 **重新授权**，保留账号 ID、所属池、倍率、开放模型及启用状态。可选择是否保存 refresh token；重新授权默认沿用本地原凭证的选择，未保存时到期后手动重新授权。ChatGPT/Grok 保存 refresh token 后由 Router 续期；Claude 当前仍需手动重新授权，保存 refresh token 也不会自动续期。
 

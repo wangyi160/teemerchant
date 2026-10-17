@@ -75,7 +75,7 @@ function accountsView() {
     ${pools().length?'':'<p>尚无账号池。先添加账号池并设置服务类型和倍率，再向池内添加账号。</p>'}
     ${table(['账号池','服务','账号数量','倍率','对外模型','操作'],poolRows)}</section>
     <section class="panel"><div class="panelhead"><h2>${selectedAccountPool ? esc(selectedAccountPool)+' · 账号' : '全部账号'}<small class="muted">（${rows.length}）</small></h2>
-    <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account'):''}${window.teemerchant?.oauth && pools().some(p=>['openai','anthropic','xai'].includes(p.provider))?btn('OAuth 绑定','oauth-bind','','primary'):''}</div></div>
+    <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account','','primary'):''}</div></div>
     ${selectedAccountPool && !rows.length?'<p>此账号池还没有账号，可以逐个添加或批量导入。</p>':''}
     ${table(['账号别名 / 账号池','服务 / 凭证','状态','并发 / RPM','操作'],rows)}</section>
     ${poolModelCatalog(chosen, catalog)}`;
@@ -174,15 +174,18 @@ async function accountForm(editId = '') {
   const originalCredential = local?.credential_text || '', originalProxy = local?.proxy || '';
   const available = snapshot.pools.filter(p => !account || p.provider === account.provider);
   const kind = account?.oauth_account && account.provider !== 'workbuddy' ? 'oauth' : 'api';
+  const canAuthorize = !account && !!window.teemerchant?.oauth;
   form(account ? '编辑账号' : '添加上游账号',
     `<p>${account ? (local.credential_present?'已读取本机保存的账号资料。未修改的凭证不会重复发送到 Router。':'旧版账号尚无本地凭证，可在此补录；留空会保留 Router 中的原凭证。') : '账号 ID 是对外展示的别名，勿填写真实邮箱。'} 保存时先写入本地账号库。</p><div class="grid">`+
     field('账号 ID（别名）','id',account?.id || '','text',`required maxlength="128" pattern="[a-zA-Z0-9_.-]+" ${account?'readonly':''}`)+
     poolSelect(available,originalPool?.name || selectedAccountPool)+
-    `<label>凭证类型<select name="kind" ${account?'disabled':''}><option value="api" ${kind==='api'?'selected':''}>API key</option><option value="oauth" ${kind==='oauth'?'selected':''}>OAuth 账号 JSON</option></select></label></div>
+    `<label>${account?'凭证类型':'添加方式'}<select name="kind" ${account?'disabled':''}><option value="api" ${kind==='api'?'selected':''}>API key</option><option value="oauth" ${kind==='oauth'?'selected':''}>JSON 导入</option>${canAuthorize?'<option value="authorize">OAuth 授权</option>':''}</select></label></div>
     <p>服务类型和倍率继承所属账号池。需要新池时，请先在账号池列表中添加。</p>
+    <div id="account-manual-credential">
     <label>凭证（本地保存）<textarea name="credential" ${account?'':'required'} autocomplete="off" spellcheck="false" placeholder="API key，或包含 provider 和 credential 的 OAuth JSON；xai 支持直接粘贴 Grok 原生凭证 JSON">${esc(originalCredential)}</textarea></label>
     <p>OAuth 可只提供 access_token，省略 refresh_token 时不自动续期，到期后显示“已过期”，需手动更新凭证。JWT 会读取自带的到期时间；不含到期时间的令牌可填写 expires_at（Unix 秒）。</p>
-    <p>xai 池选择 OAuth 后，可直接粘贴 Grok 原生凭证 JSON，程序会自动转换 key 和到期时间；账号别名、网络代理仍在本窗口填写。</p>`+
+    <p>xai 池选择 JSON 导入后，可直接粘贴 Grok 原生凭证 JSON，程序会自动转换 key 和到期时间；账号别名、网络代理仍在本窗口填写。</p></div>`+
+    (canAuthorize?'<div id="account-oauth-options" hidden><p>在官方页面登录授权后自动获取凭证，无需填写 JSON。登录使用本机浏览器和系统网络；下方代理供 Router 访问上游。</p><label><input type="checkbox" name="save_refresh">保存 refresh token</label><p id="oauth-refresh-hint"></p></div>':'')+
     field('账号网络代理（本地保存）','proxy',originalProxy,'text','autocomplete="off" placeholder="支持 http(s)://、socks5h:// 或 vless:// 链接"')+
     '<p class="hint">VLESS 支持 TLS + TCP / XHTTP，可直接粘贴节点分享链接。节点证书必须有效；不支持的参数会提示错误。代理失败不会直连。Workbuddy 测试账号可填 direct://。</p>'+
     `<div class="grid">`+field('并发上限','max_concurrent',account?.max_concurrent ?? 16,'number','required min="1" max="4096"')+
@@ -204,6 +207,24 @@ async function accountForm(editId = '') {
       if (f.get('proxy').trim() && f.get('proxy').trim() !== originalProxy) entry.proxy = f.get('proxy').trim();
       await save(AccountConfig.build(snapshot,[entry],{},editId || null).config);
     },{submit:'保存并同步'});
+  if(canAuthorize){
+    const dialog=$('#dialog'),setup=dialog.querySelector('form');setup.id='oauth-setup';
+    dialog.insertAdjacentHTML('beforeend','<div id="oauth-progress" hidden></div>');
+    const updateMode=()=>{
+      const provider=available.find(p=>p.name===setup.elements.pool.value)?.provider;
+      const official=['openai','anthropic','xai'].includes(provider);
+      for(const option of setup.elements.kind.options)if(option.value!=='api')option.disabled=!official;
+      if(!official&&setup.elements.kind.value!=='api')setup.elements.kind.value='api';
+      const authorizing=setup.elements.kind.value==='authorize';
+      $('#account-manual-credential').hidden=authorizing;$('#account-oauth-options').hidden=!authorizing;
+      setup.elements.credential.disabled=authorizing;setup.elements.credential.required=!authorizing;
+      setup.querySelector('[type=submit]').textContent=authorizing?'前往官方授权':'保存并同步';
+    };
+    setup.elements.kind.addEventListener('change',updateMode);setup.elements.pool.addEventListener('change',updateMode);
+    updateMode();
+    attachOAuthForm({dialog,setup,progress:$('#oauth-progress'),identity:state.enrollment.id,available,
+      isOAuth:()=>setup.elements.kind.value==='authorize'});
+  }
 }
 
 function batchAccountForm() {

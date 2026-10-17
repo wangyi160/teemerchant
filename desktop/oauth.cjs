@@ -96,7 +96,7 @@ class OAuthController {
     if(this.active&&!TERMINAL.has(this.active.status))throw Error('已有授权正在进行，请先完成或取消');
     if(!body||Object.keys(body).some(k=>!['entry','edit_id','save_refresh'].includes(k))||typeof body.save_refresh!=='boolean')throw Error('授权参数无效');
     const entry=body.entry;
-    if(!entry||typeof entry!=='object'||Array.isArray(entry)||Object.keys(entry).some(k=>!['id','pool','proxy','max_concurrent','rpm'].includes(k)))throw Error('账号参数无效');
+    if(!entry||typeof entry!=='object'||Array.isArray(entry)||Object.keys(entry).some(k=>!['id','pool','proxy','max_concurrent','rpm','enabled'].includes(k)))throw Error('账号参数无效');
     const editId=body.edit_id||null;
     if(editId!==null&&(typeof editId!=='string'||editId!==entry.id))throw Error('重新授权的账号标识无效');
     const flow={id:crypto.randomBytes(24).toString('base64url'),identity,entry:structuredClone(entry),editId,saveRefresh:body.save_refresh,

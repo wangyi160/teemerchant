@@ -1,7 +1,9 @@
 # Desktop OAuth binding
 
-The account page offers **OAuth 绑定** for an existing ChatGPT, Claude or Grok pool,
-and **重新授权** on existing OAuth accounts. Workbuddy continues to use an API key.
+Open **添加账号** and choose **OAuth 授权** under **添加方式** for an existing
+ChatGPT, Claude or Grok pool. The same form offers **JSON 导入** and **API key**;
+switching methods preserves the shared account fields and unsubmitted JSON.
+Existing OAuth accounts offer **重新授权**. Workbuddy continues to use an API key.
 Choose a pool, an account alias and the account's egress proxy, then sign in in the
 official site opened in the system browser. No provider password is entered into
 teemerchant. Manual and batch JSON import remain available.
