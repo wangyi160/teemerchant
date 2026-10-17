@@ -1,9 +1,10 @@
 'use strict';
-const {app, BrowserWindow, Menu, Tray, nativeImage, protocol, ipcMain, dialog, clipboard} = require('electron');
+const {app, BrowserWindow, Menu, Tray, nativeImage, protocol, ipcMain, dialog, clipboard, shell, session: sessions} = require('electron');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
 const {Backend} = require('./bridge.cjs');
+const {OAuthController} = require('./oauth.cjs');
 const HOME = 'teemerchant://app/';
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'";
 protocol.registerSchemesAsPrivileged([{scheme: 'teemerchant', privileges: {standard: true, secure: true, supportFetchAPI: true}}]);
@@ -26,7 +27,7 @@ app.setPath('userData', path.join(directory, 'desktop'));
 app.setPath('sessionData', path.join(directory, 'desktop'));
 app.setPath('crashDumps', path.join(directory, 'desktop', 'crashes'));
 app.setAppLogsPath(path.join(directory, 'desktop', 'logs'));
-let window, tray, backend, quitting = false, stopped = false;
+let window, tray, backend, oauth, quitting = false, stopped = false;
 const haveLock = app.requestSingleInstanceLock();
 if (!haveLock) app.quit();
 
@@ -44,10 +45,15 @@ async function start() {
   const executable = path.join(resources, 'engine', 'teemerchant-engine.exe');
   backend = new Backend(executable, ['--data', directory]);
   await backend.ready;
+  // Separate, non-persistent networking context. Renderer requests remain blocked.
+  const authSession = sessions.fromPartition('merchant-oauth', {cache:false});
+  await authSession.setProxy({mode:'system'});
+  oauth = new OAuthController({backend, fetcher:(url, options)=>authSession.fetch(url, options),
+    openBrowser:url=>shell.openExternal(url)});
   protocol.handle('teemerchant', async request => {
     const url = new URL(request.url);
     if (url.protocol !== 'teemerchant:' || url.host !== 'app' || url.username || url.password || url.search || url.hash || request.method !== 'GET') return new Response('', {status: 403});
-    const names = {'/': ['index.html'], '/app.css': ['app.css'], '/app.js': ['account-config.js', 'app.js', 'account-ui.js', 'revenue-ui.js', 'desktop-ui.js']};
+    const names = {'/': ['index.html'], '/app.css': ['app.css'], '/app.js': ['account-config.js', 'app.js', 'account-ui.js', 'revenue-ui.js', 'desktop-ui.js', 'oauth-ui.js']};
     const files = names[url.pathname];
     if (!files) return new Response('', {status: 404});
     const body = (await Promise.all(files.map(name => fs.readFile(path.join(assets, name))))).join('\n');
@@ -67,11 +73,18 @@ async function start() {
   window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
   window.webContents.on('will-navigate', (event, url) => { if (url !== HOME) event.preventDefault(); });
   window.webContents.on('will-attach-webview', event => event.preventDefault());
+  window.webContents.on('did-start-loading', () => oauth.dispose());
+  window.webContents.on('render-process-gone', () => oauth.dispose());
   // Downloaded import examples use a native save dialog, never an automatic file write.
   session.on('will-download', (_event, item) => item.setSaveDialogOptions({title:'保存账号导入示例', defaultPath:'merchant-accounts.example.json', filters:[{name:'JSON',extensions:['json']}]}));
   ipcMain.handle('merchant:request', async (event, method, route, body, identity) => {
     trusted(event);
-    try { return {ok:true, value:await backend.call(method, route, body, identity)}; }
+    try { oauth.beforeMutation(method, route); return {ok:true, value:await backend.call(method, route, body, identity)}; }
+    catch (error) { return {ok:false, error:error.message}; }
+  });
+  ipcMain.handle('merchant:oauth', async (event, action, body, identity) => {
+    trusted(event);
+    try { return {ok:true, value:await oauth.dispatch(action, body, identity)}; }
     catch (error) { return {ok:false, error:error.message}; }
   });
   ipcMain.handle('merchant:choose-file', async (event, kind) => {
@@ -110,6 +123,7 @@ if (haveLock) {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    oauth?.dispose();
     if (tray) tray.destroy();
     if (window) window.hide();
     Promise.resolve(backend?.close()).finally(() => { stopped = true; app.quit(); });

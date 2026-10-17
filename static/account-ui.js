@@ -54,7 +54,7 @@ function accountsView() {
     return `<tr><td><strong>${esc(d.id)}</strong><small>${esc(p.name)}</small></td>
       <td>${esc(d.provider)}<small>${d.oauth_account && d.provider !== 'workbuddy' ? 'OAuth' : 'API key'}</small></td>
       <td><span class="${cls}">${status}</span></td><td>${d.max_concurrent} / ${d.rpm || '不限'}</td>
-      <td class="row-actions">${btn('编辑','edit-account',d.id)} ${btn(d.enabled?'停用':'启用','toggle-account',d.id)} ${btn('删除','delete-account',d.id)}</td></tr>`;
+      <td class="row-actions">${btn('编辑','edit-account',d.id)} ${window.teemerchant?.oauth && d.oauth_account && ['openai','anthropic','xai'].includes(d.provider)?btn('重新授权','oauth-renew',d.id):''} ${btn(d.enabled?'停用':'启用','toggle-account',d.id)} ${btn('删除','delete-account',d.id)}</td></tr>`;
   }));
   const poolRows = pools().map(p => {
     const rate = (settings().pool_pricing || []).find(r => r.pool === p.name);
@@ -75,7 +75,7 @@ function accountsView() {
     ${pools().length?'':'<p>尚无账号池。先添加账号池并设置服务类型和倍率，再向池内添加账号。</p>'}
     ${table(['账号池','服务','账号数量','倍率','对外模型','操作'],poolRows)}</section>
     <section class="panel"><div class="panelhead"><h2>${selectedAccountPool ? esc(selectedAccountPool)+' · 账号' : '全部账号'}<small class="muted">（${rows.length}）</small></h2>
-    <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account','','primary'):''}</div></div>
+    <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account'):''}${window.teemerchant?.oauth && pools().some(p=>['openai','anthropic','xai'].includes(p.provider))?btn('OAuth 绑定','oauth-bind','','primary'):''}</div></div>
     ${selectedAccountPool && !rows.length?'<p>此账号池还没有账号，可以逐个添加或批量导入。</p>':''}
     ${table(['账号别名 / 账号池','服务 / 凭证','状态','并发 / RPM','操作'],rows)}</section>
     ${poolModelCatalog(chosen, catalog)}`;

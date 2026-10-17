@@ -1,6 +1,6 @@
 {
   "name": "teemerchant",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Local merchant desktop workbench for TEE Router",
   "author": "teemerchant contributors",
   "license": "MIT",
@@ -13,8 +13,9 @@
   "scripts": {
     "start": "node scripts/start.cjs",
     "build:engine": "python scripts/build_engine.py",
-    "test": "node --test test_accounts.cjs desktop/test_bridge.cjs",
+    "test": "node --test test_accounts.cjs desktop/test_bridge.cjs desktop/test_oauth.cjs",
     "test:desktop": "node --test desktop/test_desktop.cjs",
+    "test:oauth-desktop": "node --test desktop/test_oauth_desktop.cjs",
     "test:portable": "node --test desktop/test_portable.cjs",
     "pack": "electron-builder --dir --win --x64",
     "dist": "electron-builder --win zip --x64"
