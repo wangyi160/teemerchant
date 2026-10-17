@@ -27,6 +27,24 @@ const remote = () => ({merchant:{allow_test:false},settings:{revision:7,max_conc
 const oauth = id => ({id,pool:'new-pool',provider:'openai',proxy:'socks5h://proxy.example:1080',credential:{access_token:'fixture-access',refresh_token:'fixture-refresh'}});
 const defaults = {multiplier_millionths:1000000};
 
+test('VLESS links bind per account, redact credentials and can update only the proxy',()=>{
+  const node='vless://12345678-1234-1234-1234-123456789abc@node.example:443?security=tls&type=xhttp&path=%2Fsecret-path&mode=stream-one#private-label';
+  const result=build(remote(),[{...oauth('vless-one'),proxy:node},{...oauth('socks-two')}]);
+  assert.equal(result.config.accounts['vless-one'].proxy,node);
+  assert.equal(result.config.accounts['socks-two'].proxy,'socks5h://proxy.example:1080');
+  const preview=JSON.stringify(result.rows);
+  for(const secret of ['12345678','secret-path','private-label','fixture-access']) assert.ok(!preview.includes(secret));
+  const edit=build(remote(),[{id:'alias',proxy:node}],{},'alias');
+  assert.equal(edit.config.accounts['private-ref'].proxy,node);
+  assert.equal(edit.config.accounts['private-ref'].credential,undefined);
+  const base='vless://12345678-1234-1234-1234-123456789abc@node.example:443?';
+  for(const query of ['security=none','security=reality','security=tls&allowInsecure=1','security=tls&security=none',
+    'security=tls&type=ws','security=tls&type=xhttp&mode=typo','security=tls&path=/ignored',
+    'security=tls&type=xhttp&flow=xtls-rprx-vision','security=tls&sni=node%0aSECRET','security=tls&alpn=h3']) {
+    assert.throws(()=>build(remote(),[{...oauth('bad'),proxy:base+query}]),e=>!e.message.includes('12345678')&&!e.message.includes('SECRET'));
+  }
+});
+
 test('pool creation persists an independent empty pool without rewriting credentials or other prices',()=>{
   const source=remote(), before=structuredClone(source);
   const config=pool(source,{name:'claude-team',provider:'anthropic',multiplier_millionths:250000});

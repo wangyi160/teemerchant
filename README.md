@@ -101,6 +101,14 @@ OAuth 自动续期目前仍由 Router 执行，本地保存最近导入或恢复
 
 代理对象中 `scheme` 支持 `http`、`https`、`socks5h`；`host` 只填主机名或 IP（IPv6 用方括号），`port` 为 1–65535 的整数。无需认证时省略 `username` 和 `password`；需要认证时填写原始用户名和密码，程序会自动编码其中的 `@`、`:`、`/` 等特殊字符。也兼容每条账号中的 URL 写法，如 `"proxy": "socks5h://user:password@proxy.example:1080"`，URL 内的特殊字符需要自行百分号编码。仅获授权的 Workbuddy 测试账号可显式填写 `"proxy": "direct://"`。同一代理可显式绑定多个账号，但不会为缺少 `proxy` 的账号自动补值。
 
+VLESS 请直接在账号代理栏或批量 JSON 的 `proxy` 中填写分享链接，例如（以下 UUID 是示例）：
+
+```json
+{"proxy":"vless://12345678-1234-1234-1234-123456789abc@node.example:443?encryption=none&security=tls&type=xhttp&sni=node.example&path=%2Ftunnel&mode=stream-one"}
+```
+
+支持 TLS + TCP / XHTTP；XHTTP 支持 auto、stream-one、stream-up、packet-up。节点证书必须有效，不允许跳过证书校验。REALITY、WS、gRPC、XHTTP extra 或未知参数会被明确拒绝。UUID、路径和参数只在本地编辑及经过 TEE 验证的配置同步中使用，导入预览不显示这些信息。模型请求、目录查询和刷新令牌均由 Router 经该节点访问；失败不会改为直连。需要已升级并支持 VLESS 的 Router，商户软件不负责转发流量或运行代理核心。
+
 每项还可填写 `max_concurrent`（默认 16）、`rpm`（默认 0，不限）和 `enabled`（默认 true）。不能同时提供 `api_key` 和 `credential`。OpenAI 官方 `credential.account_id` 须保持真实值，与展示用的 `id` 独立。Codex `auth.json` 等其他客户端格式需要先转换。
 
 ### Grok 原生 OAuth 凭证

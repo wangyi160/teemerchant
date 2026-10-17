@@ -1,10 +1,13 @@
 {
   "name": "teemerchant",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Local merchant desktop workbench for TEE Router",
   "author": "teemerchant contributors",
   "license": "MIT",
-  "repository": {"type": "git", "url": "https://github.com/wangyi160/teemerchant.git"},
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wangyi160/teemerchant.git"
+  },
   "main": "desktop/main.cjs",
   "private": true,
   "scripts": {
@@ -26,10 +29,36 @@
     "productName": "teemerchant",
     "copyright": "Copyright © 2026 teemerchant contributors",
     "asar": true,
-    "directories": {"output": "release", "buildResources": "desktop/assets"},
-    "files": ["desktop/*.cjs", "!desktop/test_*.cjs", "desktop/assets/icon.png", "static/**", "package.json", "LICENSE", "NOTICE", "README.md"],
-    "extraResources": [{"from": "build/resources", "to": ".", "filter": ["**/*"]}],
-    "win": {"icon": "desktop/assets/icon.ico", "target": ["zip"], "artifactName": "teemerchant-${version}-windows-${arch}.${ext}"},
+    "directories": {
+      "output": "release",
+      "buildResources": "desktop/assets"
+    },
+    "files": [
+      "desktop/*.cjs",
+      "!desktop/test_*.cjs",
+      "desktop/assets/icon.png",
+      "static/**",
+      "package.json",
+      "LICENSE",
+      "NOTICE",
+      "README.md"
+    ],
+    "extraResources": [
+      {
+        "from": "build/resources",
+        "to": ".",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "desktop/assets/icon.ico",
+      "target": [
+        "zip"
+      ],
+      "artifactName": "teemerchant-${version}-windows-${arch}.${ext}"
+    },
     "publish": null
   }
 }

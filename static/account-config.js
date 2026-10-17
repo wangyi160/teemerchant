@@ -31,10 +31,37 @@ const AccountConfig = (() => {
       }
       if (typeof value !== 'string' || value.trim() !== value || /[\x00-\x1f\x7f]/.test(value)) throw Error();
       const url = new URL(value);
+      if (url.protocol === 'vless:') { vless(url, value); return value; }
       if (!['http:', 'https:', 'socks5h:'].includes(url.protocol) || !url.hostname || url.hash || url.search || !['','/'].includes(url.pathname) || url.port === '0')
         throw Error();
       return value;
-    } catch { throw Error('proxy 格式无效：请填写 scheme（http/https/socks5h）、host、port（1–65535）及可选 username/password，或有效代理 URL；仅 Workbuddy 可用 direct://'); }
+    } catch { throw Error('proxy 格式无效：支持 http://、https://、socks5h://，以及 TLS + TCP/XHTTP 的 vless:// 链接；VLESS 须包含 UUID、端口和 security=tls，不支持的参数会被拒绝。仅 Workbuddy 可用 direct://'); }
+  }
+  function vless(url, value) {
+    const authority = (value, port) => {
+      if (!value || value.length > 253 || /[\s\\/]/.test(value) || (!port && value.includes(':'))) return false;
+      const u = new URL(`https://${value}`);
+      return u.hostname && !u.username && !u.password && u.pathname === '/' && !u.search && !u.hash;
+    };
+    if (value.length > 8192 || !value.startsWith('vless://') || !url.hostname || !url.port || url.port === '0' || url.password ||
+        !['','/'].includes(url.pathname) || !/^[a-f\d]{8}(-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(url.username)) throw Error();
+    const fields = new Map();
+    for (const [key,val] of url.searchParams) {
+      if (!['security','encryption','type','sni','host','path','mode','fp','alpn','flow'].includes(key) ||
+          fields.has(key) || /[\x00-\x1f\x7f]/.test(val)) throw Error();
+      fields.set(key,val);
+    }
+    const get = (key, fallback) => fields.has(key) ? fields.get(key) : fallback;
+    const network = get('type','tcp'), path = get('path','/'), flow = get('flow','');
+    const alpn = get('alpn','').split(',').filter(Boolean);
+    if (get('security','') !== 'tls' || get('encryption','none') !== 'none' ||
+        !['tcp','xhttp'].includes(network) || !authority(get('sni',url.hostname),false) ||
+        (get('host','') && !authority(get('host',''),true)) || !path.startsWith('/') || path.length > 2048 ||
+        !['auto','stream-one','stream-up','packet-up'].includes(get('mode','auto')) ||
+        !['','chrome','firefox','safari','edge','randomized'].includes(get('fp','')) ||
+        !['','xtls-rprx-vision'].includes(flow) || (network === 'xhttp' && flow) ||
+        alpn.length > 2 || alpn.some(p => !['h2','http/1.1'].includes(p)) ||
+        (network === 'tcp' && ['host','path','mode'].some(k => fields.has(k)))) throw Error();
   }
   function proxyLabel(value) {
     if (value === 'direct://') return value;

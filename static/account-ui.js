@@ -183,7 +183,8 @@ async function accountForm(editId = '') {
     <label>凭证（本地保存）<textarea name="credential" ${account?'':'required'} autocomplete="off" spellcheck="false" placeholder="API key，或包含 provider 和 credential 的 OAuth JSON；xai 支持直接粘贴 Grok 原生凭证 JSON">${esc(originalCredential)}</textarea></label>
     <p>OAuth 可只提供 access_token，省略 refresh_token 时不自动续期，到期后显示“已过期”，需手动更新凭证。JWT 会读取自带的到期时间；不含到期时间的令牌可填写 expires_at（Unix 秒）。</p>
     <p>xai 池选择 OAuth 后，可直接粘贴 Grok 原生凭证 JSON，程序会自动转换 key 和到期时间；账号别名、网络代理仍在本窗口填写。</p>`+
-    field('账号网络代理（本地保存）','proxy',originalProxy,'text','autocomplete="off" placeholder="socks5h://代理服务器:1080；Workbuddy 可填 direct://"')+
+    field('账号网络代理（本地保存）','proxy',originalProxy,'text','autocomplete="off" placeholder="支持 http(s)://、socks5h:// 或 vless:// 链接"')+
+    '<p class="hint">VLESS 支持 TLS + TCP / XHTTP，可直接粘贴节点分享链接。节点证书必须有效；不支持的参数会提示错误。代理失败不会直连。Workbuddy 测试账号可填 direct://。</p>'+
     `<div class="grid">`+field('并发上限','max_concurrent',account?.max_concurrent ?? 16,'number','required min="1" max="4096"')+
     field('RPM（0 为不限）','rpm',account?.rpm ?? 0,'number','required min="0" max="10000000"')+`</div>
     <label><input name="enabled" type="checkbox" ${!account || account.enabled?'checked':''}>启用账号</label>`, async f => {
