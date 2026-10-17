@@ -109,10 +109,10 @@ function poolModelCatalog(chosen, catalog) {
       <div class="model-tools"><button type="button" id="pool-model-all">勾选筛选结果</button><button type="button" id="pool-model-none">清空勾选</button><span id="pool-model-count" aria-live="polite"></span></div>
       <div class="model-options catalog-model-options">${table(['对外开放','模型','目录状态'],edit.ids.map(id =>
         `<tr><td><input name="allowed_model" type="checkbox" value="${esc(id)}" aria-label="开放 ${esc(id)}" ${edit.selected.has(id)?'checked':''}></td><td>${esc(id)}</td><td>${edit.discovered.has(id)?'已发现':'暂未获取到目录'}</td></tr>`))}</div>
-      <p>修改勾选会切换为“仅开放勾选模型”；清空并保存会关闭该池全部模型服务。暂未获取到目录的已选模型会保留，实际调用仍须通过 Router 校验。</p>
+      <p>修改勾选会切换为“仅开放勾选模型”；清空并保存会关闭该池全部模型服务。成功获取完整目录后，已不存在的模型会自动从开放名单移除并同步 Router；目录获取失败时保留原配置。</p>
       <p class="error" role="alert">${esc(edit.error)}</p><div class="catalog-save-actions"><button type="button" id="pool-model-cancel">取消编辑</button><button type="submit" class="primary">${edit.saving?'正在保存…':'保存并同步'}</button></div></form>`;
   } else {
-    content = `<p>${selectedAccountPool?'点击“编辑开放模型”，直接在本表中勾选。':'先在上方选择一个账号池，再编辑它的开放模型。'} 名单对池内所有账号生效。</p>`;
+    content = `<p>${selectedAccountPool?'点击“编辑开放模型”，直接在本表中勾选。':'先在上方选择一个账号池，再编辑它的开放模型。'} 名单对池内所有账号生效；成功获取完整目录后，自动清理上游已移除的模型。</p>`;
     if (poolModelEditor) content += `<div class="notice">${esc(poolModelEditor.poolName)} 的模型名单正在编辑。${btn('继续编辑','edit-pool-models',poolModelEditor.poolName)}</div>`;
     content += table(['账号池','模型','对外开放'],chosen.flatMap(p => [...new Set(catalog.filter(c => c.pool === p.name)
       .flatMap(c => Object.keys(c.official_models || {})).concat(p.allowed_models || []))].sort().map(id =>

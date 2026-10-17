@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import secrets
 import threading
+import time
 from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
@@ -22,8 +23,9 @@ class Application:
         self.last_error = ''
         self.sync_lock = threading.Lock()
         self.state_lock = threading.RLock()
+        self.last_catalog_check = time.monotonic()
 
-    def accept(self, result):
+    def accept(self, result, *, clean_catalog=True, catalog_refreshed=False):
         if result['merchant']['id'] != self.store.enrollment()['id']:
             raise RuntimeError('商户身份与本机身份不一致')
         revision = result['settings']['revision']
@@ -34,6 +36,15 @@ class Application:
         self.store.save()
         self.store.accounts.observe(self.store.settings['router'], result)
         self.remote, self.connected = self.store.accounts.view(self.store.settings['router']), True
+        self.last_catalog_check = time.monotonic()
+        router = self.store.settings['router']
+        if clean_catalog and self.store.accounts.prune_catalog(router, check_only=True):
+            if not catalog_refreshed:
+                # Confirm removals against a new fetch, including an empty catalog.
+                # Cached evidence can become invalid after a credential rotation.
+                return self.accept(self.transport.call('POST', '/merchant/models/refresh'), catalog_refreshed=True)
+            if self.store.accounts.prune_catalog(router):
+                return self.push_config()
         return self.remote
 
     def push_config(self):
@@ -43,9 +54,9 @@ class Application:
             return self.remote
         try:
             if not self.connected:
-                self.accept(self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']}))
+                self.accept(self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']}), clean_catalog=False)
             result = self.transport.call('PUT', '/merchant/config', pending)
-            self.accept(result)
+            self.accept(result, clean_catalog=False)
             self.store.accounts.acknowledge(router, result)
         except Exception as error:
             # The local write already committed. Retain it even if a request or its
@@ -133,7 +144,7 @@ class Application:
         if method == 'GET' and path.startswith('/api/accounts/'):
             return self.store.accounts.account(self.store.settings['router'], unquote(path[len('/api/accounts/'):]))
         if (method, path) == ('POST', '/api/refresh'):
-            return self.accept(self.transport.call('POST', '/merchant/models/refresh'))
+            return self.accept(self.transport.call('POST', '/merchant/models/refresh'), catalog_refreshed=True)
         if (method, path) == ('POST', '/api/sync'):
             return self.sync()
         if method == 'GET' and path in ('/api/records/usage', '/api/records/refusals'):
@@ -146,6 +157,8 @@ class Application:
                 if self.connected:
                     try:
                         self.sync()
+                        if time.monotonic() - self.last_catalog_check >= 60:
+                            self.accept(self.transport.call('GET', '/merchant/state'))
                     except Exception as error:
                         self.last_error = str(error)
 

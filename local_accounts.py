@@ -29,6 +29,29 @@ def redact(value):
     return value
 
 
+def current_pool_models(remote, pool, now):
+    """Return a complete, successful pool snapshot, or None when uncertain."""
+    enabled = {d['id'] for d in pool['deployments'] if d.get('enabled', True)}
+    rows = [r for r in remote.get('catalog', {}).get('data', [])
+            if r.get('pool') == pool['name'] and r.get('deployment') in enabled]
+    if not enabled or {r.get('deployment') for r in rows} != enabled:
+        return None
+    snapshots = []
+    for row in rows:
+        status, models = row.get('catalog') or {}, row.get('official_models')
+        fetched, interval = status.get('fetched_at'), status.get('refresh_secs')
+        if (status.get('scope') != 'pool' or status.get('complete_catalog') is not True
+                or status.get('refreshing') is not False or 'last_error' not in status
+                or status['last_error'] is not None or status.get('source_deployment') not in enabled
+                or type(fetched) is not int or type(interval) is not int
+                or not 0 <= now - fetched < interval or not isinstance(models, dict)
+                or type(status.get('models')) is not int or status['models'] != len(models)):
+            return None
+        snapshots.append(set(models))
+    # Rows for accounts sharing one pool must agree, including during refresh.
+    return snapshots[0] if all(ids == snapshots[0] for ids in snapshots) else None
+
+
 class AccountBook:
     def __init__(self, directory, identity, protect):
         self.path = directory / 'accounts.dpapi'
@@ -157,6 +180,35 @@ class AccountBook:
     def pending(self, router):
         with self.lock:
             return copy.deepcopy(self.data['routers'].get(router, {}).get('pending'))
+
+    def prune_catalog(self, router, *, check_only=False):
+        """Durably stage policy removals without replaying unrelated pending edits."""
+        with self.lock:
+            book = self.data['routers'].get(router)
+            if (not book or not book['remote'] or not book['config'] or book['pending']
+                    or book['sync_state'] != 'synced'):
+                return False
+            remote = book['remote']
+            if book['config']['expected_revision'] != remote['settings']['revision']:
+                return False
+            update, changed = copy.deepcopy(book['config']), False
+            for pool in update['pools']:
+                allowed = pool.get('allowed_models')
+                if not allowed:  # Preserve both all-model mode and explicit deny-all.
+                    continue
+                models = current_pool_models(remote, pool, time.time())
+                if models is None:
+                    continue
+                kept = [model for model in allowed if model in models]
+                if kept != allowed:
+                    pool['allowed_models'], changed = kept, True
+            if not changed:
+                return False
+            if check_only:
+                return True
+            update['_local_revision'] = book['local_revision']
+            self.stage(router, update)
+            return True
 
     def sync_failed(self, router, message):
         with self.lock:

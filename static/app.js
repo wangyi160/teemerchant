@@ -131,3 +131,17 @@ document.addEventListener('submit',async e=>{if(e.target.id!=='connection')retur
 $('#dialog').addEventListener('cancel',e=>{if($('#dialog').dataset.busy)e.preventDefault();});
 $('#dialog').addEventListener('close',()=>{if(!$('#dialog').open)$('#dialog').innerHTML='';});
 reload().catch(e=>toast(e.message));
+// Reflect background model-policy cleanup without discarding an active form.
+let catalogViewPolling=false;
+setInterval(async()=>{
+  if(catalogViewPolling||!state?.connected||section!=='accounts'||poolModelEditor||$('#dialog').open)return;
+  catalogViewPolling=true;
+  const current=state;
+  try{
+    const next=await api('/api/state');
+    if(state!==current||section!=='accounts'||poolModelEditor||$('#dialog').open)return;
+    if(next.enrollment.id!==current.enrollment.id)return;
+    if(next.remote?.local_revision!==current.remote?.local_revision||
+        next.remote?.settings.revision!==current.remote?.settings.revision){state=next;render();}
+  }catch{}finally{catalogViewPolling=false;}
+},10000);

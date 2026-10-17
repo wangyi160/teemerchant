@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import tempfile
+import time
 import threading
 import unittest
 from app import Application, handler
@@ -219,6 +220,28 @@ class BrowserTests(unittest.TestCase):
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#pool-model-editor')).to_have_count(0)
         self.assertNotIn('allowed_models', self.router.writes[-1]['pools'][0])
+
+    def test_successful_refresh_removes_missing_model_from_list_and_editor(self):
+        from local_accounts import config_from
+        config = config_from(self.router.remote)
+        config['pools'][0]['allowed_models'] = ['removed', 'kept']
+        self.app.api('PUT', '/api/config', config)
+        self.page.reload()
+        self.page.locator('aside [data-id=accounts]').click()
+        expect(self.page.locator('#pool-model-catalog')).to_contain_text('removed')
+        self.router.remote['catalog']['data'] = [{'pool': 'openai', 'deployment': 'example-001',
+            'official_models': {'kept': {}, 'new': {}}, 'catalog': {
+                'scope': 'pool', 'complete_catalog': True, 'refreshing': False, 'last_error': None,
+                'source_deployment': 'example-001', 'fetched_at': int(time.time()),
+                'refresh_secs': 300, 'models': 2}}]
+        self.page.locator('#pool-model-catalog [data-action=refresh]').click()
+        expect(self.page.locator('#pool-model-catalog')).not_to_contain_text('removed')
+        expect(self.page.locator('#pool-model-catalog')).to_contain_text('kept')
+        self.assertEqual(self.router.remote['pools'][0]['allowed_models'], ['kept'])
+        self.page.locator('#pool-model-catalog [data-action=edit-pool-models]').click()
+        expect(self.page.locator('[name=allowed_model][value=removed]')).to_have_count(0)
+        expect(self.page.locator('[name=allowed_model][value=kept]')).to_be_checked()
+        expect(self.page.locator('[name=allowed_model][value=new]')).not_to_be_checked()
 
     def test_inline_model_draft_survives_navigation_and_rejects_stale_save(self):
         self.router.remote['catalog']['data'] = [{'pool': 'openai', 'deployment': 'example-001',
