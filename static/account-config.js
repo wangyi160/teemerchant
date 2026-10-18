@@ -174,6 +174,32 @@ const AccountConfig = (() => {
     else target.allowed_models = [...allowed].sort();
     return config;
   }
+  function rebaseAccount(base, current, entry, editId = null) {
+    if (!current || base.merchant.id !== current.merchant.id)
+      throw Error('商户身份已变化，当前输入已保留');
+    if (current.local_sync?.state === 'remote_changed')
+      throw Error('Router 上的配置与本地不同，请先核对配置；当前输入和授权凭证已保留');
+    const before = base.pools.find(p => p.name === entry.pool);
+    const after = current.pools.find(p => p.name === entry.pool);
+    if (!before || !after || before.provider !== after.provider)
+      throw Error('账号池已删除或服务类型已变化，当前输入和授权凭证已保留');
+    if (editId) {
+      const target = remote => {
+        const pool = remote.pools.find(p => p.deployments.some(d => d.id === editId));
+        const deployment = pool?.deployments.find(d => d.id === editId);
+        const credential = remote.accounts?.data?.find(a => a.name === deployment?.oauth_account);
+        return pool && {pool:pool.name, provider:pool.provider, deployment, enabled:credential?.enabled};
+      };
+      // Compare configuration only; account health and model catalogs can change
+      // while the browser is completing OAuth without invalidating this edit.
+      const canonical = value => Array.isArray(value) ? value.map(canonical) : object(value) ?
+        Object.fromEntries(Object.keys(value).sort().map(key => [key,canonical(value[key])])) : value;
+      if (!target(base) || !target(current) ||
+          JSON.stringify(canonical(target(base))) !== JSON.stringify(canonical(target(current))))
+        throw Error('该账号已被修改，当前输入和授权凭证已保留；请核对账号配置');
+    }
+    return build(current, [entry], {}, editId).config;
+  }
   function build(remote, entries, defaults = {}, editId = null) {
     if (!Array.isArray(entries) || !entries.length || entries.length > 4096 || (editId && entries.length !== 1))
       throw Error('账号数量无效');
@@ -273,6 +299,6 @@ const AccountConfig = (() => {
     });
     return {config,rows};
   }
-  return {parse,build,draft,pool,poolModels,normalizeCredential,oauthInput,accountInput,validateProxy:proxy};
+  return {parse,build,draft,pool,poolModels,rebaseAccount,normalizeCredential,oauthInput,accountInput,validateProxy:proxy};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = AccountConfig;

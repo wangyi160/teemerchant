@@ -128,6 +128,67 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(len(self.router.writes), 1)
 
+    def test_account_save_preserves_config_changes_during_authorization_and_retries_stage_race(self):
+        from local_accounts import config_from
+        self.page.locator('[data-action=account]').click()
+        self.page.locator('[name=id]').fill('new-account')
+        self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'access_token':'PRIVATE_NEW_TOKEN'}}))
+        self.page.locator('[name=proxy]').fill('socks5h://proxy.example:1080')
+        self.pass_probe()
+        update = config_from(self.app.remote)
+        update['pools'][0]['deployments'][0]['enabled'] = False
+        update['pools'][0]['allowed_models'] = ['current-model']
+        update['pool_pricing'][0]['multiplier_millionths'] = 400000
+        self.app.api('PUT', '/api/config', update)
+        raced = []
+        def race(route):
+            if route.request.method == 'PUT' and not raced:
+                raced.append(True)
+                update = config_from(self.app.remote)
+                update['pools'][0]['deployments'][0]['rpm'] = 27
+                self.app.api('PUT', '/api/config', update)
+            route.continue_()
+        self.page.route('**/api/config', race)
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        result = self.router.writes[-1]
+        self.assertFalse(result['pools'][0]['deployments'][0]['enabled'])
+        self.assertEqual(result['pools'][0]['allowed_models'], ['current-model'])
+        self.assertEqual(result['pool_pricing'][0]['multiplier_millionths'], 400000)
+        self.assertEqual(result['pools'][0]['deployments'][0]['rpm'], 27)
+        self.assertEqual(result['accounts']['new-account']['credential']['access_token'], 'PRIVATE_NEW_TOKEN')
+        self.assertEqual(len(self.router.writes), 3)
+        self.assertEqual(len(self.router.probes), 1)
+
+    def test_account_conflict_keeps_editor_tokens_and_never_overwrites_same_account(self):
+        from local_accounts import config_from
+        self.page.locator('[data-action=edit-account]').click()
+        credential = json.dumps({'provider':'openai','credential':{'access_token':'PRIVATE_DRAFT_TOKEN'}})
+        self.page.locator('[name=credential]').fill(credential)
+        self.page.locator('[name=proxy]').fill('socks5h://proxy.example:1080')
+        self.pass_probe()
+        update = config_from(self.app.remote)
+        update['pools'][0]['deployments'][0]['enabled'] = False
+        self.app.api('PUT', '/api/config', update)
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog [role=alert]')).to_contain_text('该账号已被修改')
+        expect(self.page.locator('[name=credential]')).to_have_value(credential)
+        expect(self.page.locator('#dialog')).to_be_visible()
+        self.assertEqual(len(self.router.writes), 1)
+        self.assertNotIn('PRIVATE_DRAFT_TOKEN', self.store.accounts.account(self.store.settings['router'], 'example-001')['credential_text'])
+        self.page.locator('[data-action=close]').click()
+        self.page.locator('[data-action=edit-account]').click()
+        self.page.locator('[name=credential]').fill(credential)
+        self.page.locator('[name=proxy]').fill('socks5h://proxy.example:1080')
+        self.pass_probe()
+        update = config_from(self.app.remote)
+        update['accounts'] = {'credential-ref': {'provider':'openai','credential':{'access_token':'OTHER_TOKEN'}}}
+        self.app.api('PUT', '/api/config', update)
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog [role=alert]')).to_contain_text('凭证或代理已被修改')
+        expect(self.page.locator('[name=credential]')).to_have_value(credential)
+        self.assertEqual(len(self.router.writes), 2)
+
     def test_merchant_credentials_show_locally_refill_edit_and_clear_on_navigation(self):
         secret = self.store.settings['token']
         identity = self.store.enrollment()['id']

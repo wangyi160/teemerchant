@@ -159,9 +159,39 @@ function bindPoolModelEditor() {
   update();
 }
 
+async function saveAccountEdit(snapshot, entry, editId, material, identity, router) {
+  // Refresh before building the full Router config so unrelated changes made
+  // during OAuth are preserved. Only explicit pre-write conflicts may retry;
+  // pending/uncertain Router writes are already durable and must not be replayed.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const latest = await api('/api/state');
+    if (latest.enrollment.id !== identity || latest.settings.router !== router ||
+        state.enrollment.id !== identity || state.settings.router !== router)
+      throw Error('商户连接已变化，当前输入和授权凭证已保留');
+    if (editId) {
+      const current = await api('/api/accounts/'+encodeURIComponent(editId));
+      if (current.local_revision !== latest.remote?.local_revision) {
+        if (!attempt) continue;
+        throw Error('配置正在更新，当前输入和授权凭证已保留，请重试保存');
+      }
+      if (current.credential_text !== material.credential_text || current.proxy !== material.proxy ||
+          current.credential_present !== material.credential_present)
+        throw Error('该账号的凭证或代理已被修改，当前输入和授权凭证已保留；请核对账号配置');
+    }
+    const config = AccountConfig.rebaseAccount(snapshot, latest.remote, entry, editId || null);
+    try { return await save(config); }
+    catch (error) {
+      if (attempt || !/(^|\s)(local_revision_conflict|revision_conflict)[：:]/.test(error.message)) throw error;
+    }
+  }
+}
+
 async function accountForm(editId = '', initialMode = '') {
   const identity = state.enrollment.id, router = state.settings.router;
-  const snapshot = structuredClone(remote());
+  const latest = await api('/api/state');
+  if (latest.enrollment.id !== identity || latest.settings.router !== router) throw Error('商户连接已变化，请重新打开');
+  const snapshot = structuredClone(latest.remote);
+  if (!snapshot) throw Error('请先连接 Router');
   if (!snapshot.pools.length) throw Error('请先添加账号池');
   const originalPool = snapshot.pools.find(p => p.deployments.some(d => d.id === editId));
   const account = originalPool?.deployments.find(d => d.id === editId);
@@ -240,7 +270,7 @@ async function accountForm(editId = '', initialMode = '') {
         if(f.get('proxy').trim() !== originalProxy)entry.proxy=f.get('proxy').trim();
         else delete entry.proxy;
       }
-      await save(AccountConfig.build(snapshot,[entry],{},editId || null).config);
+      await saveAccountEdit(snapshot,entry,editId,local,identity,router);
     },{submit:'保存并同步'});
   const dialog=$('#dialog'),setup=dialog.querySelector('form');setup.id='account-setup';
   const updateMode=()=>{

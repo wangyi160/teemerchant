@@ -37,6 +37,40 @@ const remote = () => ({merchant:{allow_test:false},settings:{revision:7,max_conc
 const oauth = id => ({id,pool:'new-pool',provider:'openai',proxy:'socks5h://proxy.example:1080',credential:{access_token:'fixture-access',refresh_token:'fixture-refresh'}});
 const defaults = {multiplier_millionths:1000000};
 
+test('account saves rebase unrelated changes while preserving prices, policies and other accounts',()=>{
+  const base=remote(), latest=structuredClone(base);
+  latest.settings.revision++;latest.local_revision=12;
+  latest.settings.pool_pricing[0].multiplier_millionths=400000;
+  latest.pools[0].allowed_models=['current-model'];
+  latest.pools[0].deployments[1].enabled=false;
+  const {rebaseAccount}=require('./static/account-config.js');
+  for(const [entry,id] of [[oauth('new-one'),null],[{id:'alias',pool:'existing',max_concurrent:12},'alias']]){
+    const config=rebaseAccount(base,latest,entry,id);
+    assert.equal(config.expected_revision,8);assert.equal(config._local_revision,12);
+    assert.deepEqual(config.pool_pricing,latest.settings.pool_pricing);
+    assert.deepEqual(config.pools[0].allowed_models,['current-model']);
+    assert.equal(config.pools[0].deployments.find(d=>d.id==='api-alias').enabled,false);
+  }
+  assert.equal(base.pools[0].deployments[1].enabled,true);
+});
+
+test('rebasing rejects changed targets, duplicate aliases, removed pools and unresolved remote conflicts',()=>{
+  const {rebaseAccount}=require('./static/account-config.js'),base=remote();
+  const latest=()=>structuredClone(base);
+  let current=latest();current.pools[0].deployments[0].enabled=false;
+  assert.throws(()=>rebaseAccount(base,current,{id:'alias',pool:'existing'},'alias'),/该账号已被修改/);
+  current=latest();current.pools=[];
+  assert.throws(()=>rebaseAccount(base,current,oauth('new-one')),/账号池已删除/);
+  current=latest();current.pools[1].provider='xai';
+  assert.throws(()=>rebaseAccount(base,current,oauth('new-one')),/服务类型已变化/);
+  current=latest();current.pools[1].deployments.push({id:'new-one',provider:'openai',oauth_account:'new-one'});
+  assert.throws(()=>rebaseAccount(base,current,oauth('new-one')),/账号 ID 已存在/);
+  current=latest();current.local_sync={state:'remote_changed'};
+  assert.throws(()=>rebaseAccount(base,current,oauth('new-one')),/本地不同/);
+  current=latest();current.merchant.id='another-merchant';
+  assert.throws(()=>rebaseAccount(base,current,oauth('new-one')),/商户身份已变化/);
+});
+
 test('VLESS links bind per account, redact credentials and can update only the proxy',()=>{
   const node='vless://12345678-1234-1234-1234-123456789abc@node.example:443?security=tls&type=xhttp&path=%2Fsecret-path&mode=stream-one#private-label';
   const result=build(remote(),[{...oauth('vless-one'),proxy:node},{...oauth('socks-two')}]);

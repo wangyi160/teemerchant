@@ -134,10 +134,23 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
       assert.equal(probe.pool,pool);
       assert.equal(probe.credential.access_token,pool==='openai'?'PRIVATE_EDITED_ACCESS':'PRIVATE_DESKTOP_OAUTH_ACCESS');
       assert.equal(probe.proxy,'socks5h://proxy.example:1080');
+      if(pool==='grok'){
+        // Reproduce a configuration change after OAuth has filled the token editor.
+        const changed=await page.evaluate(async()=>{
+          const current=(await window.teemerchant.request('GET','/api/state')).value;
+          const config=AccountConfig.draft(current.remote);
+          config.pools.find(p=>p.name==='claude').allowed_models=['fixture-current-model'];
+          config.pools.find(p=>p.name==='claude').deployments[0].rpm=19;
+          return window.teemerchant.request('PUT','/api/config',config,current.enrollment.id);
+        });
+        assert.equal(changed.ok,true);
+      }
       await page.getByRole('button',{name:'保存并同步',exact:true}).click();await page.locator('#dialog').waitFor({state:'hidden'});
       await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('等待同步'));
     }
     const s=(await page.evaluate(()=>window.teemerchant.request('GET','/api/state'))).value;
+    assert.deepEqual(s.remote.pools.find(p=>p.name==='claude').allowed_models,['fixture-current-model']);
+    assert.equal(s.remote.pools.find(p=>p.name==='claude').deployments[0].rpm,19);
     for(const pool of ['openai','claude','grok'])assert.ok(s.remote.pools.find(p=>p.name===pool).deployments.some(d=>d.id===pool+'-oauth'));
     assert.equal(s.remote.pools.find(p=>p.name==='openai').deployments.find(d=>d.id==='openai-oauth').enabled,false);
     assert.doesNotMatch(JSON.stringify(s),/PRIVATE_DESKTOP/);
