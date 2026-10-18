@@ -1,11 +1,11 @@
 "use strict";
 // OAuth only fills this local editor; the ordinary account form owns persistence.
 const oauthProviderNames={openai:'ChatGPT / Codex',anthropic:'Claude / Claude Code',xai:'Grok'};
-function attachOAuthForm({dialog,setup,progress,identity,available,account=null,editId='',previousRefresh=false}) {
-  let current=null,poll=null,active=false,busy=false,closed=false,lastView='',locked=[];
-  const authorize=setup.querySelector('#account-authorize'),credential=setup.elements.credential;
+function attachOAuthForm({dialog,setup,progress,identity,available,account=null,editId='',previousRefresh=false,poolName,credential,onChange}) {
+  let current=null,poll=null,active=false,busy=false,closed=false,lastView='';
+  const authorize=setup.querySelector('#account-authorize');
   const error=message=>{const target=setup.querySelector('[role=alert]');if(target)target.textContent=message;};
-  const provider=()=>available.find(p=>p.name===setup.elements.pool.value)?.provider;
+  const provider=()=>available.find(p=>p.name===(poolName || setup.elements.pool.value))?.provider;
   const updatePool=()=>{
     setup.querySelector('#account-oauth-actions').hidden=!oauthProviderNames[provider()];
     setup.elements.save_refresh.checked=account?previousRefresh:provider()!=='anthropic';
@@ -17,11 +17,7 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
     if(!result.ok)throw Error(result.error);return result.value;
   };
   function lock(value){
-    active=value;
-    if(value){
-      locked=[setup.elements.pool,credential,setup.elements.save_refresh,authorize,setup.querySelector('[type=submit]')].map(el=>[el,el.disabled]);
-      locked.forEach(([el])=>el.disabled=true);
-    }else{locked.forEach(([el,disabled])=>el.disabled=disabled);locked=[];}
+    active=value;onChange();
   }
   function paint(){
     if(closed||!current)return;
@@ -78,7 +74,7 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
     if(active||closed||dialog.dataset.busy)return;
     lock(true);busy=true;error('');progress.hidden=false;progress.innerHTML='<span role="status">授权中</span>';lastView='';
     try{
-      const entry={pool:setup.elements.pool.value,...(editId?{id:editId}:{})};
+      const entry={pool:poolName || setup.elements.pool.value,...(editId?{id:editId}:{})};
       await accept(await call('start',{entry,edit_id:editId||null,save_refresh:setup.elements.save_refresh.checked,credentials_only:true}));
     }catch(e){if(!closed){error(e.message);lock(false);progress.hidden=true;}}
     finally{busy=false;schedule();}
@@ -89,10 +85,10 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
     credential.value='';
   };
   dialog.addEventListener('close',onClose);
-  return {ensureReady(){if(active)throw Error('请完成或取消授权');}};
+  return {isActive:()=>active,ensureReady(){if(active)throw Error('请完成或取消授权');}};
 }
 const actionBeforeOAuth=action;
 action=async(a,id)=>{
-  if(a==='oauth-renew')return accountForm(id);
+  if(a==='oauth-renew')return accountForm(id,'oauth');
   return actionBeforeOAuth(a,id);
 };

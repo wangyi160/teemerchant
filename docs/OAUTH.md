@@ -1,12 +1,15 @@
 # Desktop OAuth binding
 
-Open **添加账号**, choose a ChatGPT, Claude or Grok pool and click the independent
-**OAuth 授权** button beside the credential JSON editor. No credential-method
-selector is shown. Authorization can run before filling in the alias or proxy.
-On completion the actual tokens and metadata fill the editable JSON textarea;
-the account is not yet saved. Existing accounts use the same editor through
-**编辑** or **重新授权**. Manual and batch JSON import remain available. Workbuddy
-uses a JSON credential containing `api_key`, without an OAuth button.
+Select a pool in the account-pool list, then open **添加账号**. The creation form's
+pool is fixed and read-only; the all-accounts view has no single-account add button.
+**OAuth 授权** and **JSON 导入** are separate tabs with separate drafts. Only the
+active tab's credential is submitted. The OAuth tab has an independent authorize
+button and shows the editable token result after authorization. The manual JSON
+tab shows no OAuth controls. Switching tabs preserves both drafts, including an
+authorization in progress, without automatically saving either credential.
+Authorization can run before filling in the alias or proxy. Existing accounts use
+the same editor through **编辑** (JSON tab) or **重新授权** (OAuth tab). Workbuddy
+offers only JSON import, with a credential containing `api_key`.
 
 | Pool provider | Authorization | Callback | Renewal in Router |
 | --- | --- | --- | --- |

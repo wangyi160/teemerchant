@@ -296,6 +296,8 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.page.locator('[data-action=account]').click()
         expect(self.page.locator('[name=pool]')).to_have_value('claude-team')
+        expect(self.page.locator('[name=pool]')).to_have_attribute('readonly', '')
+        expect(self.page.locator('select[name=pool]')).to_have_count(0)
         self.assertEqual(self.page.locator('#dialog [name=provider], #dialog [name=multiplier]').count(), 0)
         self.page.locator('[name=id]').fill('claude-account')
         self.page.locator('[name=credential]').fill(json.dumps({'provider':'anthropic','credential':{'api_key':'FIXTURE_CLAUDE_KEY'}}))
@@ -421,7 +423,7 @@ class BrowserTests(unittest.TestCase):
     def test_add_oauth_then_rotate_credentials_without_replacing_proxy(self):
         self.page.locator('[data-action=account]').click()
         self.page.locator('[name=id]').fill('new-oauth')
-        self.page.locator('[name=pool]').select_option('openai')
+        expect(self.page.locator('[name=pool]')).to_have_value('openai')
         credential = {'provider': 'openai', 'proxy': 'socks5h://proxy.example:1080',
                       'credential': {'access_token': 'FIXTURE_ACCESS', 'refresh_token': 'FIXTURE_REFRESH'}}
         self.page.locator('[name=credential]').fill(json.dumps(credential))
@@ -446,7 +448,7 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('aside [data-id=accounts]').click()
         self.page.locator('[data-action=account]').click()
         self.page.locator('[name=id]').fill('offline-key')
-        self.page.locator('[name=pool]').select_option('openai')
+        expect(self.page.locator('[name=pool]')).to_have_value('openai')
         self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'api_key':'LOCAL_PRIVATE_FIXTURE'}}))
         self.page.locator('[name=proxy]').fill('https://user:FIXTURE_PASSWORD@proxy.example')
         self.page.get_by_role('button', name='保存并同步').click()

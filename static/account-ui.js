@@ -73,7 +73,7 @@ function accountsView() {
     <section class="panel"><div class="panelhead"><h2>账号池</h2><div class="actions">${pools().length?btn('显示全部账号','account-pool'):''}${btn('添加账号池','pool','','primary')}</div></div>
     ${table(['账号池','服务','账号数量','倍率','对外模型','操作'],poolRows)}</section>
     <section class="panel"><div class="panelhead"><h2>${selectedAccountPool ? esc(selectedAccountPool)+' · 账号' : '全部账号'}<small class="muted">（${rows.length}）</small></h2>
-    <div class="actions">${pools().length?btn('批量导入','import-accounts')+btn('添加账号','account','','primary'):''}</div></div>
+    <div class="actions">${pools().length?btn('批量导入','import-accounts'):''}${selectedAccountPool?btn('添加账号','account','','primary'):''}</div></div>
     ${table(['账号别名 / 账号池','服务 / 凭证','状态','并发 / RPM','操作'],rows)}</section>
     ${poolModelCatalog(chosen, catalog)}`;
 }
@@ -159,13 +159,15 @@ function bindPoolModelEditor() {
   update();
 }
 
-async function accountForm(editId = '') {
+async function accountForm(editId = '', initialMode = '') {
   const identity = state.enrollment.id, router = state.settings.router;
   const snapshot = structuredClone(remote());
   if (!snapshot.pools.length) throw Error('请先添加账号池');
   const originalPool = snapshot.pools.find(p => p.deployments.some(d => d.id === editId));
   const account = originalPool?.deployments.find(d => d.id === editId);
   if (editId && !account) throw Error('请刷新账号列表后重试');
+  const creationPool = !account ? snapshot.pools.find(p => p.name === selectedAccountPool) : null;
+  if (!account && !creationPool) throw Error('请先选择账号池');
   const local = account ? await api('/api/accounts/'+encodeURIComponent(editId)) : null;
   if (state.enrollment.id !== identity || state.settings.router !== router) throw Error('商户连接已变化，请重新打开');
   if (local && local.local_revision !== snapshot.local_revision) throw Error('本地配置已变更，请刷新后再编辑');
@@ -173,25 +175,35 @@ async function accountForm(editId = '') {
   const kind = account?.oauth_account && account.provider !== 'workbuddy' ? 'oauth' : 'api';
   const originalCredential = local?.credential_text ? (kind === 'api' ? JSON.stringify({provider:account.provider,credential:{api_key:local.credential_text}},null,2) : local.credential_text) : '';
   const originalProxy = local?.proxy || '';
-  const canAuthorize = !!window.teemerchant?.oauth && (!account || kind === 'oauth');
+  const canAuthorize = !!window.teemerchant?.oauth && ['openai','anthropic','xai'].includes((originalPool || creationPool).provider) && (!account || kind === 'oauth');
+  let mode = canAuthorize && (initialMode === 'oauth' || !account) ? 'oauth' : 'json';
   let oauthEditor;
   form(account ? '编辑账号' : '添加上游账号',
     `<div class="grid">`+
     field('账号 ID（别名）','id',account?.id || '','text',`required maxlength="128" pattern="[a-zA-Z0-9_.-]+" ${account?'readonly':''}`)+
-    poolSelect(available,originalPool?.name || selectedAccountPool)+
-    `</div><div class="panelhead"><label for="account-credential">凭证 JSON</label>${canAuthorize?'<div id="account-oauth-actions" class="actions"><label><input type="checkbox" name="save_refresh">保留 refresh token</label><button type="button" id="account-authorize">OAuth 授权</button></div>':''}</div>
-    <textarea id="account-credential" name="credential" rows="10" ${account?'':'required'} autocomplete="off" spellcheck="false">${esc(originalCredential)}</textarea>
-    ${canAuthorize?'<div id="oauth-progress" aria-live="polite" hidden></div>':''}`+
+    (account ? poolSelect(available,originalPool.name) : field('所属账号池','pool',creationPool.name,'text','readonly'))+
+    `</div>${canAuthorize?`<div class="credential-tabs" role="tablist" aria-label="添加方式"><button type="button" id="account-oauth-tab" role="tab" data-credential-mode="oauth" aria-controls="account-oauth-panel">OAuth 授权</button><button type="button" id="account-json-tab" role="tab" data-credential-mode="json" aria-controls="account-json-panel">JSON 导入</button></div>
+    <div id="account-oauth-panel" role="tabpanel" aria-labelledby="account-oauth-tab" hidden>
+      <div id="account-oauth-actions" class="actions"><label><input type="checkbox" name="save_refresh">保留 refresh token</label><button type="button" id="account-authorize">OAuth 授权</button></div>
+      <div id="oauth-progress" aria-live="polite" hidden></div>
+      <label id="oauth-result" hidden>授权凭证<textarea name="oauth_credential" rows="10" autocomplete="off" spellcheck="false"></textarea></label>
+    </div>`:''}
+    <div id="account-json-panel" ${canAuthorize?'role="tabpanel" aria-labelledby="account-json-tab"':''}>
+      <label for="account-credential">凭证 JSON</label><textarea id="account-credential" name="credential" rows="10" autocomplete="off" spellcheck="false">${esc(originalCredential)}</textarea>
+    </div>`+
     field('账号网络代理','proxy',originalProxy,'text','autocomplete="off"')+
     `<div class="grid">`+field('并发上限','max_concurrent',account?.max_concurrent ?? 16,'number','required min="1" max="4096"')+
     field('RPM（0 为不限）','rpm',account?.rpm ?? 0,'number','required min="0" max="10000000"')+`</div>
     <label><input name="enabled" type="checkbox" ${!account || account.enabled?'checked':''}>启用账号</label>`, async f => {
-      oauthEditor?.ensureReady();
+      if (mode === 'oauth') oauthEditor.ensureReady();
       if (state.enrollment.id !== identity || state.settings.router !== router) throw Error('商户连接已变化，请重新打开');
-      const entry = {id:f.get('id'),pool:f.get('pool'),provider:available.find(p=>p.name===f.get('pool'))?.provider,
+      const targetPool = account ? available.find(p=>p.name===f.get('pool')) : creationPool;
+      if (!targetPool) throw Error('账号池已变化，请重新打开');
+      const entry = {id:f.get('id'),pool:targetPool.name,provider:targetPool.provider,
         kind:account ? kind : undefined,max_concurrent:Number(f.get('max_concurrent')),
         rpm:Number(f.get('rpm')),enabled:f.has('enabled')};
-      const raw = f.get('credential').trim();
+      const raw = (f.get(mode === 'oauth' ? 'oauth_credential' : 'credential') || '').trim();
+      if (mode === 'oauth' && !raw) throw Error('请先完成 OAuth 授权');
       if (raw && raw !== originalCredential.trim()) {
         const value = AccountConfig.accountInput(raw,entry.provider);
         const original = originalCredential ? AccountConfig.accountInput(originalCredential,entry.provider) : null;
@@ -205,12 +217,42 @@ async function accountForm(editId = '') {
       if (f.get('proxy').trim() && f.get('proxy').trim() !== originalProxy) entry.proxy = f.get('proxy').trim();
       await save(AccountConfig.build(snapshot,[entry],{},editId || null).config);
     },{submit:'保存并同步'});
+  const dialog=$('#dialog'),setup=dialog.querySelector('form');setup.id='account-setup';
+  const updateMode=()=>{
+    if (dialog.dataset.busy) return;
+    const authorizing = oauthEditor?.isActive() || false;
+    setup.elements.credential.disabled = mode !== 'json';
+    setup.elements.credential.required = !account && mode === 'json';
+    setup.querySelector('#account-json-panel').hidden = mode !== 'json';
+    setup.querySelector('[type=submit]').disabled = mode === 'oauth' && (authorizing || !setup.elements.oauth_credential.value.trim());
+    if(canAuthorize){
+      setup.querySelector('#account-oauth-panel').hidden = mode !== 'oauth';
+      setup.querySelector('#oauth-result').hidden = !setup.elements.oauth_credential.value;
+      setup.elements.oauth_credential.disabled = mode !== 'oauth' || authorizing;
+      setup.querySelector('#account-authorize').disabled = authorizing;
+      setup.elements.save_refresh.disabled = authorizing;
+      for(const tab of setup.querySelectorAll('[data-credential-mode]')){
+        const selected = tab.dataset.credentialMode === mode;
+        tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;
+      }
+    }
+  };
   if(canAuthorize){
-    const dialog=$('#dialog'),setup=dialog.querySelector('form');setup.id='oauth-setup';
     let previousRefresh=false;
     if(originalCredential){try{const c=AccountConfig.oauthInput(originalCredential,account.provider).credential;previousRefresh=!!(c.refresh_token||c.claudeAiOauth?.refreshToken);}catch{}}
-    oauthEditor=attachOAuthForm({dialog,setup,progress:$('#oauth-progress'),identity,available,account,editId,previousRefresh});
+    oauthEditor=attachOAuthForm({dialog,setup,progress:$('#oauth-progress'),identity,available,account,editId,previousRefresh,
+      poolName:creationPool?.name,credential:setup.elements.oauth_credential,onChange:updateMode});
+    for(const tab of setup.querySelectorAll('[data-credential-mode]')){
+      tab.onclick=()=>{mode=tab.dataset.credentialMode;setup.querySelector('[role=alert]').textContent='';updateMode();};
+      tab.onkeydown=e=>{
+        if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){
+          e.preventDefault();const next=setup.querySelector(`[data-credential-mode="${e.key==='Home'?'oauth':e.key==='End'?'json':mode==='oauth'?'json':'oauth'}"]`);next.click();next.focus();
+        }
+      };
+    }
+    setup.elements.oauth_credential.addEventListener('input',updateMode);
   }
+  updateMode();
 }
 
 function batchAccountForm() {
