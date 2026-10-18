@@ -273,6 +273,6 @@ const AccountConfig = (() => {
     });
     return {config,rows};
   }
-  return {parse,build,draft,pool,poolModels,normalizeCredential,oauthInput,accountInput};
+  return {parse,build,draft,pool,poolModels,normalizeCredential,oauthInput,accountInput,validateProxy:proxy};
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = AccountConfig;

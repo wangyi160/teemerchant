@@ -101,12 +101,16 @@ fn request(method: &str, path: &str) -> Request {
 async fn secrets_use_only_the_original_attested_tls_connection() {
     let server = server("ok").await;
     let mut merchant = Merchant::fixture(server.endpoint.clone(), true);
-    for path in ["/merchant/state", "/merchant/usage?limit=2"] {
-        assert_eq!(merchant.request(request("GET", path)).await["status"], 200);
+    for (method, path) in [
+        ("GET", "/merchant/state"),
+        ("GET", "/merchant/usage?limit=2"),
+        ("POST", "/merchant/accounts/test"),
+    ] {
+        assert_eq!(merchant.request(request(method, path)).await["status"], 200);
     }
     assert_eq!(server.connections.load(Ordering::SeqCst), 1);
     let calls = server.calls.lock().unwrap();
-    assert_eq!(calls.len(), 2);
+    assert_eq!(calls.len(), 3);
     assert!(
         calls
             .iter()

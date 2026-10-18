@@ -21,6 +21,15 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
     await app.evaluate(({app})=>{
       const load=process.getBuiltinModule('node:module').createRequire(app.getAppPath()+'/package.json');
       const {OAuthController}=load('./desktop/oauth.cjs');
+      const {Backend}=load('./desktop/bridge.cjs'),call=Backend.prototype.call;
+      global.testProbes=[];
+      Backend.prototype.call=async function(method,path,body,identity){
+        if(method==='POST'&&path==='/api/accounts/test'){
+          global.testProbes.push(body);
+          return {ok:true,model:'fixture-text',latency_ms:12};
+        }
+        return call.call(this,method,path,body,identity);
+      };
       const original=OAuthController.prototype.start;
       global.testOAuth={opened:[],exchanges:0};
       OAuthController.prototype.start=async function(body,identity){
@@ -118,6 +127,13 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
         await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].show());
         await page.screenshot({path:path.join(ROOT,'desktop-test-results','oauth-ready.png')});
       }
+      assert.equal(await page.getByRole('button',{name:'保存并同步',exact:true}).isDisabled(),true);
+      await page.locator('#account-test').click();
+      await page.waitForFunction(()=>document.querySelector('#account-test-status').textContent.includes('通过'));
+      const probe=await app.evaluate(()=>global.testProbes.at(-1));
+      assert.equal(probe.pool,pool);
+      assert.equal(probe.credential.access_token,pool==='openai'?'PRIVATE_EDITED_ACCESS':'PRIVATE_DESKTOP_OAUTH_ACCESS');
+      assert.equal(probe.proxy,'socks5h://proxy.example:1080');
       await page.getByRole('button',{name:'保存并同步',exact:true}).click();await page.locator('#dialog').waitFor({state:'hidden'});
       await page.waitForFunction(()=>document.querySelector('#toast').textContent.includes('等待同步'));
     }
@@ -143,6 +159,8 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
     await page.keyboard.press('Escape');await page.locator('#dialog').waitFor({state:'hidden'});
     await page.locator('[data-action=oauth-renew][data-id=grok-oauth]').click();await page.locator('#account-authorize').click();await page.locator('#oauth-open').waitFor();
     await finishCallback();await page.waitForFunction(()=>document.querySelector('#oauth-progress [role=status]')?.textContent==='已授权');
+    await page.locator('#account-test').click();
+    await page.waitForFunction(()=>document.querySelector('#account-test-status').textContent.includes('通过'));
     await page.getByRole('button',{name:'保存并同步',exact:true}).click();await page.locator('#dialog').waitFor({state:'hidden'});
     // Discarding a successful authorization still leaves the account store untouched.
     await page.locator('[data-action=account-pool][data-id=openai]').click();await page.locator('[data-action=account]').click();
@@ -156,6 +174,9 @@ test('desktop OAuth browser callbacks, Claude code, reauthorization and encrypte
     await page.locator('#account-json-tab').click();
     await page.locator('[name=id]').fill('manual-json');await page.locator('[name=proxy]').fill('https://proxy.example');
     await page.locator('[name=credential]').fill('{"provider":"openai","credential":{"access_token":"PRIVATE_MANUAL_JSON"}}');
+    await page.locator('#account-test').click();
+    await page.waitForFunction(()=>document.querySelector('#account-test-status').textContent.includes('通过'));
+    assert.equal((await app.evaluate(()=>global.testProbes.at(-1))).credential.access_token,'PRIVATE_MANUAL_JSON');
     await page.getByRole('button',{name:'保存并同步',exact:true}).click();
     await page.waitForFunction(()=>!document.querySelector('#dialog').open||document.querySelector('#dialog [role=alert]')?.textContent);
     assert.equal(await page.locator('#dialog').isVisible(),false,await page.evaluate(()=>document.querySelector('#dialog [role=alert]')?.textContent||''));

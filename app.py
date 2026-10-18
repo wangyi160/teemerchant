@@ -141,6 +141,15 @@ class Application:
             return self.push_config() if self.connected else self.remote
         if (method, path) == ('POST', '/api/config/sync'):
             return self.push_config()
+        if (method, path) == ('POST', '/api/accounts/test'):
+            if not self.connected:
+                raise ValueError('请先连接 Router 再测试账号')
+            if (not isinstance(body, dict) or set(body) - {'pool','proxy','credential','api_key','model'}
+                    or not isinstance(body.get('pool'), str) or not isinstance(body.get('proxy'), str)
+                    or not body['proxy'] or len(json.dumps(body).encode()) > 128 * 1024
+                    or ('credential' in body) == ('api_key' in body)):
+                raise ValueError('账号测试参数无效')
+            return self.transport.call('POST', '/merchant/accounts/test', body)
         if method == 'GET' and path.startswith('/api/accounts/'):
             return self.store.accounts.account(self.store.settings['router'], unquote(path[len('/api/accounts/'):]))
         if (method, path) == ('POST', '/api/refresh'):

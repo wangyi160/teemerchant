@@ -155,6 +155,16 @@ test('desktop account workflow, persistent identity, IPC isolation and tray life
     await page.locator('[name=id]').fill('desktop-account');
     await page.locator('[name=credential]').fill(JSON.stringify({provider:'xai',credential:{api_key:'FAKE_DESKTOP_API_KEY'}}));
     await page.locator('[name=proxy]').fill('http://proxy.example:8080');
+    await app.evaluate(({app})=>{
+      const load=process.getBuiltinModule('node:module').createRequire(app.getAppPath()+'/package.json');
+      const {Backend}=load('./desktop/bridge.cjs'),call=Backend.prototype.call;
+      Backend.prototype.call=async function(method,path,body,identity){
+        if(method==='POST'&&path==='/api/accounts/test')return {ok:true,model:'fixture-text',latency_ms:12};
+        return call.call(this,method,path,body,identity);
+      };
+    });
+    await page.locator('#account-test').click();
+    await page.waitForFunction(()=>document.querySelector('#account-test-status').textContent.includes('通过'));
     await page.getByRole('button',{name:'保存并同步',exact:true}).click();
     await page.locator('#dialog').waitFor({state:'hidden'});
     await page.locator('[data-action=edit-account][data-id=desktop-account]').click();

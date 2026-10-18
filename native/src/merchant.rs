@@ -14,7 +14,10 @@ pub fn allowed(method: &str, path: &str) -> bool {
             "/merchant/state" | "/merchant/usage" | "/merchant/refusals"
         ) | (
             "POST",
-            "/merchant/unlock" | "/merchant/models/refresh" | "/merchant/usage/ack"
+            "/merchant/unlock"
+                | "/merchant/models/refresh"
+                | "/merchant/usage/ack"
+                | "/merchant/accounts/test"
         ) | ("PUT", "/merchant/config")
             | ("DELETE", "/merchant/refusals")
     )

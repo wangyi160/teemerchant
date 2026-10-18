@@ -50,6 +50,20 @@ class MerchantTests(unittest.TestCase):
     def test_client_cannot_change_local_private_key_through_settings_api(self):
         app=Application(self.store,Transport())
         with self.assertRaises(ValueError):app.api('PUT','/api/settings',{'token':'overwrite'})
+    def test_probe_forwards_only_after_connection_and_does_not_save_accounts(self):
+        t=Transport();app=Application(self.store,t)
+        body={'pool':'official','proxy':'https://proxy.example','credential':{'access_token':'PRIVATE_PROBE'}}
+        with self.assertRaises(ValueError):app._api('POST','/api/accounts/test',body)
+        self.assertEqual(t.acks,[])
+        app.connected=True
+        before=self.store.path.read_bytes()
+        app._api('POST','/api/accounts/test',body)
+        self.assertEqual(t.acks,[body])
+        self.assertEqual(self.store.path.read_bytes(),before)
+        for invalid in [{**body,'proxy':''},{**body,'base_url':'https://other.example'},
+                        {**body,'api_key':'PRIVATE_KEY'}]:
+            with self.assertRaises(ValueError):app._api('POST','/api/accounts/test',invalid)
+        self.assertEqual(len(t.acks),1)
     def test_filtered_legacy_usage_can_ack_without_disclosing_unused_users(self):
         class Hidden(Transport):
             def call(self,method,path,body=None):

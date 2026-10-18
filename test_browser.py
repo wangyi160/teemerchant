@@ -22,6 +22,8 @@ class FakeRouter:
     def __init__(self, store):
         self.writes = []
         self.reject = False
+        self.probes = []
+        self.probe_result = {'ok':True,'model':'fixture-text','latency_ms':12}
         self.remote = {'merchant': {'id': store.enrollment()['id'], 'name': 'Example merchant', 'allow_test': True,
                                    'max_concurrent': 16, 'rpm': 0, 'tpm': 0},
             'settings': {'revision': 7, 'max_concurrent': 16, 'rpm': 0, 'tpm': 0, 'customers': [],
@@ -37,6 +39,9 @@ class FakeRouter:
         pass
 
     def call(self, method, path, body=None):
+        if method == 'POST' and path == '/merchant/accounts/test':
+            self.probes.append(copy.deepcopy(body))
+            return copy.deepcopy(self.probe_result)
         if method == 'PUT':
             if self.reject:
                 raise RuntimeError('Router 返回 409：revision_conflict')
@@ -84,6 +89,44 @@ class BrowserTests(unittest.TestCase):
         self.store.db.close()
         self.tmp.cleanup()
         self.assertEqual(self.errors, [])
+
+    def pass_probe(self):
+        self.page.locator('#account-test').click()
+        expect(self.page.locator('#account-test-status')).to_contain_text('通过')
+
+    def test_connection_required_and_invalidated_when_credentials_or_proxy_change(self):
+        self.page.locator('[data-action=account]').click()
+        self.page.locator('[name=id]').fill('checked-account')
+        self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'access_token':'PRIVATE_TOKEN'}}))
+        save = self.page.get_by_role('button', name='保存并同步')
+        expect(save).to_be_disabled()
+        self.page.locator('[name=proxy]').fill('direct://')
+        self.page.locator('#account-test').click()
+        expect(self.page.locator('#account-test-status')).to_have_text('测试失败')
+        self.assertEqual(self.router.probes, [])
+        self.page.locator('[name=proxy]').fill('socks5h://proxy.example:1080')
+        self.router.probe_result = {'ok':False,'code':'credential_rejected'}
+        self.page.locator('#account-test').click()
+        expect(self.page.locator('#dialog [role=alert]')).to_have_text('凭证被上游拒绝')
+        expect(save).to_be_disabled()
+        self.assertEqual(self.router.writes, [])
+        self.router.probe_result = {'ok':True,'model':'fixture-text','latency_ms':12}
+        self.pass_probe()
+        expect(save).to_be_enabled()
+        self.page.locator('[name=max_concurrent]').fill('4')
+        expect(save).to_be_enabled()
+        self.page.locator('[name=proxy]').fill('https://other.example')
+        expect(save).to_be_disabled()
+        self.pass_probe()
+        self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'access_token':'PRIVATE_NEW_TOKEN'}}))
+        expect(save).to_be_disabled()
+        self.pass_probe()
+        self.assertEqual(self.router.probes[-1]['credential']['access_token'],'PRIVATE_NEW_TOKEN')
+        self.assertEqual(self.router.probes[-1]['proxy'],'https://other.example')
+        self.assertEqual(self.router.writes, [])
+        save.click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(len(self.router.writes), 1)
 
     def test_merchant_credentials_show_locally_refill_edit_and_clear_on_navigation(self):
         secret = self.store.settings['token']
@@ -302,6 +345,7 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('[name=id]').fill('claude-account')
         self.page.locator('[name=credential]').fill(json.dumps({'provider':'anthropic','credential':{'api_key':'FIXTURE_CLAUDE_KEY'}}))
         self.page.locator('[name=proxy]').fill('https://proxy.example')
+        self.pass_probe()
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         expect(self.page.locator('.selected-row td').nth(2)).to_have_text('1')
@@ -427,6 +471,8 @@ class BrowserTests(unittest.TestCase):
         credential = {'provider': 'openai', 'proxy': 'socks5h://proxy.example:1080',
                       'credential': {'access_token': 'FIXTURE_ACCESS', 'refresh_token': 'FIXTURE_REFRESH'}}
         self.page.locator('[name=credential]').fill(json.dumps(credential))
+        self.page.locator('[name=proxy]').fill(credential['proxy'])
+        self.pass_probe()
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(self.router.writes[0]['accounts']['new-oauth']['credential'], credential['credential'])
@@ -437,6 +483,7 @@ class BrowserTests(unittest.TestCase):
         del credential['proxy']
         credential['credential']['access_token'] = 'ROTATED_FIXTURE_ACCESS'
         self.page.locator('[name=credential]').fill(json.dumps(credential))
+        self.pass_probe()
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(len(self.router.writes), 2)
@@ -451,6 +498,12 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('[name=pool]')).to_have_value('openai')
         self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'api_key':'LOCAL_PRIVATE_FIXTURE'}}))
         self.page.locator('[name=proxy]').fill('https://user:FIXTURE_PASSWORD@proxy.example')
+        self.page.locator('#account-test').click()
+        expect(self.page.locator('#dialog [role=alert]')).to_contain_text('请先连接 Router')
+        expect(self.page.get_by_role('button', name='保存并同步')).to_be_disabled()
+        self.app.connected = True
+        self.pass_probe()
+        self.app.connected = False
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         expect(self.page.locator('.notice')).to_contain_text('等待同步')
@@ -483,6 +536,7 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('[name=id]').fill('grok-native')
         self.page.locator('[name=credential]').fill(json.dumps(native))
         self.page.locator('[name=proxy]').fill('socks5h://proxy-1.example:1080')
+        self.pass_probe()
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(self.router.writes[-1]['accounts']['grok-native']['credential'], expected)

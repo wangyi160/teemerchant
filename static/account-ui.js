@@ -177,7 +177,26 @@ async function accountForm(editId = '', initialMode = '') {
   const originalProxy = local?.proxy || '';
   const canAuthorize = !!window.teemerchant?.oauth && ['openai','anthropic','xai'].includes((originalPool || creationPool).provider) && (!account || kind === 'oauth');
   let mode = canAuthorize && (initialMode === 'oauth' || !account) ? 'oauth' : 'json';
-  let oauthEditor;
+  let oauthEditor, tested = null, testing = false;
+  const connection = f => {
+    const target = account ? available.find(p=>p.name===f.get('pool')) : creationPool;
+    if(!target)throw Error('账号池已变化，请重新打开');
+    const raw = (f.get(mode==='oauth'?'oauth_credential':'credential') || '').trim() || (account && mode==='json'?originalCredential:'');
+    const value = AccountConfig.accountInput(raw,target.provider);
+    const proxy = AccountConfig.validateProxy(f.get('proxy').trim() || value.proxy || originalProxy,target.provider);
+    return {pool:target.name,proxy,...(value.kind==='api'?{api_key:value.api_key}:{credential:value.credential})};
+  };
+  let originalConnection = '';
+  if(account && originalCredential && originalProxy){
+    try{
+      const c = AccountConfig.accountInput(originalCredential,account.provider);
+      originalConnection = JSON.stringify({pool:originalPool.name,proxy:originalProxy,...(c.kind==='api'?{api_key:c.api_key}:{credential:c.credential})});
+    }catch{}
+  }
+  const requiresTest = (fingerprint,f) => !account || mode==='oauth' ||
+    (originalConnection ? fingerprint!==originalConnection :
+      f.get('pool')!==originalPool.name || (f.get('credential')||'').trim()!==originalCredential.trim() || f.get('proxy').trim()!==originalProxy);
+  const passed = fingerprint => tested?.fingerprint===fingerprint && tested.expires > Date.now();
   form(account ? '编辑账号' : '添加上游账号',
     `<div class="grid">`+
     field('账号 ID（别名）','id',account?.id || '','text',`required maxlength="128" pattern="[a-zA-Z0-9_.-]+" ${account?'readonly':''}`)+
@@ -191,12 +210,15 @@ async function accountForm(editId = '', initialMode = '') {
     <div id="account-json-panel" ${canAuthorize?'role="tabpanel" aria-labelledby="account-json-tab"':''}>
       <label for="account-credential">凭证 JSON</label><textarea id="account-credential" name="credential" rows="10" autocomplete="off" spellcheck="false">${esc(originalCredential)}</textarea>
     </div>`+
-    field('账号网络代理','proxy',originalProxy,'text','autocomplete="off"')+
+    field('账号网络代理','proxy',originalProxy,'text',`autocomplete="off" ${account?'':'required'}`)+
     `<div class="grid">`+field('并发上限','max_concurrent',account?.max_concurrent ?? 16,'number','required min="1" max="4096"')+
     field('RPM（0 为不限）','rpm',account?.rpm ?? 0,'number','required min="0" max="10000000"')+`</div>
-    <label><input name="enabled" type="checkbox" ${!account || account.enabled?'checked':''}>启用账号</label>`, async f => {
+    <label><input name="enabled" type="checkbox" ${!account || account.enabled?'checked':''}>启用账号</label>
+    <div class="account-test"><button type="button" id="account-test">测试连接</button><span id="account-test-status" role="status">未测试</span></div>`, async f => {
       if (mode === 'oauth') oauthEditor.ensureReady();
       if (state.enrollment.id !== identity || state.settings.router !== router) throw Error('商户连接已变化，请重新打开');
+      let fingerprint='';try{fingerprint=JSON.stringify(connection(f));}catch(error){if(!account)throw error;}
+      if(requiresTest(fingerprint,f) && !passed(fingerprint))throw Error('请先通过连接测试');
       const targetPool = account ? available.find(p=>p.name===f.get('pool')) : creationPool;
       if (!targetPool) throw Error('账号池已变化，请重新打开');
       const entry = {id:f.get('id'),pool:targetPool.name,provider:targetPool.provider,
@@ -214,7 +236,10 @@ async function accountForm(editId = '', initialMode = '') {
           if (value.proxy) entry.proxy = value.proxy;
         }
       }
-      if (f.get('proxy').trim() && f.get('proxy').trim() !== originalProxy) entry.proxy = f.get('proxy').trim();
+      if (f.get('proxy').trim()) {
+        if(f.get('proxy').trim() !== originalProxy)entry.proxy=f.get('proxy').trim();
+        else delete entry.proxy;
+      }
       await save(AccountConfig.build(snapshot,[entry],{},editId || null).config);
     },{submit:'保存并同步'});
   const dialog=$('#dialog'),setup=dialog.querySelector('form');setup.id='account-setup';
@@ -224,7 +249,6 @@ async function accountForm(editId = '', initialMode = '') {
     setup.elements.credential.disabled = mode !== 'json';
     setup.elements.credential.required = !account && mode === 'json';
     setup.querySelector('#account-json-panel').hidden = mode !== 'json';
-    setup.querySelector('[type=submit]').disabled = mode === 'oauth' && (authorizing || !setup.elements.oauth_credential.value.trim());
     if(canAuthorize){
       setup.querySelector('#account-oauth-panel').hidden = mode !== 'oauth';
       setup.querySelector('#oauth-result').hidden = !setup.elements.oauth_credential.value;
@@ -236,6 +260,12 @@ async function accountForm(editId = '', initialMode = '') {
         tab.setAttribute('aria-selected',String(selected));tab.tabIndex=selected?0:-1;
       }
     }
+    const f=new FormData(setup);
+    let fingerprint='';try{fingerprint=JSON.stringify(connection(f));}catch{}
+    const needsTest=requiresTest(fingerprint,f), valid=passed(fingerprint);
+    setup.querySelector('[type=submit]').disabled = testing || needsTest && !valid || mode === 'oauth' && (authorizing || !setup.elements.oauth_credential.value.trim());
+    setup.querySelector('#account-test').disabled = testing || mode==='oauth' && authorizing;
+    if(!testing && !valid && tested){tested=null;setup.querySelector('#account-test-status').textContent='未测试';}
   };
   if(canAuthorize){
     let previousRefresh=false;
@@ -252,6 +282,27 @@ async function accountForm(editId = '', initialMode = '') {
     }
     setup.elements.oauth_credential.addEventListener('input',updateMode);
   }
+  setup.addEventListener('input',updateMode);setup.addEventListener('change',updateMode);
+  setup.querySelector('#account-test').onclick=async()=>{
+    if(testing || !setup.reportValidity())return;
+    const status=setup.querySelector('#account-test-status'), alert=setup.querySelector('[role=alert]');
+    let fingerprint;
+    try{
+      if(mode==='oauth')oauthEditor.ensureReady();
+      const payload=connection(new FormData(setup));fingerprint=JSON.stringify(payload);
+      tested=null;testing=true;status.textContent='测试中…';alert.textContent='';updateMode();
+      const result=await api('/api/accounts/test','POST',payload);
+      if(!dialog.open || state.enrollment.id!==identity || state.settings.router!==router)return;
+      if(fingerprint!==JSON.stringify(connection(new FormData(setup))))throw Error('配置已变更，请重新测试');
+      if(!result.ok){
+        const messages={credential_rejected:'凭证被上游拒绝',credential_invalid_or_expired:'凭证无效或已过期',upstream_rate_limited:'上游限流，请稍后重试',proxy_or_upstream_unreachable:'代理或上游无法连接',upstream_error:'上游请求失败',invalid_upstream_response:'模型响应无效',probe_timeout:'连接测试超时',probe_no_text_model:'没有可测试的对外文本模型'};
+        throw Error(messages[result.code]||'连接测试失败');
+      }
+      tested={fingerprint,expires:Date.now()+5*60*1000};
+      status.textContent=`通过 · ${result.model} · ${result.latency_ms} ms`;
+    }catch(error){if(dialog.open){status.textContent='测试失败';alert.textContent=error.message;}}
+    finally{testing=false;if(dialog.open)updateMode();}
+  };
   updateMode();
 }
 
