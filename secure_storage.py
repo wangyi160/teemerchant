@@ -3,6 +3,7 @@ import os
 import stat
 from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.exceptions import InvalidTag
 
 class LinuxVault:
     def __init__(self, directory):
@@ -29,6 +30,9 @@ class LinuxVault:
         if decrypt:
             if not value.startswith(b'TMV1'):
                 raise RuntimeError('此账号库属于 Windows DPAPI；须先在原 Windows 系统导出再迁移')
-            return self.cipher.decrypt(value[4:16], value[16:], b'teemerchant-v1')
+            try:
+                return self.cipher.decrypt(value[4:16], value[16:], b'teemerchant-v1')
+            except InvalidTag:
+                raise ValueError('商户资料无法解密，请恢复与账号库匹配的本地密钥') from None
         nonce = os.urandom(12)
         return b'TMV1' + nonce + self.cipher.encrypt(nonce, value, b'teemerchant-v1')
