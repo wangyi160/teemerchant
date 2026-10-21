@@ -89,6 +89,21 @@ class OwnerControlTests(unittest.TestCase):
             app.connect()
         self.assertEqual(len(router.writes), 2)
 
+    def test_offline_edits_preserve_private_protocol_configuration_for_restart(self):
+        router = Router(self.store)
+        app = Application(self.store, router)
+        app.accept(router.remote)
+        fixture = type('Fixture', (), {'app': app, 'router': router})()
+        app.api('PUT', '/api/config', LocalAccountTests.config(fixture))
+        book = self.store.accounts.data['routers'][self.store.settings['router']]
+        book['config']['compatibility'] = {'fixture': ['preserve']}
+        book['config']['restrictions'] = [{'fixture': 'preserve'}]
+        app.connected = False
+        app.api('PUT', '/api/config', LocalAccountTests.config(fixture))
+        pending = self.store.accounts.pending(self.store.settings['router'])
+        self.assertEqual(pending['compatibility'], {'fixture': ['preserve']})
+        self.assertEqual(pending['restrictions'], [{'fixture': 'preserve'}])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -150,6 +150,9 @@ class AccountBook:
                 raise ValueError('local_revision_conflict：本地有待同步修改，请刷新后重试')
             update = copy.deepcopy(body)
             update.pop('_local_revision', None)
+            for field in ('compatibility', 'restrictions'):
+                if field not in update and field in (book['config'] or {}):
+                    update[field] = copy.deepcopy(book['config'][field])
             old_deployments = {d['id']: d for d in deployments(book['config'])}
             for d in deployments(update):
                 if d.get('proxy') == '[redacted]':
