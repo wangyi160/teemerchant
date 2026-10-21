@@ -11,7 +11,7 @@ pub fn allowed(method: &str, path: &str) -> bool {
         (method, path),
         (
             "GET",
-            "/merchant/state" | "/merchant/usage" | "/merchant/refusals" | "/merchant/accounts/credentials"
+            "/merchant/state" | "/merchant/usage" | "/merchant/refusals"
         ) | (
             "POST",
             "/merchant/unlock"
@@ -19,7 +19,7 @@ pub fn allowed(method: &str, path: &str) -> bool {
                 | "/merchant/models/refresh"
                 | "/merchant/usage/ack"
                 | "/merchant/accounts/test"
-        ) | ("PUT", "/merchant/config")
+        ) | ("PUT", "/merchant/config" | "/merchant/accounts/access")
             | ("DELETE", "/merchant/refusals")
     )
 }

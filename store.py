@@ -1,4 +1,4 @@
-"""Merchant-owned Windows storage. Secrets and archived records use current-user DPAPI."""
+"""Merchant-owned encrypted storage for Windows and Linux."""
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -36,10 +36,17 @@ def protect(value, decrypt=False):
         ctypes.memset(target.data, 0, target.size)
         kernel.LocalFree(target.data)
 
+def protector(directory):
+    if os.name == 'nt':
+        return protect
+    from secure_storage import LinuxVault
+    return LinuxVault(directory)
+
 class Store:
     def __init__(self, directory, *, _profile=False):
         self.root_directory = Path(directory).resolve()
         self.directory = self.root_directory
+        self.protect = protector(self.directory)
         selection = self.root_directory / 'active-merchant.json'
         if not _profile and selection.exists():
             identity = json.loads(selection.read_text(encoding='utf-8'))['merchant_id']
@@ -47,10 +54,11 @@ class Store:
             if not (self.directory / 'settings.dpapi').is_file():
                 raise ValueError('当前商户资料缺失，请恢复完整 data 目录')
         self.directory.mkdir(parents=True, exist_ok=True)
+        self.protect = protector(self.directory)
         self.lock = threading.RLock()
         self.path = self.directory / 'settings.dpapi'
         if self.path.exists():
-            self.settings = json.loads(protect(self.path.read_bytes(), True))
+            self.settings = json.loads(self.protect(self.path.read_bytes(), True))
         else:
             self.settings = {'token': secrets.token_hex(32), 'router': '', 'tdx_policy': '', 'snp_policy': '', 'minimum_revision': 0, 'credentials_saved': False}
             self.save()
@@ -59,7 +67,7 @@ class Store:
             self.save()
         if not _profile and selection.exists() and self.enrollment()['id'] != identity:
             raise ValueError('当前商户资料的身份不一致')
-        self.accounts = AccountBook(self.directory, self.enrollment()['id'], protect)
+        self.accounts = AccountBook(self.directory, self.enrollment()['id'], self.protect)
         self.db = sqlite3.connect(self.directory / 'records.db', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS records(kind TEXT, instance TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(kind,instance,seq))')
         self.db.commit()
@@ -70,7 +78,7 @@ class Store:
             raise ValueError('商户 ID 无效')
         legacy = self.root_directory / 'settings.dpapi'
         if legacy.exists():
-            settings = json.loads(protect(legacy.read_bytes(), True))
+            settings = json.loads(protector(self.root_directory)(legacy.read_bytes(), True))
             if 'm_' + hashlib.sha256(settings['token'].encode()).hexdigest()[:32] == identity:
                 return self.root_directory
         directory = (self.root_directory / 'merchants' / identity).resolve()
@@ -87,7 +95,7 @@ class Store:
             for path in paths:
                 if not path.exists():
                     continue
-                settings = json.loads(protect(path.read_bytes(), True))
+                settings = json.loads(protector(path.parent)(path.read_bytes(), True))
                 if not settings.get('credentials_saved', bool(settings.get('token'))):
                     continue
                 identity = 'm_' + hashlib.sha256(settings['token'].encode()).hexdigest()[:32]
@@ -115,7 +123,7 @@ class Store:
             candidate.db.close()
             raise
         previous_db = self.db
-        for field in ('directory', 'path', 'settings', 'accounts', 'db', 'revenue_index'):
+        for field in ('directory', 'path', 'settings', 'accounts', 'db', 'revenue_index', 'protect'):
             setattr(self, field, getattr(candidate, field))
         previous_db.close()
 
@@ -138,7 +146,7 @@ class Store:
         with self.lock:
             tmp = self.path.with_suffix('.tmp')
             with tmp.open('wb') as file:
-                file.write(protect(json.dumps(self.settings).encode()))
+                file.write(self.protect(json.dumps(self.settings).encode()))
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(tmp, self.path)
@@ -272,7 +280,7 @@ class Store:
                 self.settings = previous
                 raise
             if not same:
-                self.accounts = AccountBook(self.directory, body['merchant_id'], protect)
+                self.accounts = AccountBook(self.directory, body['merchant_id'], self.protect)
 
     def archive(self, kind, instance, rows):
         with self.lock, self.db:
@@ -281,14 +289,14 @@ class Store:
                 raw = json.dumps(row, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
                 old = self.db.execute('SELECT payload FROM records WHERE kind=? AND instance=? AND seq=?', (kind, instance, seq)).fetchone()
                 if old:
-                    if protect(old[0], True) != raw:
+                    if self.protect(old[0], True) != raw:
                         raise RuntimeError('Archived record changed; synchronization stopped')
                     continue
-                self.db.execute('INSERT INTO records VALUES(?,?,?,?)', (kind, instance, seq, protect(raw)))
+                self.db.execute('INSERT INTO records VALUES(?,?,?,?)', (kind, instance, seq, self.protect(raw)))
 
     def records(self, kind):
         with self.lock:
-            return [json.loads(protect(row[0], True)) for row in self.db.execute('SELECT payload FROM records WHERE kind=? ORDER BY rowid DESC LIMIT 200', (kind,))]
+            return [json.loads(self.protect(row[0], True)) for row in self.db.execute('SELECT payload FROM records WHERE kind=? ORDER BY rowid DESC LIMIT 200', (kind,))]
 
     def revenue(self, query=''):
         with self.lock:
@@ -297,7 +305,7 @@ class Store:
             for rowid, instance, seq, payload in self.db.execute(
                     "SELECT rowid,instance,seq,payload FROM records WHERE kind='usage' AND rowid>? ORDER BY rowid",
                     (self.revenue_index.cursor,)):
-                row = json.loads(protect(payload, True))
+                row = json.loads(self.protect(payload, True))
                 event = row.get('event', {})
                 self.revenue_index.add(rowid, instance, seq, event)
             return self.revenue_index.report(query)
@@ -313,4 +321,4 @@ class Store:
                 if isinstance(value, list):
                     return [exact(v) for v in value]
                 return str(value) if type(value) is int and abs(value) > 2**53-1 else value
-            return exact(json.loads(protect(row[0], True)))
+            return exact(json.loads(self.protect(row[0], True)))

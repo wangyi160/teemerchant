@@ -8,7 +8,7 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
   const provider=()=>available.find(p=>p.name===(poolName || setup.elements.pool.value))?.provider;
   const updatePool=()=>{
     setup.querySelector('#account-oauth-actions').hidden=!oauthProviderNames[provider()];
-    setup.elements.save_refresh.checked=account?previousRefresh:provider()!=='anthropic';
+    setup.elements.save_refresh.checked=account?previousRefresh:true;
     if(!active){progress.hidden=true;progress.innerHTML='';lastView='';}
   };
   updatePool();setup.elements.pool.addEventListener('change',updatePool);
@@ -27,7 +27,7 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
     const waiting=current.status==='waiting';
     progress.innerHTML=`<div class="panelhead"><span role="status">${esc(labels[current.status]||'授权中')}</span>${active?'<button type="button" id="oauth-cancel">取消授权</button>':''}</div>
       ${waiting?`<div class="actions"><button type="button" id="oauth-open">打开授权页面</button><button type="button" id="oauth-copy">复制授权链接</button></div>
-      ${current.manual_code?'':'<details><summary>手动回调</summary>'}<label>${current.manual_code?'授权码':'回调地址'}<input name="code" autocomplete="off" spellcheck="false" maxlength="8192"></label><button type="button" id="oauth-submit">${current.manual_code?'提交授权码':'提交回调'}</button>${current.manual_code?'':'</details>'}`:''}`;
+      ${current.manual_code||current.manual_callback?'':'<details><summary>手动回调</summary>'}<label>${current.manual_code?'授权码':'回调地址'}<input name="code" autocomplete="off" spellcheck="false" maxlength="8192"></label><button type="button" id="oauth-submit">${current.manual_code?'提交授权码':'提交回调'}</button>${current.manual_code||current.manual_callback?'':'</details>'}`:''}`;
     const cancel=progress.querySelector('#oauth-cancel');if(cancel)cancel.onclick=()=>operation('cancel');
     if(waiting){
       progress.querySelector('#oauth-open').onclick=()=>operation('open');
@@ -74,7 +74,7 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
     if(active||closed||dialog.dataset.busy)return;
     lock(true);busy=true;error('');progress.hidden=false;progress.innerHTML='<span role="status">授权中</span>';lastView='';
     try{
-      const entry={pool:poolName || setup.elements.pool.value,...(editId?{id:editId}:{})};
+      const entry={pool:poolName || setup.elements.pool.value,proxy:setup.elements.proxy.value,...(editId?{id:editId}:{})};
       await accept(await call('start',{entry,edit_id:editId||null,save_refresh:setup.elements.save_refresh.checked,credentials_only:true}));
     }catch(e){if(!closed){error(e.message);lock(false);progress.hidden=true;}}
     finally{busy=false;schedule();}

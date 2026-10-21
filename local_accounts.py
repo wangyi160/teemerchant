@@ -1,10 +1,12 @@
 """Merchant-owned account book, encrypted at rest before any Router write."""
 import copy
+import hashlib
 import json
 import os
 import re
 import threading
 import time
+from credential_protocol import access_only, normalized, fingerprint
 
 
 def config_from(remote):
@@ -190,6 +192,75 @@ class AccountBook:
         with self.lock:
             return copy.deepcopy(self.data['routers'].get(router, {}).get('pending'))
 
+    def renewal_candidates(self, router, now=None):
+        """A durable 'refreshing' marker is never blindly retried after a crash."""
+        now = time.time() if now is None else now
+        with self.lock:
+            book = self.data['routers'].get(router, {})
+            refs = {d.get('oauth_account') for d in deployments(book.get('config')) if d.get('enabled', True)}
+            result = []
+            for name in refs:
+                account = book.get('accounts', {}).get(name)
+                if not account or not account.get('enabled', True) or account.get('provider') == 'workbuddy': continue
+                credential = normalized(account.get('credential', {}))
+                if not credential.get('refresh_token'): continue
+                expiry = access_only(credential).get('expires_at')
+                if expiry is None or expiry > now + 300: continue
+                basis = hashlib.sha256(json.dumps(account['credential'], sort_keys=True).encode()).hexdigest()
+                status = book.get('renewals', {}).get(name, {})
+                if status.get('basis') == basis and (status.get('state') in ('refreshing','reauthorization_required','uncertain') or status.get('retry_at',0)>now): continue
+                result.append((name, copy.deepcopy(account), basis))
+            return result
+
+    def renewal_started(self, router, name, basis):
+        with self.lock:
+            data = copy.deepcopy(self.data);book=self._book(data,router)
+            book.setdefault('renewals',{})[name]={'basis':basis,'state':'refreshing'}
+            self._write(data)
+
+    def renewal_finished(self, router, name, basis, credential=None, error=None):
+        with self.lock:
+            data=copy.deepcopy(self.data);book=self._book(data,router)
+            account=book['accounts'].get(name)
+            if not account or hashlib.sha256(json.dumps(account['credential'],sort_keys=True).encode()).hexdigest()!=basis:
+                raise RuntimeError('续期期间账号凭证发生变化')
+            if credential is not None:
+                account['credential']=copy.deepcopy(credential)
+                # Any already-staged configuration must carry the newest locally
+                # persisted credentials too; never overwrite a rotated token.
+                if book['pending'] and name in book['pending'].get('accounts',{}):
+                    book['pending']['accounts'][name]['credential']=copy.deepcopy(credential)
+                book.setdefault('renewals',{})[name]={'state':'active','renewed_at':int(time.time()),'access_sha256':fingerprint(credential)}
+                book['local_revision']+=1;book['saved_at']=int(time.time())
+            else:
+                status='uncertain' if getattr(error,'uncertain',False) else 'reauthorization_required' if getattr(error,'permanent',False) else 'retry'
+                book.setdefault('renewals',{})[name]={'basis':basis,'state':status,'error':str(error),'retry_at':int(time.time())+60}
+            self._write(data)
+
+    def access_updates(self, router, remote):
+        with self.lock:
+            book=self.data['routers'].get(router,{})
+            pending=book.get('pending') or {}
+            enabled_refs={d.get('oauth_account') for d in deployments(book.get('config')) if d.get('enabled',True)}
+            statuses={a['name']:a for a in remote.get('accounts',{}).get('data',[])}
+            updates={}
+            for name,account in book.get('accounts',{}).items():
+                status=statuses.get(name)
+                if not status or account.get('provider')=='workbuddy': continue
+                credential=access_only(account['credential'])
+                if pending:
+                    patch=pending.get('accounts',{}).get(name,{})
+                    if name not in enabled_refs or 'proxy' in patch: continue
+                    # Unrelated pending edits must not block automatic renewal.
+                    # A manual credential/proxy edit still follows its explicit
+                    # configuration save, rather than being partially applied.
+                    if 'credential' in patch and book.get('renewals',{}).get(name,{}).get('access_sha256')!=fingerprint(credential): continue
+                if status.get('access_sha256')==fingerprint(credential): continue
+                if not isinstance(status.get('access_sha256'),str): continue
+                updates[name]={'expected_access_sha256':status['access_sha256'],'credential':credential}
+            if not updates: return None
+            return {'runtime_id':remote['merchant']['runtime_id'],'accounts':updates}
+
     def restore_pending(self, router, remote):
         """Rebuild a fresh TEE runtime using only merchant-local durable material."""
         if remote['merchant']['id'] != self.identity or not remote['merchant'].get('configuration_required'):
@@ -283,6 +354,7 @@ class AccountBook:
                 view['settings'][field] = copy.deepcopy(config.get(field))
             # The Router revision guards writes; local_revision guards offline edits.
             view['local_revision'] = book['local_revision']
+            view['renewals'] = copy.deepcopy(book.get('renewals', {}))
             missing = [d['id'] for d in deployments(config) if not self._material(book, d)['credential_present']]
             view['local_sync'] = {'state': book['sync_state'], 'error': book['sync_error'],
                                   'saved_at': book['saved_at'], 'missing_credentials': missing}
@@ -311,32 +383,6 @@ class AccountBook:
             if not d:
                 raise ValueError('本地账号不存在')
             return {**self._material(book, d), 'local_revision': book['local_revision']}
-
-    def sync_credentials(self, router, snapshot):
-        """Keep rotated OAuth tokens only in the merchant's encrypted local book."""
-        if snapshot.get('merchant_id') != self.identity or not isinstance(snapshot.get('accounts'), dict):
-            raise RuntimeError('凭据同步的商户身份无效')
-        with self.lock:
-            data = copy.deepcopy(self.data)
-            book = self._book(data, router)
-            if (book['pending'] or not book['config']
-                    or book['config']['expected_revision'] != snapshot.get('revision')):
-                return False
-            changed = False
-            for deployment in deployments(book['config']):
-                ref = deployment.get('oauth_account')
-                account = snapshot['accounts'].get(ref)
-                local = book['accounts'].get(ref)
-                if not account or not local or account.get('provider') != local.get('provider'):
-                    continue
-                if account.get('credential') != local.get('credential'):
-                    local['credential'] = copy.deepcopy(account['credential'])
-                    changed = True
-            if changed:
-                book['local_revision'] += 1
-                book['saved_at'] = int(time.time())
-                self._write(data)
-            return changed
 
     def import_recovery(self, router, bundle):
         """Recover only credentials referenced by this merchant's existing local pools."""

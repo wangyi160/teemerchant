@@ -1,88 +1,15 @@
-# Desktop OAuth binding
+# 商户服务 OAuth
 
-Select a pool in the account-pool list, then open **添加账号**. The creation form's
-pool is fixed and read-only; the all-accounts view has no single-account add button.
-**OAuth 授权** and **JSON 导入** are separate tabs with separate drafts. Only the
-active tab's credential is submitted. The OAuth tab has an independent authorize
-button and shows the editable token result after authorization. The manual JSON
-tab shows no OAuth controls. Switching tabs preserves both drafts, including an
-authorization in progress, without automatically saving either credential.
-Authorization can run before filling in the alias or proxy. Existing accounts use
-the same editor through **编辑** (JSON tab) or **重新授权** (OAuth tab). Workbuddy
-offers only JSON import, with a credential containing `api_key`.
+授权和续期在商户 HTTP 服务中执行。提供商端点与公开 CLI client ID 定义于 `oauth_service.py`，沿用此前审阅的 Codex、Claude Code、Grok CLI 授权参数。浏览器表单提供 OAuth / JSON 两个切换页；OAuth 只填充草稿，测试连接成功后才保存。
 
-| Pool provider | Authorization | Callback | Renewal in Router |
-| --- | --- | --- | --- |
-| `openai` (ChatGPT / Codex) | Authorization code with PKCE S256 | `http://localhost:1455/auth/callback` | Supported when a refresh token is saved |
-| `anthropic` (Claude / Claude Code) | Authorization code with PKCE S256 | Official hosted page; paste its code or `code#state` | External renewal: click **重新授权** after expiry |
-| `xai` (Grok) | OIDC discovery + authorization code with PKCE S256 | `http://127.0.0.1:56121/callback` | Supported when a refresh token is saved |
+每次授权生成独立的 PKCE S256 verifier 和 state，Grok 另含 nonce。会话绑定 HTTP 登录会话、商户身份、Router 和账号池，十分钟过期。回调地址须匹配官方注册的 redirect URI，并校验 state。远程浏览器粘贴完整 localhost 回调 URL；Claude 支持官方返回的授权码或 code#state。错误、取消、退出登录或过期清理草稿；凭据结果只能取回一次，状态轮询不返回令牌。
 
-After authorization, click **保存并同步**. Credentials go through the same local
-Windows DPAPI encrypted account store and verified TEE synchronization as manual
-imports. An unavailable Router leaves an explicit pending local change. OAuth
-success alone does not mean an account is saved, enabled or usable for every model.
-Reauthorization keeps its deployment ID, credential reference, enabled state,
-pool, pool multiplier and model policy. It never creates a second deployment.
+授权码兑换和三家 refresh 请求使用账号配置的 HTTP(S)、SOCKS5h 或 VLESS 代理，HTTPS 校验开启，禁止重定向与环境代理，不做直连回退。错误信息不包含上游响应正文或 Token。
 
-The refresh-token checkbox is explicit. New ChatGPT/Grok bindings default to
-retaining it, and renewals default to the existing local credential's preference.
-Claude defaults to access-only because the current Router does not refresh Claude
-credentials. Selecting access-only replaces the full stored credential and removes
-an old refresh token. Local credentials remain the last imported/bound version;
-the Router's subsequently rotated tokens are not read back by this feature.
+refresh token 只保存在商户加密账号库。续期前写入持久化意图，成功后先保存轮换后的完整凭据，再向 Router 上传 access-only 投影。崩溃遗留的 refreshing 状态不自动重放；明确拒绝或结果不明需要重新授权。已确认连接未建立的错误一分钟后重试。access token 上传失败不会重新触发 OAuth refresh。
 
-## Network and lifecycle
+Router 协议能力字段为 `merchant.credential_protocol: access-token-only-v1`。不兼容的 Router 在上传账号资料之前被拒绝。完整配置与测试接口不发送 refresh token；增量更新使用 `PUT /merchant/accounts/access`，包含 `runtime_id`、账号别名、`expected_access_sha256`、`credential`。无变更重试不增加账号版本；不同实例、旧摘要覆盖与 refresh 字段被拒绝。
 
-Authorization uses the desktop's system network/proxy configuration via a separate,
-non-persistent Electron session. The official login page uses the system browser.
-The per-account proxy is saved for **Router → official upstream** traffic; it is
-not used for local OAuth login or token exchange. VLESS, SOCKS or HTTP proxy links
-continue to use the existing per-account validation.
+升级前应先让旧客户端保存 Router 内最新凭据，再停用旧程序与升级 Router。旧版 Router 可能已经轮换了 refresh token，不能直接用更早的本地副本启动续期。用户可以保留仅 access token 的账号，到期后手动授权。
 
-The main process generates public CLI client IDs, PKCE secrets, state and URLs.
-Client IDs are not secrets. Only HTTPS official hosts are allowed for discovery
-and token exchange; redirects, arbitrary endpoints and certificate bypasses are
-not supported. Responses are bounded and response bodies are never surfaced as
-errors. Progress queries never include tokens. After authorization an explicit,
-one-time `result` IPC action validates the originating merchant, Router, pool and
-existing account fingerprint before returning the credential to the local editor.
-The controller then clears its copy. The normal account save path persists only
-the JSON the user confirms, with local/remote revision checks. Closing the editor
-discards the credential; token retrieval alone performs no configuration write.
-
-ChatGPT/Grok listeners bind only to loopback during an active login. The handler
-checks method, path, Host, state and a single code, and consumes each code once.
-If a port is occupied, close another pending CLI login and retry. A callback URL
-may also be pasted as a fallback. Claude requires pasting the code from the
-official callback page; this flow does not read another browser's cookies or
-inspect the user's existing Codex/Claude/Grok credential caches.
-
-One flow is active at a time; it expires after ten minutes. Cancel, reload,
-configuration mutation and application exit dispose of transient credentials and
-listeners. Saving checks the merchant identity, Router address, pool provider,
-target account fingerprint and local/remote revisions. Writes are never replayed
-automatically. The existing isolated renderer, IPC validation and TEE checks remain
-in effect. Browser profile/session state belongs to the user's browser.
-
-## References and verification
-
-Provider routes and public CLI client metadata were checked against:
-
-- [OpenAI Codex authentication](https://developers.openai.com/codex/auth)
-- [Claude Code authentication](https://code.claude.com/docs/en/authentication)
-- [LiteLLM ChatGPT provider](https://docs.litellm.ai/docs/providers/chatgpt)
-- OmniRoute revision `411aead932f5dc3f51ea9e41262378f4ace31e25`:
-  [Codex](https://github.com/diegosouzapw/OmniRoute/blob/411aead932f5dc3f51ea9e41262378f4ace31e25/src/lib/oauth/providers/codex.ts),
-  [Claude](https://github.com/diegosouzapw/OmniRoute/blob/411aead932f5dc3f51ea9e41262378f4ace31e25/src/lib/oauth/providers/claude.ts),
-  [Grok](https://github.com/diegosouzapw/OmniRoute/blob/411aead932f5dc3f51ea9e41262378f4ace31e25/src/lib/oauth/providers/xai-oauth.ts),
-  [constants](https://github.com/diegosouzapw/OmniRoute/blob/411aead932f5dc3f51ea9e41262378f4ace31e25/src/lib/oauth/constants/oauth.ts).
-
-These are CLI-compatible flows, not a provider stability guarantee for third-party
-OAuth clients. Official login and token endpoints may change independently.
-
-`npm test` exercises PKCE, state, duplicate callbacks, cancellation, expiry,
-credential normalization, host restrictions and stale-target protection with mock
-token endpoints. `npm run test:oauth-desktop` drives the packaged or development
-Electron interface using isolated data, real loopback callbacks and mock provider
-responses, including encrypted persistence and restart. Actual provider login and
-consent require the account owner and are not replaced by these tests.
+测试覆盖登录/CSRF/Host 隔离、回调 state、PKCE、单次结果领取、三家续期参数、轮换后的本地持久化、异常意图隔离、access-only 投影、受控增量同步。真实登录需要商户在浏览器完成，测试不冒充真实供应商授权。

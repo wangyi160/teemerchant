@@ -30,6 +30,10 @@ function poolForm(editName = '') {
 function accountState(pool, deployment) {
   if (!deployment.enabled) return ['停用', 'muted'];
   const account = (remote().accounts?.data || []).find(a => a.name === deployment.oauth_account);
+  const renewal = remote().renewals?.[deployment.oauth_account];
+  if (['uncertain','reauthorization_required'].includes(renewal?.state)) return ['需重新授权', 'error'];
+  if (renewal?.state === 'refreshing') return ['续期结果待确认', 'error'];
+  if (renewal?.state === 'retry') return ['续期暂不可用', 'error'];
   if (account?.health?.state === 'expired') return ['已过期', 'error'];
   if (account?.health?.state === 'reauthorization_required') return ['需重新授权', 'error'];
   const entry = (remote().catalog?.data || []).find(c => c.pool === pool.name && c.deployment === deployment.id);
@@ -233,7 +237,7 @@ async function accountForm(editId = '', initialMode = '') {
     (account ? poolSelect(available,originalPool.name) : field('所属账号池','pool',creationPool.name,'text','readonly'))+
     `</div>${canAuthorize?`<div class="credential-tabs" role="tablist" aria-label="添加方式"><button type="button" id="account-oauth-tab" role="tab" data-credential-mode="oauth" aria-controls="account-oauth-panel">OAuth 授权</button><button type="button" id="account-json-tab" role="tab" data-credential-mode="json" aria-controls="account-json-panel">JSON 导入</button></div>
     <div id="account-oauth-panel" role="tabpanel" aria-labelledby="account-oauth-tab" hidden>
-      <div id="account-oauth-actions" class="actions"><label><input type="checkbox" name="save_refresh">保留 refresh token</label><button type="button" id="account-authorize">OAuth 授权</button></div>
+      <div id="account-oauth-actions" class="actions"><label><input type="checkbox" name="save_refresh">商户服务自动续期</label><button type="button" id="account-authorize">OAuth 授权</button></div>
       <div id="oauth-progress" aria-live="polite" hidden></div>
       <label id="oauth-result" hidden>授权凭证<textarea name="oauth_credential" rows="10" autocomplete="off" spellcheck="false"></textarea></label>
     </div>`:''}

@@ -12,6 +12,7 @@ from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
 from transport import Transport
+from credential_protocol import PROTOCOL, access_only, router_update
 
 ROOT = Path(__file__).parent
 
@@ -25,6 +26,8 @@ class Application:
         self.sync_lock = threading.Lock()
         self.state_lock = threading.RLock()
         self.last_catalog_check = time.monotonic()
+        from oauth_service import OAuthService
+        self.oauth = OAuthService(self)
 
     def accept(self, result, *, clean_catalog=True, catalog_refreshed=False):
         if result['merchant']['id'] != self.store.enrollment()['id']:
@@ -58,19 +61,42 @@ class Application:
         result = self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']})
         if result['merchant'].get('owner_hash') != expected:
             raise RuntimeError('商户控制密钥不匹配，未发送账号资料')
+        if result['merchant'].get('credential_protocol') != PROTOCOL:
+            raise RuntimeError('Router 尚未支持 access-token-only-v1 协议，未发送账号资料')
         if result['merchant'].get('configuration_required'):
             pending = self.store.accounts.restore_pending(self.store.settings['router'], result)
             if pending:
-                result = self.transport.call('PUT', '/merchant/config', pending)
+                result = self.transport.call('PUT', '/merchant/config', router_update(pending))
                 self.store.accounts.acknowledge(self.store.settings['router'], result)
         result = self.accept(result, clean_catalog=False)
         self.sync_credentials()
         return result
 
     def sync_credentials(self):
-        if self.remote and self.remote.get('merchant', {}).get('credential_sync_version') == 1:
-            result = self.transport.call('GET', '/merchant/accounts/credentials')
-            self.store.accounts.sync_credentials(self.store.settings['router'], result)
+        if self.remote and self.remote.get('merchant', {}).get('credential_protocol') == PROTOCOL:
+            update = self.store.accounts.access_updates(self.store.settings['router'], self.remote)
+            if update:
+                self.accept(self.transport.call('PUT', '/merchant/accounts/access', update), clean_catalog=False)
+
+    def renew_credentials(self):
+        from oauth_service import refresh
+        router = self.store.settings['router']
+        cached = self.store.accounts.view(router)
+        # During an upgrade an older Router may still own a rotating refresh
+        # token. Begin merchant renewal only after this protocol was confirmed.
+        if not cached or cached.get('merchant', {}).get('credential_protocol') != PROTOCOL:
+            return
+        for name, account, basis in self.store.accounts.renewal_candidates(router):
+            self.store.accounts.renewal_started(router, name, basis)
+            try:
+                credential = refresh(account['provider'], account['credential'], account.get('proxy', ''))
+            except (RuntimeError, ValueError) as error:
+                self.store.accounts.renewal_finished(router, name, basis, error=error)
+            else:
+                # A failed local save deliberately leaves the durable 'refreshing'
+                # marker. Never send or retry tokens that were not durably saved.
+                self.store.accounts.renewal_finished(router, name, basis, credential=credential)
+        self.remote = self.store.accounts.view(router)
 
     def push_config(self):
         router = self.store.settings['router']
@@ -83,7 +109,7 @@ class Application:
                 pending = self.store.accounts.pending(router)
                 if not pending:
                     return self.remote
-            result = self.transport.call('PUT', '/merchant/config', pending)
+            result = self.transport.call('PUT', '/merchant/config', router_update(pending))
             self.accept(result, clean_catalog=False)
             self.store.accounts.acknowledge(router, result)
         except Exception as error:
@@ -122,6 +148,16 @@ class Application:
             return self._api(method, path, body)
 
     def _api(self, method, path, body):
+        if (method, path) == ('POST', '/api/policy'):
+            if not isinstance(body,dict) or set(body) != {'kind','policy'} or body['kind'] not in ('tdx','snp') or not isinstance(body['policy'],dict):
+                raise ValueError('信任策略格式无效')
+            raw=json.dumps(body['policy'],ensure_ascii=False,indent=2).encode()
+            if len(raw)>2*1024*1024: raise ValueError('信任策略文件过大')
+            directory=self.store.directory/'policies';directory.mkdir(exist_ok=True)
+            destination=directory/(body['kind']+'-'+hashlib.sha256(raw).hexdigest()+'.json')
+            with destination.open('wb') as file:
+                file.write(raw);file.flush();os.fsync(file.fileno())
+            return {'path':str(destination)}
         if (method, path) == ('GET', '/api/credentials'):
             return self.store.credentials(reveal=True)
         if method == 'POST' and path in ('/api/credentials', '/api/merchant-profile'):
@@ -177,6 +213,8 @@ class Application:
                     or not body['proxy'] or len(json.dumps(body).encode()) > 128 * 1024
                     or ('credential' in body) == ('api_key' in body)):
                 raise ValueError('账号测试参数无效')
+            if 'credential' in body and 'api_key' not in body['credential']:
+                body = {**body, 'credential': access_only(body['credential'])}
             return self.transport.call('POST', '/merchant/accounts/test', body)
         if method == 'GET' and path.startswith('/api/accounts/'):
             return self.store.accounts.account(self.store.settings['router'], unquote(path[len('/api/accounts/'):]))
@@ -191,15 +229,23 @@ class Application:
     def background(self, stop):
         while not stop.wait(10):
             with self.state_lock:
+                self.oauth.prune()
+                try:
+                    self.renew_credentials()
+                    if not self.connected and self.store.credentials()['saved'] and self.store.settings['router']:
+                        self.connect()
+                except Exception:
+                    self.last_error = '商户续期或连接失败，请检查账号状态与连接配置'
                 if self.connected:
                     try:
+                        self.sync_credentials()
                         self.sync()
                         if time.monotonic() - self.last_catalog_check >= 60:
                             self.accept(self.transport.call('GET', '/merchant/state'))
                             self.sync_credentials()
                     except Exception as error:
                         self.last_error = str(error)
-                        if any(code in self.last_error for code in ('merchant_locked', 'merchant_forbidden')):
+                        if any(code in self.last_error for code in ('merchant_locked', 'merchant_forbidden', 'merchant_runtime_changed')):
                             try:
                                 self.connect()
                                 self.last_error = ''
@@ -207,86 +253,12 @@ class Application:
                                 self.last_error = str(reconnect_error)
 
 def handler(application, origin):
-    class Handler(BaseHTTPRequestHandler):
-        def setup(self):
-            super().setup()
-            self.connection.settimeout(15)
-
-        def log_message(self, *_):
-            pass
-
-        def respond(self, status, value, mime='application/json; charset=utf-8'):
-            data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
-            self.send_response(status)
-            self.send_header('Content-Type', mime)
-            self.send_header('Content-Length', str(len(data)))
-            self.send_header('Cache-Control', 'no-store')
-            self.send_header('X-Content-Type-Options', 'nosniff')
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
-            self.end_headers()
-            self.wfile.write(data)
-
-        def handle_request(self):
-            if self.headers.get('Host') != urlsplit(origin).netloc or self.headers.get('Origin', origin) != origin:
-                return self.respond(403, {'error': '仅允许本机同源访问'})
-            path = urlsplit(self.path).path
-            if self.command == 'GET' and path in ('/', '/app.js', '/app.css'):
-                name = {'/': 'index.html', '/app.js': 'app.js', '/app.css': 'app.css'}[path]
-                data = (ROOT / 'static' / name).read_bytes()
-                if name == 'app.js':
-                    data = ((ROOT / 'static' / 'account-config.js').read_bytes() + b'\n' + data
-                            + b'\n' + (ROOT / 'static' / 'account-ui.js').read_bytes()
-                            + b'\n' + (ROOT / 'static' / 'revenue-ui.js').read_bytes())
-                if name == 'index.html':
-                    data = data.replace(b'CSRF_PLACEHOLDER', application.csrf.encode())
-                mime = {'index.html': 'text/html', 'app.js': 'text/javascript', 'app.css': 'text/css'}[name] + '; charset=utf-8'
-                return self.respond(200, data, mime)
-            if not secrets.compare_digest(self.headers.get('X-CSRF-Token', ''), application.csrf):
-                return self.respond(403, {'error': '页面会话无效，请刷新'})
-            try:
-                length = int(self.headers.get('Content-Length', '0'))
-                if length < 0 or length > 16 * 1024 * 1024 or self.headers.get('Transfer-Encoding'):
-                    return self.respond(413, {'error': '请求过大'})
-                body = json.loads(self.rfile.read(length)) if length else {}
-                return self.respond(200, application.api(self.command, self.path, body, self.headers.get('X-Merchant-ID')))
-            except (ValueError, RuntimeError) as error:
-                return self.respond(400, {'error': str(error)})
-            except Exception:
-                return self.respond(503, {'error': '本地管理操作失败，请检查配置与验证组件'})
-
-        do_GET = handle_request
-        do_POST = handle_request
-        do_PUT = handle_request
-        do_DELETE = handle_request
-    return Handler
+    from service import handler as service_handler
+    return service_handler(application, origin)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=8910)
-    parser.add_argument('--data', default=str(ROOT / 'data'))
-    parser.add_argument('--no-browser', action='store_true')
-    args = parser.parse_args()
-    if not 1024 <= args.port <= 65535:
-        parser.error('port must be 1024..65535')
-    from desktop_runtime import DataLock
-    data_lock = DataLock(args.data)
-    application = Application(Store(args.data))
-    origin = f'http://127.0.0.1:{args.port}'
-    server = ThreadingHTTPServer(('127.0.0.1', args.port), handler(application, origin))
-    server.daemon_threads = True
-    stop = threading.Event()
-    threading.Thread(target=application.background, args=(stop,), daemon=True).start()
-    if not args.no_browser:
-        webbrowser.open(origin)
-    print(origin, flush=True)
-    try:
-        server.serve_forever()
-    finally:
-        stop.set()
-        application.transport.close()
-        server.server_close()
-        application.store.db.close()
-        data_lock.close()
+    from service import main as service_main
+    service_main()
 
 if __name__ == '__main__':
     main()

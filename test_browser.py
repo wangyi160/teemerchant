@@ -3,6 +3,7 @@
 Uses an isolated local server and a fake TEE transport. Never touches live accounts.
 """
 import copy
+import hashlib
 import json
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,8 +11,10 @@ import tempfile
 import time
 import threading
 import unittest
-from app import Application, handler
+from app import Application
+from service import Auth, handler
 from store import Store
+from credential_protocol import access_only, PROTOCOL
 try:
     from playwright.sync_api import sync_playwright, expect
 except ImportError:
@@ -20,6 +23,7 @@ except ImportError:
 
 class FakeRouter:
     def __init__(self, store):
+        self.store = store
         self.writes = []
         self.reject = False
         self.probes = []
@@ -39,6 +43,10 @@ class FakeRouter:
         pass
 
     def call(self, method, path, body=None):
+        if path == '/merchant/bind':
+            owner=hashlib.sha256(self.store.control_token().split('.')[1].encode()).hexdigest()
+            self.remote['merchant'].update(owner_hash=owner,credential_protocol=PROTOCOL,runtime_id='browser-fixture')
+            return {'merchant_id':self.store.enrollment()['id'],'owner_hash':owner,'merchant_control_version':1}
         if method == 'POST' and path == '/merchant/accounts/test':
             self.probes.append(copy.deepcopy(body))
             return copy.deepcopy(self.probe_result)
@@ -68,12 +76,15 @@ class BrowserTests(unittest.TestCase):
         self.app.accept(copy.deepcopy(self.router.remote))
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)
         self.origin = f'http://127.0.0.1:{self.server.server_port}'
-        self.server.RequestHandlerClass = handler(self.app, self.origin)
+        self.auth = Auth(self.tmp.name, 'browser-test-password')
+        self.server.RequestHandlerClass = handler(self.app, self.origin, self.auth)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.launch(channel='msedge', headless=True)
         self.page = self.browser.new_page(viewport={'width': 1440, 'height': 1100})
+        token = self.auth.login({'username':'admin','password':'browser-test-password'}, 'fixture')
+        self.page.context.add_cookies([{'name':'tm_session','value':token,'url':self.origin,'httpOnly':True,'sameSite':'Strict'}])
         self.errors = []
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
         self.page.goto(self.origin)
@@ -96,6 +107,7 @@ class BrowserTests(unittest.TestCase):
 
     def test_connection_required_and_invalidated_when_credentials_or_proxy_change(self):
         self.page.locator('[data-action=account]').click()
+        self.page.locator('#account-json-tab').click()
         self.page.locator('[name=id]').fill('checked-account')
         self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'access_token':'PRIVATE_TOKEN'}}))
         save = self.page.get_by_role('button', name='保存并同步')
@@ -131,6 +143,7 @@ class BrowserTests(unittest.TestCase):
     def test_account_save_preserves_config_changes_during_authorization_and_retries_stage_race(self):
         from local_accounts import config_from
         self.page.locator('[data-action=account]').click()
+        self.page.locator('#account-json-tab').click()
         self.page.locator('[name=id]').fill('new-account')
         self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'access_token':'PRIVATE_NEW_TOKEN'}}))
         self.page.locator('[name=proxy]').fill('socks5h://proxy.example:1080')
@@ -399,6 +412,7 @@ class BrowserTests(unittest.TestCase):
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.page.locator('[data-action=account]').click()
+        self.page.locator('#account-json-tab').click()
         expect(self.page.locator('[name=pool]')).to_have_value('claude-team')
         expect(self.page.locator('[name=pool]')).to_have_attribute('readonly', '')
         expect(self.page.locator('select[name=pool]')).to_have_count(0)
@@ -527,6 +541,7 @@ class BrowserTests(unittest.TestCase):
 
     def test_add_oauth_then_rotate_credentials_without_replacing_proxy(self):
         self.page.locator('[data-action=account]').click()
+        self.page.locator('#account-json-tab').click()
         self.page.locator('[name=id]').fill('new-oauth')
         expect(self.page.locator('[name=pool]')).to_have_value('openai')
         credential = {'provider': 'openai', 'proxy': 'socks5h://proxy.example:1080',
@@ -536,7 +551,7 @@ class BrowserTests(unittest.TestCase):
         self.pass_probe()
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
-        self.assertEqual(self.router.writes[0]['accounts']['new-oauth']['credential'], credential['credential'])
+        self.assertEqual(self.router.writes[0]['accounts']['new-oauth']['credential'], access_only(credential['credential']))
         self.page.locator('[data-action=edit-account][data-id=new-oauth]').click()
         expect(self.page.locator('[name=credential]')).to_have_value(json.dumps(
             {'provider':'openai','credential':credential['credential']},ensure_ascii=False,indent=2))
@@ -548,13 +563,14 @@ class BrowserTests(unittest.TestCase):
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(len(self.router.writes), 2)
-        self.assertEqual(self.router.writes[1]['accounts']['new-oauth'], credential)
+        self.assertEqual(self.router.writes[1]['accounts']['new-oauth'], {**credential,'credential':access_only(credential['credential'])})
 
     def test_offline_restart_displays_local_credentials_and_preserves_pending_changes(self):
         self.app.connected = False
         self.page.reload()
         self.page.locator('aside [data-id=accounts]').click()
         self.page.locator('[data-action=account]').click()
+        self.page.locator('#account-json-tab').click()
         self.page.locator('[name=id]').fill('offline-key')
         expect(self.page.locator('[name=pool]')).to_have_value('openai')
         self.page.locator('[name=credential]').fill(json.dumps({'provider':'openai','credential':{'api_key':'LOCAL_PRIVATE_FIXTURE'}}))
@@ -594,13 +610,14 @@ class BrowserTests(unittest.TestCase):
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.page.locator('[data-action=account]').click()
+        self.page.locator('#account-json-tab').click()
         self.page.locator('[name=id]').fill('grok-native')
         self.page.locator('[name=credential]').fill(json.dumps(native))
         self.page.locator('[name=proxy]').fill('socks5h://proxy-1.example:1080')
         self.pass_probe()
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
-        self.assertEqual(self.router.writes[-1]['accounts']['grok-native']['credential'], expected)
+        self.assertEqual(self.router.writes[-1]['accounts']['grok-native']['credential'], access_only(expected))
         self.assertEqual(self.router.writes[-1]['accounts']['grok-native']['proxy'], 'socks5h://proxy-1.example:1080')
         self.page.reload()
         self.page.locator('aside [data-id=accounts]').click()
@@ -627,7 +644,7 @@ class BrowserTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_GROK', self.page.locator('#import-review').inner_text())
         self.page.get_by_role('button', name='确认导入').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
-        self.assertEqual(self.router.writes[-1]['accounts']['grok-batch']['credential'], expected)
+        self.assertEqual(self.router.writes[-1]['accounts']['grok-batch']['credential'], access_only(expected))
         self.assertEqual(self.router.writes[-1]['accounts']['grok-batch']['proxy'], 'http://proxy-2.example:8080/')
         self.assertNotIn('PRIVATE_GROK', self.page.locator('body').inner_text())
 

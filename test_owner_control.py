@@ -39,26 +39,6 @@ class OwnerControlTests(unittest.TestCase):
                 self.store.control_token()
         self.assertNotIn('owner_secret', self.store.settings)
 
-    def test_rotated_credentials_are_saved_locally_without_overwriting_pending_edits(self):
-        book = self.store.accounts
-        router = self.store.settings['router']
-        current = book._book(book.data, router)
-        current['config'] = {'expected_revision': 5, 'pools': [{'deployments': [
-            {'id': 'a', 'provider': 'xai', 'oauth_account': 'a'}]}]}
-        current['accounts'] = {'a': {'provider': 'xai', 'credential': {'access_token': 'OLD'}}}
-        snapshot = {'merchant_id': self.store.enrollment()['id'], 'revision': 5,
-                    'accounts': {'a': {'provider': 'xai', 'credential': {'access_token': 'NEW', 'refresh_token': 'ROTATED'}}}}
-        self.assertTrue(book.sync_credentials(router, snapshot))
-        self.assertNotIn(b'ROTATED', book.path.read_bytes())
-        self.assertEqual(book.data['routers'][router]['accounts']['a']['credential']['refresh_token'], 'ROTATED')
-        book.data['routers'][router]['pending'] = {'accounts': {'a': {'credential': {'access_token': 'EDIT'}}}}
-        snapshot['accounts']['a']['credential']['access_token'] = 'NEWER'
-        self.assertFalse(book.sync_credentials(router, snapshot))
-        self.assertEqual(book.data['routers'][router]['accounts']['a']['credential']['access_token'], 'NEW')
-        snapshot['merchant_id'] = 'm_' + 'b' * 32
-        with self.assertRaises(RuntimeError):
-            book.sync_credentials(router, snapshot)
-
     def test_restart_restores_local_accounts_and_requires_owner_confirmation(self):
         router = Router(self.store)
         app = Application(self.store, router)
@@ -68,7 +48,7 @@ class OwnerControlTests(unittest.TestCase):
         app.api('PUT', '/api/config', config)
         original = router.call
         router.remote['pools'] = []
-        router.remote['merchant'].update(configuration_required=True,
+        router.remote['merchant'].update(configuration_required=True, credential_protocol='access-token-only-v1', runtime_id='fixture',
             owner_hash=hashlib.sha256(self.store.control_token().split('.')[1].encode()).hexdigest())
         def request(method, path, body=None):
             if path == '/merchant/bind':

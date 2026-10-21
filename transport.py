@@ -8,9 +8,10 @@ from urllib.parse import urlsplit
 
 
 def library_path():
+    name = 'teemerchant_attestation.dll' if sys.platform == 'win32' else 'libteemerchant_attestation.so'
     if getattr(sys, 'frozen', False):
-        return Path(sys._MEIPASS) / 'teemerchant_attestation.dll'
-    return Path(__file__).resolve().parent / 'native' / 'target' / 'release' / 'teemerchant_attestation.dll'
+        return Path(sys._MEIPASS) / name
+    return Path(__file__).resolve().parent / 'native' / 'target' / 'release' / name
 
 
 class NativeClient:
@@ -85,6 +86,14 @@ class Transport:
         self.client = NativeClient(config)
 
     def call(self, method, path, body=None):
+        def check(value):
+            if isinstance(value, dict):
+                if any(str(k).replace('_', '').lower() == 'refreshtoken' for k in value):
+                    raise ValueError('协议禁止向 Router 发送 refresh token')
+                for item in value.values(): check(item)
+            elif isinstance(value, list):
+                for item in value: check(item)
+        check(body)
         with self.lock:
             if self.client is None:
                 self.start()

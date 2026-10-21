@@ -1,21 +1,16 @@
 teemerchant is distributed under the MIT license in LICENSE.
 
-The desktop distribution bundles Electron (MIT) and Chromium and Node.js components
-under their respective licenses. Electron's LICENSE.electron.txt and
-LICENSES.chromium.html are included by the desktop packager.
+Portable HTTP releases bundle CPython (PSF), PyInstaller (GPL with bootloader
+exception), cryptography (Apache/BSD), httpx and their dependencies. Their bundled
+license notices are in licenses/python and licenses/Python-LICENSE.txt.
 
-The private merchant engine bundles CPython and standard-library components.
-CPython is under the Python Software Foundation license. The bundled Python
-distribution includes its license; PyInstaller is GPL-2.0-or-later with a bootloader
-exception allowing distribution of applications under their own license.
+TEE verification uses teemerchant's in-process native library, derived from the
+MIT-licensed teeproxy verifier; attribution and pinned source provenance remain
+in native/NOTICE. Native dependency notices accompany binary releases.
 
-TEE verification and merchant TLS sessions are implemented by teemerchant's native
-library, loaded directly into the merchant engine. No teeproxy executable is bundled
-or launched. The verifier source is derived from the MIT-licensed teeproxy project;
-the original source revision and attribution are recorded in native/NOTICE.
-Its LICENSE, NOTICE, dependency lockfile, source hashes and library hash accompany
-the distribution under resources/licenses/native. Locked dependency licenses and a
-manifest are included in its dependency-notices subdirectory.
+The private VLESS helper is derived from teerouter's MIT-licensed egress helper
+and embeds the pinned Xray/Go dependencies recorded in egress/go.mod and go.sum.
+Their upstream licenses accompany the release under licenses/egress.
 
-No merchant identities, account credentials, TEE trust policies or deployment
-configuration are included in a public desktop release.
+No Electron, merchant credentials, platform secrets, TEE policy, or deployment
+configuration is included in public binary releases.

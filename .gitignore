@@ -16,3 +16,10 @@ release/
 desktop-test-results/
 data/
 native/target/
+native/vendor/
+teemerchant-egress
+teemerchant-egress.exe
+service.json
+.vault-key
+initial-password.txt
+http-auth.json

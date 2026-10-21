@@ -1,7 +1,11 @@
-"""Windows process ownership for the desktop and optional legacy web launcher."""
+"""Cross-platform exclusive ownership of a portable merchant data directory."""
 import ctypes
 from ctypes import wintypes
-import msvcrt
+import os
+if os.name == 'nt':
+    import msvcrt
+else:
+    import fcntl
 from pathlib import Path
 
 
@@ -16,7 +20,10 @@ class DataLock:
                 self.file.write(b'0')
                 self.file.flush()
             self.file.seek(0)
-            msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
+            if os.name == 'nt':
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             self.file.close()
             raise RuntimeError('此商户数据已由另一个 teemerchant 程序使用，请先退出原程序') from None
@@ -24,7 +31,10 @@ class DataLock:
     def close(self):
         if not self.file.closed:
             self.file.seek(0)
-            msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
+            if os.name == 'nt':
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
             self.file.close()
 
 
