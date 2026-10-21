@@ -1,5 +1,6 @@
 """Local merchant console; the merchant owns its identity, TEE policy and archives."""
 import argparse
+import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -47,6 +48,30 @@ class Application:
                 return self.push_config()
         return self.remote
 
+    def connect(self):
+        owner = self.store.control_token().split('.', 1)[1]
+        expected = hashlib.sha256(owner.encode()).hexdigest()
+        bound = self.transport.call('POST', '/merchant/bind', {})
+        if (bound.get('merchant_control_version') != 1 or bound.get('merchant_id') != self.store.enrollment()['id']
+                or not secrets.compare_digest(bound.get('owner_hash', ''), expected)):
+            raise RuntimeError('Router 尚未支持商户独立控制密钥，未发送账号资料')
+        result = self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']})
+        if result['merchant'].get('owner_hash') != expected:
+            raise RuntimeError('商户控制密钥不匹配，未发送账号资料')
+        if result['merchant'].get('configuration_required'):
+            pending = self.store.accounts.restore_pending(self.store.settings['router'], result)
+            if pending:
+                result = self.transport.call('PUT', '/merchant/config', pending)
+                self.store.accounts.acknowledge(self.store.settings['router'], result)
+        result = self.accept(result, clean_catalog=False)
+        self.sync_credentials()
+        return result
+
+    def sync_credentials(self):
+        if self.remote and self.remote.get('merchant', {}).get('credential_sync_version') == 1:
+            result = self.transport.call('GET', '/merchant/accounts/credentials')
+            self.store.accounts.sync_credentials(self.store.settings['router'], result)
+
     def push_config(self):
         router = self.store.settings['router']
         pending = self.store.accounts.pending(router)
@@ -54,7 +79,10 @@ class Application:
             return self.remote
         try:
             if not self.connected:
-                self.accept(self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']}), clean_catalog=False)
+                self.connect()
+                pending = self.store.accounts.pending(router)
+                if not pending:
+                    return self.remote
             result = self.transport.call('PUT', '/merchant/config', pending)
             self.accept(result, clean_catalog=False)
             self.store.accounts.acknowledge(router, result)
@@ -130,7 +158,7 @@ class Application:
         if (method, path) == ('POST', '/api/connect'):
             if not self.store.credentials()['saved']:
                 raise ValueError('请先填写平台签发的 Merchant ID 和 Merchant Secret')
-            return self.accept(self.transport.call('POST', '/merchant/unlock', {'minimum_revision': self.store.settings['minimum_revision']}))
+            return self.connect()
         if (method, path) == ('GET', '/api/merchant'):
             return self.accept(self.transport.call('GET', '/merchant/state'))
         if (method, path) == ('PUT', '/api/config'):
@@ -168,8 +196,15 @@ class Application:
                         self.sync()
                         if time.monotonic() - self.last_catalog_check >= 60:
                             self.accept(self.transport.call('GET', '/merchant/state'))
+                            self.sync_credentials()
                     except Exception as error:
                         self.last_error = str(error)
+                        if any(code in self.last_error for code in ('merchant_locked', 'merchant_forbidden')):
+                            try:
+                                self.connect()
+                                self.last_error = ''
+                            except Exception as reconnect_error:
+                                self.last_error = str(reconnect_error)
 
 def handler(application, origin):
     class Handler(BaseHTTPRequestHandler):

@@ -89,7 +89,7 @@ class Transport:
             if self.client is None:
                 self.start()
             try:
-                result = self.client.request({'method':method,'path':path,'token':self.store.settings['token'],'body':body})
+                result = self.client.request({'method':method,'path':path,'token':self.store.control_token(),'body':body})
             except Exception:
                 self.close()
                 raise RuntimeError('TEE 管理连接失败；没有自动重发写入，请查询状态后再重试') from None

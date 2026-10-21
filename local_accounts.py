@@ -13,7 +13,9 @@ def config_from(remote):
             'customers': [], 'customer_defaults': copy.deepcopy(settings.get('customer_defaults')),
             'pool_pricing': copy.deepcopy(settings.get('pool_pricing', [])),
             'max_concurrent': settings.get('max_concurrent', 16),
-            'rpm': settings.get('rpm', 0), 'tpm': settings.get('tpm', 0)}
+            'rpm': settings.get('rpm', 0), 'tpm': settings.get('tpm', 0),
+            'compatibility': copy.deepcopy(remote.get('compatibility', {})),
+            'restrictions': copy.deepcopy(remote.get('restrictions', []))}
 
 
 def deployments(config):
@@ -84,6 +86,10 @@ class AccountBook:
             data = copy.deepcopy(self.data)
             book = self._book(data, router)
             previous = book['remote']
+            overrides = {c['user_id']: c for c in book.get('recovery_customers',
+                         (previous or {}).get('settings', {}).get('customers', []))}
+            overrides.update({c['user_id']: copy.deepcopy(c) for c in remote['settings'].get('customers', [])})
+            book['recovery_customers'] = list(overrides.values())
             if (previous and book['config'] is not None and not book['pending']
                     and previous['settings']['revision'] != remote['settings']['revision']):
                 book['sync_state'] = 'remote_changed'
@@ -181,6 +187,32 @@ class AccountBook:
         with self.lock:
             return copy.deepcopy(self.data['routers'].get(router, {}).get('pending'))
 
+    def restore_pending(self, router, remote):
+        """Rebuild a fresh TEE runtime using only merchant-local durable material."""
+        if remote['merchant']['id'] != self.identity or not remote['merchant'].get('configuration_required'):
+            raise ValueError('Router 不需要恢复商户配置')
+        with self.lock:
+            book = self.data['routers'].get(router)
+            if not book or book['config'] is None:
+                return None
+            update = copy.deepcopy(book['pending'] or book['config'])
+            update['expected_revision'] = remote['settings']['revision']
+            update['_local_revision'] = book['local_revision']
+            if not update.get('customers'):
+                update['customers'] = copy.deepcopy(book.get('recovery_customers',
+                    (book['remote'] or {}).get('settings', {}).get('customers', [])))
+            rows = deployments(update)
+            account_refs = {d['oauth_account'] for d in rows if d.get('oauth_account')}
+            secret_refs = {d['api_key_ref'] for d in rows if d.get('api_key_ref')}
+            if account_refs - book['accounts'].keys() or secret_refs - book['secrets'].keys():
+                raise ValueError('本机缺少账号凭据，请重新导入后同步')
+            update['accounts'] = {k: copy.deepcopy(book['accounts'][k]) for k in account_refs}
+            update['secrets'] = {k: book['secrets'][k] for k in secret_refs}
+            update['delete_accounts'], update['delete_secrets'] = [], []
+            self.observe(router, remote)
+            self.stage(router, update)
+            return self.pending(router)
+
     def prune_catalog(self, router, *, check_only=False):
         """Durably stage policy removals without replaying unrelated pending edits."""
         with self.lock:
@@ -225,6 +257,10 @@ class AccountBook:
             book = self._book(data, router)
             previous = {d['id']: d for d in deployments(book['config'])}
             config = config_from(remote)
+            overrides = {c['user_id']: c for c in book.get('recovery_customers', [])}
+            overrides.update({c['user_id']: copy.deepcopy(c) for c in (book['pending'] or {}).get('customers', [])})
+            overrides.update({c['user_id']: copy.deepcopy(c) for c in remote['settings'].get('customers', [])})
+            book['recovery_customers'] = list(overrides.values())
             for d in deployments(config):
                 if d.get('proxy') == '[redacted]':
                     d['proxy'] = previous.get(d['id'], {}).get('proxy', '[redacted]')
@@ -272,6 +308,32 @@ class AccountBook:
             if not d:
                 raise ValueError('本地账号不存在')
             return {**self._material(book, d), 'local_revision': book['local_revision']}
+
+    def sync_credentials(self, router, snapshot):
+        """Keep rotated OAuth tokens only in the merchant's encrypted local book."""
+        if snapshot.get('merchant_id') != self.identity or not isinstance(snapshot.get('accounts'), dict):
+            raise RuntimeError('凭据同步的商户身份无效')
+        with self.lock:
+            data = copy.deepcopy(self.data)
+            book = self._book(data, router)
+            if (book['pending'] or not book['config']
+                    or book['config']['expected_revision'] != snapshot.get('revision')):
+                return False
+            changed = False
+            for deployment in deployments(book['config']):
+                ref = deployment.get('oauth_account')
+                account = snapshot['accounts'].get(ref)
+                local = book['accounts'].get(ref)
+                if not account or not local or account.get('provider') != local.get('provider'):
+                    continue
+                if account.get('credential') != local.get('credential'):
+                    local['credential'] = copy.deepcopy(account['credential'])
+                    changed = True
+            if changed:
+                book['local_revision'] += 1
+                book['saved_at'] = int(time.time())
+                self._write(data)
+            return changed
 
     def import_recovery(self, router, bundle):
         """Recover only credentials referenced by this merchant's existing local pools."""

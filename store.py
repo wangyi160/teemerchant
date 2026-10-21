@@ -148,7 +148,23 @@ class Store:
         return {'id': 'm_' + digest[:32], 'credential_hash': digest}
 
     def public(self):
-        return {k: v for k, v in self.settings.items() if k not in ('token', 'default_multiplier_millionths')}
+        return {k: v for k, v in self.settings.items() if k not in ('token', 'owner_secret', 'default_multiplier_millionths')}
+
+    def control_token(self):
+        """Persist an independent owner key before the first attested binding."""
+        with self.lock:
+            owner = self.settings.get('owner_secret')
+            if owner is None:
+                owner = secrets.token_hex(32)
+                self.settings['owner_secret'] = owner
+                try:
+                    self.save()
+                except Exception:
+                    self.settings.pop('owner_secret', None)
+                    raise
+            if not re.fullmatch(r'[a-f0-9]{64}', owner) or owner == self.settings['token']:
+                raise ValueError('商户本机控制密钥无效')
+            return self.settings['token'] + '.' + owner
 
     def credentials(self, reveal=False):
         with self.lock:
@@ -245,6 +261,8 @@ class Store:
                 return
             previous = self.settings.copy()
             self.settings['token'] = body['merchant_secret']
+            if not same:
+                self.settings.pop('owner_secret', None)
             self.settings['credentials_saved'] = True
             self.settings.pop('portal_url', None)
             self.settings.pop('portal_username', None)

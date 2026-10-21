@@ -11,10 +11,11 @@ pub fn allowed(method: &str, path: &str) -> bool {
         (method, path),
         (
             "GET",
-            "/merchant/state" | "/merchant/usage" | "/merchant/refusals"
+            "/merchant/state" | "/merchant/usage" | "/merchant/refusals" | "/merchant/accounts/credentials"
         ) | (
             "POST",
             "/merchant/unlock"
+                | "/merchant/bind"
                 | "/merchant/models/refresh"
                 | "/merchant/usage/ack"
                 | "/merchant/accounts/test"
