@@ -12,7 +12,7 @@ const revenueReasons = {
   request_incomplete:'请求未完成，用量待确认', usage_missing:'缺少上游用量',
   invalid_router_calculation:'计费记录未通过校验', missing_historic_price_or_usage:'缺少历史报价或完整用量',
   conflicting_request_records:'相同请求存在冲突记录', multiple_attempts:'多次尝试，用量待确认',
-  billing_observer_unavailable:'计费观察数据不可用'
+  billing_observer_unavailable:'计费观察数据不可用', usage_unavailable:'缺少可靠用量', estimation_limit_or_usage_missing:'无法可靠估算用量'
 };
 
 async function loadRevenue() {
@@ -29,7 +29,7 @@ function revenueView() {
     <td class="revenue-user">${esc(row.user_id||'未知')}</td>
     <td>${row.multiplier_millionths===null?'—':usd(row.multiplier_millionths)+'×'}</td>
     <td class="money">${money(row.charge_microusd)}</td>
-    <td><span class="${row.state==='pending'?'error':'badge'}">${row.state==='pending'?'待核算':row.basis==='not_forwarded'?'未转发 · 不计费':'已计费'}</span><small>HTTP ${row.status??'—'}${row.state==='pending'?'<br>'+esc(revenueReasons[row.reason]||row.reason):''}</small></td>
+    <td><span class="${row.state==='pending'?'error':'badge'}">${row.state==='pending'?'待核算':row.basis==='not_forwarded'?'未转发 · 不计费':['estimated','mixed'].includes(row.usage_source)?'已计费 · 含估算':row.coverage==='partial'?'已计费 · 部分用量':row.usage_source==='none'?'不计费':'已计费'}</span><small>HTTP ${row.status??'—'}${row.state==='pending'?'<br>'+esc(revenueReasons[row.reason]||row.reason):''}</small></td>
   </tr>`);
   return heading('收入','根据请求发生时的官方报价和账号池实际倍率，汇总已归档的应收费用。',btn('同步账单','sync','','primary'))+
     `<div class="cards revenue-cards">
@@ -68,7 +68,8 @@ async function revenueDetail(index) {
   const row=revenueData.data[Number(index)];if(!row)return;
   const record=await api('/api/revenue/record?'+new URLSearchParams({instance:row.instance,seq:row.seq}));
   const event=record.event||{},bill=event.billing||{},quote=event.merchant_pricing||{};
-  const items=Array.isArray(bill.items)?bill.items.filter(item=>item&&typeof item==='object'):[];
+  const attempts=Array.isArray(bill.attempt_records)?bill.attempt_records:[];
+  const items=attempts.length?attempts.flatMap(a=>(a.billing?.items||[]).map(i=>({...i,attempt:a.number}))):(Array.isArray(bill.items)?bill.items.filter(item=>item&&typeof item==='object'):[]);
   const kinds={input:'输入',output:'输出',cache_read:'缓存读取',cache_write:'缓存写入',cache_write_hour:'缓存写入（1 小时）'};
   const dialog=$('#dialog');dialog.classList.add('wide');
   dialog.innerHTML=`<h2>调用账单</h2><div class="panelhead"><span>${esc(row.pool)} / ${esc(row.model)}</span><strong class="money">应收 ${money(row.charge_microusd)}</strong></div>
@@ -76,7 +77,9 @@ async function revenueDetail(index) {
     ${row.state==='pending'?esc(revenueReasons[row.reason]||row.reason):row.basis==='legacy_quote'?'根据请求时的历史报价计算':row.basis==='not_forwarded'?'请求未转发，不计费':'Router 已计算，使用请求时的价格快照'}<br>
     用户：${esc(row.user_id)}<br>请求：<code>${esc(row.request_id)}</code><br>
     商户价格版本 ${esc(row.price_version??'—')} · 官方价格版本 ${esc(row.official_price_revision??'—')}</p>
-    ${table(['计费项目','用量','官方单价 · USD','单位'],items.map(item=>`<tr><td>${esc(kinds[item.kind]||item.kind)}</td><td>${esc(item.quantity)}</td><td class="money">${money(item.unit_price_microusd)}</td><td>${item.unit==='million_tokens'?'每百万 token':item.unit==='call'?'每次':esc(item.unit)}</td></tr>`))}
+    ${table(['尝试','计费项目','用量','官方单价 · USD','单位'],items.map(item=>`<tr><td>${esc(item.attempt||1)}</td><td>${esc(kinds[item.kind]||item.kind)}</td><td>${esc(item.quantity)}</td><td class="money">${money(item.unit_price_microusd)}</td><td>${item.unit==='million_tokens'?'每百万 token':item.unit==='call'?'每次':esc(item.unit)}</td></tr>`))}
+    ${['estimated','mixed'].includes(row.usage_source)?'<p>含本地估算：按已观察到的文本分词，缺少缓存数据时按普通输入单价计费；未推算不可见的输出和推理。</p>':''}
+    ${attempts.length?table(['尝试','请求状态','用量依据'],attempts.map(a=>`<tr><td>${esc(a.number)}</td><td>HTTP ${esc(a.status)}</td><td>${esc(({official:'官方用量',estimated:'本地估算',mixed:'官方用量 + 本地估算',none:'无计费用量'})[a.billing?.usage_source]||'未知')}${a.billing?.state==='pending'?' · 待核算':''}</td></tr>`)):''}
     <p>官方基准金额：${row.official_cost_microusd===null?'未提供':money(row.official_cost_microusd)}。按未舍入金额乘实际倍率，最后一次向上取整到 0.000001 USD。官方基准不是商户实际采购成本。</p>
     <details><summary>查看原始计费记录</summary><pre>${esc(JSON.stringify({usage:event.usage,cache_usage:event.cache_usage,billing:event.billing,merchant_pricing:quote},null,2))}</pre></details>
     <div class="actions">${btn('关闭','close')}</div>`;dialog.showModal();

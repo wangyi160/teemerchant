@@ -13,6 +13,9 @@ def integer(value, maximum=10**15):
 def router_charge(event):
     """Same integer receipt checks as the platform; this does not confirm payment."""
     result, quote = event.get('billing'), event.get('merchant_pricing')
+    if isinstance(result, dict) and type(result.get('version')) is int and result['version'] == 2:
+        from billing_v2 import validate
+        return validate(event, router_charge)
     if not isinstance(result, dict) or not isinstance(quote, dict):
         return None
     calculators = {'openai': 'chatgpt_v1', 'anthropic': 'claude_v1', 'xai': 'grok_v1', 'workbuddy': 'workbuddy_v1'}
@@ -126,6 +129,8 @@ def entry(instance, seq, event):
             'provider': text('provider'), 'status': event.get('status') if integer(event.get('status'), 999) else None,
             'state': 'calculated' if amount is not None else 'pending', 'reason': '' if amount is not None else reason,
             'basis': basis, 'charge_microusd': str(amount[0]) if amount is not None else None,
+            'usage_source': result.get('usage_source') if isinstance(result, dict) else None,
+            'coverage': result.get('coverage') if isinstance(result, dict) else None,
             'official_cost_microusd': str(amount[1]) if amount is not None and amount[1] is not None else None,
             'multiplier_millionths': quote.get('multiplier_millionths') if integer(quote.get('multiplier_millionths')) else None,
             'price_version': event.get('merchant_price_version'), 'official_price_revision': quote.get('official_price_revision')}

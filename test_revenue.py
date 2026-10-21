@@ -2,6 +2,7 @@ from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
+import copy
 from app import Application
 from store import Store
 
@@ -34,6 +35,28 @@ class RevenueTests(unittest.TestCase):
     def tearDown(self):
         self.store.db.close()
         self.tmp.cleanup()
+
+    def test_v2_estimates_require_failed_attempt_and_are_visible_in_revenue(self):
+        row=receipt('error-estimate');e=row['event'];b=e['billing']
+        b.update(usage_source='mixed',coverage='partial',upstream_status=200,
+            usage={'input':125,'output':0},reported_usage={'input':125},estimate={
+                'method':'o200k_json_text_v1','input_tokens':125,'visible_output_tokens':0,
+                'input_source':'upstream','output_source':'local','cache_policy':'ordinary_input',
+                'context_incomplete':False,'hidden_output_included':False})
+        e['status']=499
+        e['billing']={k:copy.deepcopy(v) for k,v in b.items()
+            if k not in ('usage','items','reported_usage','estimate','upstream_status')}
+        e['billing'].update(version=2,unknown_attempts=0,
+            attempt_records=[{'number':1,'status':499,'billing':b}])
+        from revenue import router_charge
+        self.assertEqual(router_charge(e),(50,250))
+        e['billing']['attempt_records'][0]['status']=200
+        self.assertIsNone(router_charge(e))
+        e['billing']['attempt_records'][0]['status']=499
+        self.store.archive('usage','boot',[row])
+        result=self.store.revenue()
+        self.assertEqual(result['summary']['charge_microusd'],'50')
+        self.assertEqual(result['data'][0]['usage_source'],'mixed')
 
     def test_all_history_pagination_exact_money_and_restart(self):
         rows=[]
