@@ -30,7 +30,6 @@ class StatusWindowTests(unittest.TestCase):
         self.user.IsWindowVisible.argtypes=[W.HWND];self.user.IsWindowVisible.restype=W.BOOL
         self.user.IsWindowEnabled.argtypes=[W.HWND];self.user.IsWindowEnabled.restype=W.BOOL
         self.user.GetWindowTextW.argtypes=[W.HWND,W.LPWSTR,C.c_int]
-        self.user.GetClipboardData.argtypes=[W.UINT];self.user.GetClipboardData.restype=W.HANDLE
         self.name=class_name(self.data)
         self.process=None
         self.window=None
@@ -65,11 +64,10 @@ class StatusWindowTests(unittest.TestCase):
         self.user.GetWindowTextW(self.user.GetDlgItem(self.window,identifier),buffer,len(buffer))
         return buffer.value
 
-    def test_minimize_close_restore_copy_and_single_instance_keep_http_alive(self):
+    def test_minimize_close_restore_and_single_instance_keep_http_alive(self):
         self.start()
         self.wait_for(lambda:self.text(102)=='服务运行中')
         url=f'http://127.0.0.1:{self.port}'
-        self.assertEqual(self.text(105),url)
         with httpx.Client(trust_env=False,timeout=5) as client:
             self.assertEqual(client.get(url+'/api/state').status_code,401)
             self.assertEqual(client.get(url+'/').status_code,200)
@@ -86,14 +84,6 @@ class StatusWindowTests(unittest.TestCase):
             self.user.PostMessageW(self.window,0x8001,0,(1<<16)|0x203)
             self.wait_for(lambda:self.user.IsWindowVisible(self.window))
             self.assertTrue(self.user.IsWindowEnabled(self.user.GetDlgItem(self.window,201)))
-            self.user.SendMessageW(self.window,0x111,202,0)
-            self.assertTrue(self.user.OpenClipboard(self.window))
-            try:
-                handle=self.user.GetClipboardData(13)
-                pointer=self.kernel.GlobalLock(handle)
-                try:self.assertEqual(C.wstring_at(pointer),url)
-                finally:self.kernel.GlobalUnlock(handle)
-            finally:self.user.CloseClipboard()
         self.user.PostMessageW(self.window,0x111,205,0)
         self.assertEqual(self.process.wait(timeout=15),0)
         lock=DataLock(self.data);lock.close()
@@ -103,8 +93,7 @@ class StatusWindowTests(unittest.TestCase):
         with socket.socket() as sock:
             sock.bind(('127.0.0.1',self.port));sock.listen()
             self.start()
-            self.wait_for(lambda:self.text(102)=='服务启动失败')
-            self.assertIn(str(self.port),self.text(103))
+            self.wait_for(lambda:self.text(102)=='服务未运行' and not self.user.IsWindowEnabled(self.user.GetDlgItem(self.window,201)))
             self.assertFalse(self.user.IsWindowEnabled(self.user.GetDlgItem(self.window,201)))
             self.user.PostMessageW(self.window,0x111,205,0)
             self.assertEqual(self.process.wait(timeout=15),1)

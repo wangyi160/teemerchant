@@ -12,8 +12,11 @@ LPARAM=LRESULT=C.c_ssize_t
 WNDPROC=C.WINFUNCTYPE(LRESULT,W.HWND,W.UINT,WPARAM,LPARAM)
 RESTORE=0x8002
 TRAY=0x8001
-OPEN,COPY,FOLDER,HIDE,QUIT=201,202,203,204,205
-STATES={'starting':'服务启动中','running':'服务运行中','stopping':'正在停止服务','stopped':'服务已停止','failed':'服务启动失败'}
+OPEN,FOLDER,QUIT=201,203,205
+
+
+def status_text(state):
+    return '服务运行中' if state=='running' else '服务未运行'
 
 
 class WindowClass(C.Structure):
@@ -76,20 +79,12 @@ def api():
             'TrackPopupMenu':(W.UINT,[W.HMENU,W.UINT,C.c_int,C.c_int,C.c_int,W.HWND,C.c_void_p]),
             'DestroyMenu':(W.BOOL,[W.HMENU]),
             'MessageBoxW':(C.c_int,[W.HWND,W.LPCWSTR,W.LPCWSTR,W.UINT]),
-            'OpenClipboard':(W.BOOL,[W.HWND]),
-            'EmptyClipboard':(W.BOOL,[]),
-            'SetClipboardData':(W.HANDLE,[W.UINT,W.HANDLE]),
-            'CloseClipboard':(W.BOOL,[]),
             'InvalidateRect':(W.BOOL,[W.HWND,C.c_void_p,W.BOOL]),
         },
         kernel:{
             'GetModuleHandleW':(W.HINSTANCE,[W.LPCWSTR]),
             'CreateMutexW':(W.HANDLE,[C.c_void_p,W.BOOL,W.LPCWSTR]),
             'CloseHandle':(W.BOOL,[W.HANDLE]),
-            'GlobalAlloc':(W.HANDLE,[W.UINT,C.c_size_t]),
-            'GlobalLock':(C.c_void_p,[W.HANDLE]),
-            'GlobalUnlock':(W.BOOL,[W.HANDLE]),
-            'GlobalFree':(W.HANDLE,[W.HANDLE]),
         },
         shell:{
             'Shell_NotifyIconW':(W.BOOL,[W.DWORD,C.POINTER(NotifyIcon)]),
@@ -149,27 +144,17 @@ class StatusWindow:
                         background=self.brush,name=self.name)
         if not self.user.RegisterClassExW(C.byref(cls)):raise C.WinError(C.get_last_error())
         style=0x00C80000|0x00020000 # caption, system menu, minimize; fixed size
-        rect=W.RECT(0,0,self.px(600),self.px(390))
+        rect=W.RECT(0,0,self.px(380),self.px(140))
         self.user.AdjustWindowRectEx(C.byref(rect),style,False,0)
         width,height=rect.right-rect.left,rect.bottom-rect.top
         self.window=self.user.CreateWindowExW(0,self.name,'teemerchant 服务',style,
             max(0,(self.user.GetSystemMetrics(0)-width)//2),max(0,(self.user.GetSystemMetrics(1)-height)//2),width,height,None,None,self.instance,None)
         if not self.window:raise C.WinError(C.get_last_error())
-        for size,weight in ((15,400),(27,600),(20,600)):
+        for size,weight in ((15,400),(18,600)):
             self.fonts.append(self.gdi.CreateFontW(-self.px(size),0,0,0,weight,0,0,0,1,0,0,5,0,'Segoe UI'))
-        self.control(100,'STATIC','teemerchant',24,20,380,40,font=self.fonts[1])
-        self.control(101,'STATIC','本机商户服务',430,31,146,25)
-        self.control(102,'STATIC',STATES['starting'],24,78,540,30,font=self.fonts[2])
-        self.control(103,'STATIC','',24,112,552,38)
-        self.control(104,'STATIC','管理地址',24,158,100,24)
-        self.control(105,'EDIT',self.runtime.args.url,24,184,552,27,0x00800880|0x00010000)
-        self.control(OPEN,'BUTTON','打开管理页面',24,229,182,38,0x00010001)
-        self.control(COPY,'BUTTON','复制地址',218,229,126,38,0x00010000)
-        self.control(FOLDER,'BUTTON','打开数据目录',356,229,220,38,0x00010000)
-        self.control(106,'STATIC','运行时间',24,290,96,26)
-        self.control(107,'STATIC','—',122,290,450,26)
-        self.control(HIDE,'BUTTON','最小化到托盘',24,334,200,36,0x00010000)
-        self.control(QUIT,'BUTTON','退出服务',426,334,150,36,0x00010000)
+        self.control(102,'STATIC',status_text('starting'),24,24,332,28,1,font=self.fonts[1])
+        self.control(OPEN,'BUTTON','打开管理页面',24,78,160,38,0x00010001)
+        self.control(FOLDER,'BUTTON','打开数据目录',196,78,160,38,0x00010000)
         self.add_tray()
         self.user.SetTimer(self.window,1,500,None)
         self.update()
@@ -177,7 +162,7 @@ class StatusWindow:
 
     def tray_data(self):
         data=NotifyIcon(size=C.sizeof(NotifyIcon),window=self.window,id=1,flags=0x87,message=TRAY,icon=self.icon)
-        data.tip='teemerchant · '+STATES[self.runtime.state]
+        data.tip='teemerchant · '+status_text(self.runtime.state)
         return data
 
     def add_tray(self):
@@ -201,57 +186,33 @@ class StatusWindow:
 
     def update(self):
         state=self.runtime.state
-        detail=self.runtime.error or f'监听地址  {self.runtime.args.host}:{self.runtime.args.port}'
-        current=(state,detail)
+        current=(state,self.quitting)
         if current!=self.previous:
             self.previous=current
-            self.user.SetWindowTextW(self.controls[102],STATES[state])
-            self.user.SetWindowTextW(self.controls[103],detail)
+            self.user.SetWindowTextW(self.controls[102],status_text(state))
             self.user.EnableWindow(self.controls[OPEN],state=='running' and not self.quitting)
             self.user.InvalidateRect(self.controls[102],None,True)
             if self.tray_present:self.shell.Shell_NotifyIconW(1,C.byref(self.tray_data()))
             if state=='failed':self.restore()
-        elapsed=max(0,int(time.monotonic()-self.runtime.started_at)) if self.runtime.started_at else 0
-        hours,rest=divmod(elapsed,3600);minutes,seconds=divmod(rest,60)
-        self.user.SetWindowTextW(self.controls[107],f'{hours:02}:{minutes:02}:{seconds:02}' if state=='running' else '—')
         if self.quitting and self.runtime.done.is_set():self.user.DestroyWindow(self.window)
 
     def open_target(self,target):
         if self.shell.ShellExecuteW(self.window,'open',str(target),None,None,1)<=32:
-            self.user.MessageBoxW(self.window,'无法打开，请复制地址后手动打开。','teemerchant',0x30)
-
-    def copy_url(self):
-        raw=(self.runtime.args.url+'\0').encode('utf-16-le')
-        if not self.user.OpenClipboard(self.window):return
-        memory=None
-        try:
-            memory=self.kernel.GlobalAlloc(2,len(raw))
-            if not memory:return
-            pointer=self.kernel.GlobalLock(memory)
-            if not pointer:return
-            C.memmove(pointer,raw,len(raw));self.kernel.GlobalUnlock(memory)
-            self.user.EmptyClipboard()
-            if self.user.SetClipboardData(13,memory):memory=None
-        finally:
-            if memory:self.kernel.GlobalFree(memory)
-            self.user.CloseClipboard()
+            self.user.MessageBoxW(self.window,'无法打开，请检查系统默认应用。','teemerchant',0x30)
 
     def command(self,identifier):
         if identifier==OPEN and self.runtime.state=='running' and not self.quitting:self.open_target(self.runtime.args.url)
-        elif identifier==COPY:self.copy_url()
         elif identifier==FOLDER:self.open_target(self.runtime.args.data)
-        elif identifier==HIDE:self.hide()
         elif identifier==QUIT:
             self.quitting=True
             self.runtime.shutdown()
-            self.user.EnableWindow(self.controls[QUIT],False)
             self.restore()
             self.update()
         elif identifier==RESTORE:self.restore()
 
     def menu(self):
         menu=self.user.CreatePopupMenu()
-        for identifier,label in ((RESTORE,'显示窗口'),(OPEN,'打开管理页面'),(COPY,'复制地址'),(FOLDER,'打开数据目录')):
+        for identifier,label in ((RESTORE,'显示窗口'),(OPEN,'打开管理页面'),(FOLDER,'打开数据目录')):
             disabled=identifier==OPEN and (self.runtime.state!='running' or self.quitting)
             self.user.AppendMenuW(menu,1 if disabled else 0,identifier,label)
         self.user.AppendMenuW(menu,0x800,0,None)
