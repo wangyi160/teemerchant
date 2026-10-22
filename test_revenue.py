@@ -130,10 +130,10 @@ class RevenueTests(unittest.TestCase):
         b=receipt('new',at=int(datetime(2025,2,1,0,0,0).timestamp()));b['seq']=2;b['event']['pool']='other'
         self.store.archive('usage','boot',[a,b])
         app=Application(self.store)
-        report=app.api('GET','/api/revenue?start=2025-01-31&end=2025-01-31&pool=grok',{})
+        report=self.store.revenue('start=2025-01-31&end=2025-01-31&pool=grok')
         self.assertEqual(report['filtered']['requests'],1)
         self.assertEqual(report['data'][0]['request_id'],'old')
-        detail=app.api('GET','/api/revenue/record?instance=boot&seq=1',{})
+        detail=self.store.revenue_record('boot',1)
         self.assertEqual(detail['event']['billing']['charge_microusd'],50)
         calendar=self.store.revenue_index.report(now=datetime(2025,2,1,12))
         self.assertEqual(calendar['summary']['charge_microusd'],'100')

@@ -31,13 +31,13 @@ function revenueView() {
     <td class="money">${money(row.charge_microusd)}</td>
     <td><span class="${row.state==='pending'?'error':'badge'}">${row.state==='pending'?'待核算':row.basis==='not_forwarded'?'未转发 · 不计费':['estimated','mixed'].includes(row.usage_source)?'已计费 · 含估算':row.coverage==='partial'?'已计费 · 部分用量':row.usage_source==='none'?'不计费':'已计费'}</span><small>HTTP ${row.status??'—'}${row.state==='pending'?'<br>'+esc(revenueReasons[row.reason]||row.reason):''}</small></td>
   </tr>`);
-  return heading('收入','根据请求发生时的官方报价和账号池实际倍率，汇总已归档的应收费用。',btn('同步账单','sync','','primary'))+
+  return heading('收入','管理平台结算账单',btn('同步账单','sync','','primary'))+
     `<div class="cards revenue-cards">
     ${card('累计应收 · USD',money(s.charge_microusd),`${s.calculated} 笔金额已确认`)}
     ${card('今日应收 · USD',money(s.today_microusd),'按商户本机日期')}
     ${card('本月应收 · USD',money(s.month_microusd),'按商户本机日期')}
     ${card('待核算请求',s.pending,'未计入应收合计')}
-    </div><p class="revenue-scope">以上统计全部本地归档，共 ${s.requests} 笔；不是最近 200 条的合计。应收表示调用费用，实际到账与结算尚未接入。币种 USD，不进行汇率换算。</p>
+    </div><p class="revenue-scope">已从管理平台同步 ${s.requests} 笔 · 每 5 分钟更新</p>
     <section class="panel"><form id="revenue-filter" class="revenue-filter">
       ${field('开始日期','start',revenueQuery.start,'date')}${field('结束日期（含当天）','end',revenueQuery.end,'date')}
       <label>账号池<select name="pool"><option value="">全部账号池</option>${r.pools.map(p=>`<option value="${esc(p)}" ${p===revenueQuery.pool?'selected':''}>${esc(p||'未选池')}</option>`).join('')}</select></label>
@@ -49,7 +49,7 @@ function revenueView() {
       <div class="revenue-pagination"><span>${r.filtered.requests?`${r.offset+1}–${r.offset+r.data.length} / ${r.filtered.requests}`:'暂无账单'}</span><div class="actions">
         <button data-action="revenue-page" data-id="${Math.max(0,r.offset-r.limit)}" ${r.offset?'':'disabled'}>上一页</button>
         <button data-action="revenue-page" data-id="${r.offset+r.limit}" ${r.has_more?'':'disabled'}>下一页</button></div></div></section>
-    <p>本地归档更新时间以“同步账单”为准；查询生成于 ${esc(revenueTime(r.generated_at))}（${esc(r.timezone)}）。待核算不表示免费，补齐计费依据前不会猜算收入。</p>`;
+    <p>${r.sync?.synced_at?'上次同步 '+esc(revenueTime(r.sync.synced_at)):'尚未从管理平台同步'}</p>`;
 }
 
 function bindRevenueFilters() {
@@ -74,7 +74,7 @@ async function revenueDetail(index) {
   const dialog=$('#dialog');dialog.classList.add('wide');
   dialog.innerHTML=`<h2>调用账单</h2><div class="panelhead"><span>${esc(row.pool)} / ${esc(row.model)}</span><strong class="money">应收 ${money(row.charge_microusd)}</strong></div>
     <p>${esc(revenueTime(row.created_at))} · HTTP ${row.status??'—'} · ${row.multiplier_millionths===null?'倍率未知':usd(row.multiplier_millionths)+'×'}<br>
-    ${row.state==='pending'?esc(revenueReasons[row.reason]||row.reason):row.basis==='legacy_quote'?'根据请求时的历史报价计算':row.basis==='not_forwarded'?'请求未转发，不计费':'Router 已计算，使用请求时的价格快照'}<br>
+    ${row.state==='pending'?esc(revenueReasons[row.reason]||row.reason):row.basis==='platform_settlement'?'管理平台已结算':row.basis==='not_forwarded'?'请求未转发，不计费':'使用请求时的价格快照'}<br>
     用户：${esc(row.user_id)}<br>请求：<code>${esc(row.request_id)}</code><br>
     商户价格版本 ${esc(row.price_version??'—')} · 官方价格版本 ${esc(row.official_price_revision??'—')}</p>
     ${table(['尝试','计费项目','用量','官方单价 · USD','单位'],items.map(item=>`<tr><td>${esc(item.attempt||1)}</td><td>${esc(kinds[item.kind]||item.kind)}</td><td>${esc(item.quantity)}</td><td class="money">${money(item.unit_price_microusd)}</td><td>${item.unit==='million_tokens'?'每百万 token':item.unit==='call'?'每次':esc(item.unit)}</td></tr>`))}

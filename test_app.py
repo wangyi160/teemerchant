@@ -29,19 +29,13 @@ class MerchantTests(unittest.TestCase):
         self.assertNotIn('token',self.store.public())
         self.assertEqual(self.store.enrollment()['id'],'m_'+self.store.enrollment()['credential_hash'][:32])
         other=Store(self.tmp.name);self.assertEqual(other.settings['token'],token);other.db.close()
-    def test_archive_precedes_ack_and_replay_is_idempotent(self):
-        t=Transport();app=Application(self.store,t);app.sync()
-        self.assertEqual(len(self.store.records('usage')),1);self.assertEqual(t.acks[0]['through_seq'],1)
+    def test_legacy_archive_remains_encrypted_and_replay_is_idempotent(self):
+        t=Transport()
+        self.store.archive('usage','instance',[t.row])
         self.store.archive('usage','instance',[t.row]);self.assertEqual(len(self.store.records('usage')),1)
         self.assertNotIn(b'REFUSAL_ARCHIVE_TEXT',(Path(self.tmp.name)/'records.db').read_bytes())
         altered={**t.row,'event':{'changed':True}}
         with self.assertRaises(RuntimeError):self.store.archive('usage','instance',[altered])
-    def test_failed_disk_write_never_acknowledges(self):
-        t=Transport();app=Application(self.store,t)
-        def broken(*args):raise OSError('disk full')
-        self.store.archive=broken
-        with self.assertRaises(OSError):app.sync()
-        self.assertEqual(t.acks,[])
     def test_rollback_rejected_and_wrong_identity_rejected(self):
         app=Application(self.store,Transport());identity=self.store.enrollment()['id']
         app.accept({'merchant':{'id':identity},'settings':{'revision':5}})
@@ -64,14 +58,4 @@ class MerchantTests(unittest.TestCase):
                         {**body,'api_key':'PRIVATE_KEY'}]:
             with self.assertRaises(ValueError):app._api('POST','/api/accounts/test',invalid)
         self.assertEqual(len(t.acks),1)
-    def test_filtered_legacy_usage_can_ack_without_disclosing_unused_users(self):
-        class Hidden(Transport):
-            def call(self,method,path,body=None):
-                if method=='GET':
-                    return {'instance_id':'instance','data':[], 'ack_through_seq':0 if self.acks else 5}
-                self.acks.append(body)
-        t=Hidden();app=Application(self.store,t);app.sync()
-        self.assertEqual(t.acks,[{'instance_id':'instance','through_seq':5}])
-        self.assertEqual(self.store.records('usage'),[])
-
 if __name__=='__main__':unittest.main()

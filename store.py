@@ -70,6 +70,8 @@ class Store:
         self.accounts = AccountBook(self.directory, self.enrollment()['id'], self.protect)
         self.db = sqlite3.connect(self.directory / 'records.db', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS records(kind TEXT, instance TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(kind,instance,seq))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS platform_records(url TEXT, archive_id TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(url,seq))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS platform_cursors(url TEXT PRIMARY KEY, archive_id TEXT NOT NULL, cursor INTEGER NOT NULL, synced_at INTEGER NOT NULL)')
         self.db.commit()
         self.revenue_index = RevenueIndex()
 
@@ -258,6 +260,7 @@ class Store:
                         # Reuse the approved connection, copying exact policy
                         # bytes. Revision, accounts and archives start empty.
                         connection = {k: self.settings[k] for k in ('router', 'tdx_policy', 'snp_policy')}
+                        candidate.settings['platform_url'] = self.settings.get('platform_url', '')
                         for key in ('tdx_policy', 'snp_policy'):
                             if connection[key]:
                                 connection[key] = str(self.policy_path(connection[key]))

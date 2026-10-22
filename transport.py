@@ -86,6 +86,8 @@ class Transport:
         self.client = NativeClient(config)
 
     def call(self, method, path, body=None):
+        if urlsplit(path).path in ('/merchant/usage', '/merchant/usage/ack', '/merchant/refusals'):
+            raise ValueError('流水和拒答记录请从管理平台获取')
         def check(value):
             if isinstance(value, dict):
                 if any(str(k).replace('_', '').lower() == 'refreshtoken' for k in value):

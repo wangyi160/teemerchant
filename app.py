@@ -26,6 +26,8 @@ class Application:
         self.sync_lock = threading.Lock()
         self.state_lock = threading.RLock()
         self.last_catalog_check = time.monotonic()
+        from platform_archive import PlatformArchive
+        self.archive = PlatformArchive(store)
         from oauth_service import OAuthService
         self.oauth = OAuthService(self)
 
@@ -121,27 +123,18 @@ class Application:
         return self.remote
 
     def sync(self):
-        with self.state_lock, self.sync_lock:
-            for kind, path, field in [('usage', '/merchant/usage', 'seq'), ('refusals', '/merchant/refusals', 'id')]:
-                for _ in range(16):
-                    result = self.transport.call('GET', path + '?limit=500')
-                    rows = result['data']
-                    through = result.get('ack_through_seq', rows[-1][field] if rows else 0) if kind == 'usage' else (rows[-1][field] if rows else 0)
-                    if not through:
-                        break
-                    self.store.archive(kind, result['instance_id'], rows)
-                    if kind == 'usage':
-                        self.transport.call('POST', path + '/ack', {'instance_id': result['instance_id'], 'through_seq': through})
-                    else:
-                        self.transport.call('DELETE', path + f'?through_id={through}')
-            self.last_error = ''
-        return {'saved': True}
+        return self.archive.sync()
 
     def api(self, method, path, body, identity=None):
         # Status remains responsive while a remote archive operation is waiting.
         if (method, path) == ('GET', '/api/state'):
             with self.store.lock:
                 return self._api(method, path, body)
+        if (method, path) == ('POST', '/api/sync'):
+            with self.store.lock:
+                if identity is not None and identity != self.store.enrollment()['id']:
+                    raise ValueError('当前商户已切换，请刷新页面后重新操作')
+            return self.sync()
         with self.state_lock:
             if identity is not None and identity != self.store.enrollment()['id']:
                 raise ValueError('当前商户已切换，请刷新页面后重新操作')
@@ -167,13 +160,14 @@ class Application:
                 else:
                     self.store.switch_profile(body)
                 self.transport.close()
+                self.archive.reset()
                 self.remote = self.store.accounts.view(self.store.settings['router'])
                 self.connected = False
                 self.last_error = ''
             return {'saved': True, 'merchant_id': self.store.enrollment()['id']}
         url = urlsplit(path)
         if method == 'GET' and url.path == '/api/revenue':
-            return self.store.revenue(url.query)
+            return self.archive.revenue(url.query)
         if method == 'GET' and url.path == '/api/revenue/record':
             values = parse_qs(url.query, keep_blank_values=True, max_num_fields=2)
             if set(values) != {'instance', 'seq'} or any(len(v) != 1 for v in values.values()):
@@ -181,9 +175,24 @@ class Application:
             instance, seq = values['instance'][0], values['seq'][0]
             if len(instance) > 256 or not seq.isascii() or not seq.isdigit() or len(seq) > 19:
                 raise ValueError('收入记录标识无效')
-            return self.store.revenue_record(instance, int(seq))
+            return self.archive.detail(instance, int(seq))
         if (method, path) == ('GET', '/api/state'):
-            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'profiles': self.store.profiles(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error}
+            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'profiles': self.store.profiles(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error, 'archive': self.archive.status()}
+        if (method, path) == ('PUT', '/api/platform'):
+            from platform_archive import platform_url
+            if not isinstance(body, dict) or set(body) != {'platform_url'}:
+                raise ValueError('管理平台设置无效')
+            value = platform_url(body['platform_url'])
+            with self.store.lock:
+                previous = self.store.settings.copy()
+                self.store.settings['platform_url'] = value
+                try:
+                    self.store.save()
+                except Exception:
+                    self.store.settings = previous
+                    raise
+                self.archive.reset()
+            return {'saved': True}
         if (method, path) == ('PUT', '/api/settings'):
             self.store.save_connection(body)
             self.transport.close()
@@ -223,7 +232,7 @@ class Application:
         if (method, path) == ('POST', '/api/sync'):
             return self.sync()
         if method == 'GET' and path in ('/api/records/usage', '/api/records/refusals'):
-            return {'data': self.store.records(path.rsplit('/', 1)[1])}
+            return {'data': self.archive.records(path.rsplit('/', 1)[1])}
         raise ValueError('接口不存在')
 
     def background(self, stop):
@@ -239,10 +248,10 @@ class Application:
                 if self.connected:
                     try:
                         self.sync_credentials()
-                        self.sync()
                         if time.monotonic() - self.last_catalog_check >= 60:
                             self.accept(self.transport.call('GET', '/merchant/state'))
                             self.sync_credentials()
+                        self.last_error = ''
                     except Exception as error:
                         self.last_error = str(error)
                         if any(code in self.last_error for code in ('merchant_locked', 'merchant_forbidden', 'merchant_runtime_changed')):
@@ -251,6 +260,17 @@ class Application:
                                 self.last_error = ''
                             except Exception as reconnect_error:
                                 self.last_error = str(reconnect_error)
+
+    def archive_background(self, stop):
+        from platform_archive import INTERVAL
+        while not stop.wait(10):
+            with self.store.lock:
+                ready = self.store.credentials()['saved'] and bool(self.store.settings.get('platform_url'))
+            if ready and time.monotonic() - self.archive.last_attempt >= INTERVAL:
+                try:
+                    self.archive.sync(stop)
+                except Exception:
+                    pass  # The archive channel retains its own error and cursor.
 
 def handler(application, origin):
     from service import handler as service_handler

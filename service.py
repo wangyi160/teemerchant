@@ -202,7 +202,7 @@ class Runtime:
         from store import Store
         from app import Application
         args=self.args
-        lock=store=application=server=http_worker=worker=None
+        lock=store=application=server=http_worker=worker=archive_worker=None
         try:
             lock=DataLock(args.data)
             auth=LocalSessions()
@@ -216,13 +216,15 @@ class Runtime:
                 server.socket=context.wrap_socket(server.socket,server_side=True)
             worker=threading.Thread(target=application.background,args=(self.stop,),name='merchant-renewal',daemon=True)
             worker.start()
+            archive_worker=threading.Thread(target=application.archive_background,args=(self.stop,),name='merchant-platform-archive',daemon=True)
+            archive_worker.start()
             http_worker=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.2},name='merchant-http',daemon=True)
             http_worker.start()
             self.started_at=time.monotonic()
             self.state='stopping' if self.stop.is_set() else 'running'
             print(f'teemerchant local management: {args.url}',flush=True)
             while not self.stop.wait(.25):
-                if not http_worker.is_alive() or not worker.is_alive():
+                if not http_worker.is_alive() or not worker.is_alive() or not archive_worker.is_alive():
                     raise RuntimeError('HTTP 服务或后台任务已停止')
         except OSError as error:
             code=getattr(error,'winerror',None) or error.errno
@@ -240,6 +242,7 @@ class Runtime:
                     if http_worker and http_worker.is_alive():server.shutdown();http_worker.join()
                     server.server_close()
                 if worker:worker.join()
+                if archive_worker:archive_worker.join()
                 if application:application.transport.close()
                 if application:application.store.db.close()
                 elif store:store.db.close()

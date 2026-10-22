@@ -244,7 +244,16 @@ class BrowserTests(unittest.TestCase):
         b['event']['merchant_pricing']['pool']='other'
         c=receipt('pending');c['seq']=3;c['event']['status']=499
         c['event']['billing']={'version':1,'state':'pending','reason':'request_incomplete','items':'invalid'}
-        self.store.archive('usage','test-boot',[a,b,c])
+        from unittest.mock import patch
+        self.store.settings['platform_url']='https://platform.example'
+        mid=self.store.enrollment()['id']
+        for row in (a,b,c):
+            row['cursor']=row['seq']
+            row['event']['merchant_id']=mid
+            row['event']['settlement']={'state':'pending' if row is c else 'settled',
+                'charge_microusd':None if row is c else '50','official_cost_microusd':None}
+        batch={'version':1,'archive_id':'a'*32,'merchant_id':mid,'data':[a,b,c],'next_cursor':3,'has_more':False}
+        with patch.object(self.app.archive,'fetch',return_value=batch): self.app.sync()
         self.page.locator('aside [data-id=revenue]').click()
         expect(self.page.get_by_role('heading', name='收入', exact=True)).to_be_visible()
         cards=self.page.locator('.revenue-cards .card')
