@@ -38,7 +38,8 @@ def main():
         shutil.copyfile(goroot/'LICENSE',target/'Go-LICENSE')
         for item in ('go.mod','go.sum'):shutil.copyfile(ROOT/'egress'/item,target/item)
     if not library.is_file() or not helper.is_file():raise RuntimeError('Native library and VLESS helper are required')
-    subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',
+    windows=['--hide-console','hide-early','--icon',str(ROOT/'static/teemerchant.ico')] if os.name=='nt' else []
+    subprocess.run([sys.executable,'-m','PyInstaller','--noconfirm','--clean','--onedir','--console',*windows,
         '--name','teemerchant','--distpath',str(ROOT/'build/service'),'--workpath',str(ROOT/'build/service-work'),
         '--specpath',str(ROOT/'build'),'--add-binary',str(library)+os.pathsep+'.',
         '--add-data',str(ROOT/'static')+os.pathsep+'static',str(ROOT/'service.py')],cwd=ROOT,check=True)

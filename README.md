@@ -6,6 +6,10 @@
 
 从 [Releases](https://github.com/wangyi160/teemerchant/releases) 下载 Windows x64 ZIP 或 Linux x64 tar.gz。Windows 直接运行 `teemerchant.exe`，Linux 运行 `./teemerchant`，访问 `http://127.0.0.1:8910`。Linux 发行包要求 glibc 2.36 或更高版本。运行包自带 Python、TEE 原生库和 VLESS 组件，无需安装 Python、Node.js 或 teeproxy。
 
+Windows 默认显示原生服务窗口，展示 HTTP 服务状态、管理地址和运行时间，可打开管理页面、复制地址或打开数据目录。最小化按钮和关闭按钮均收起到系统托盘，服务继续运行；点击托盘图标恢复窗口，右键菜单可以打开管理页面或退出服务。“退出服务”会等待正在处理的请求和令牌续期结束后退出。重复运行同一数据目录的程序会恢复已有窗口，不会启动第二个刷新任务。服务状态指本机 HTTP 服务，Router 连接及账号状态在登录后的管理页面查看。
+
+Windows 从终端运行 `teemerchant.exe --headless` 可禁用窗口与托盘，保留 HTTP 服务；Linux 默认就是此模式。所有版本仍是解压运行，无需安装。
+
 首次启动生成独立的 HTTP 管理账号 `admin`，随机密码写入程序旁的 `data/initial-password.txt`。登录密码与 Portal 签发的 Merchant Secret 是不同凭据。可用 `--set-password` 在终端交互修改密码；关闭服务后执行，重新启动使旧会话失效。`TEEMERCHANT_ADMIN_PASSWORD` 可用于首次自动部署，启动后会从进程环境移除。
 
 远程访问示例（替换为服务主机实际 IP）：
@@ -14,7 +18,7 @@
 ./teemerchant --host 0.0.0.0 --port 8910 --public-url http://192.168.1.10:8910
 ```
 
-Windows 使用相同参数：`teemerchant.exe --host 0.0.0.0 --port 8910 --public-url http://192.168.1.10:8910`。也可复制 `service.example.json` 为 `service.json` 后执行 `--config service.json`。`--public-url` 可重复指定，用于限制 Host 和 Origin。公网访问应配置 HTTPS：服务支持 `--tls-cert`、`--tls-key`，也可通过自己的 HTTPS 反向代理访问。反向代理地址须列入 `--public-url`。
+Windows 使用相同参数：`teemerchant.exe --host 0.0.0.0 --port 8910 --public-url http://192.168.1.10:8910`。也可复制 `service.example.json` 为程序旁的 `service.json`，启动时会自动读取；`--config` 可指定其他配置文件，命令行参数覆盖文件中的对应选项。配置文件中的相对数据和证书路径以该文件所在目录为准。`--public-url` 可重复指定，用于限制 Host 和 Origin；窗口展示其中的第一个地址，未配置时使用本机监听地址。公网访问应配置 HTTPS：服务支持 `--tls-cert`、`--tls-key`，也可通过自己的 HTTPS 反向代理访问。反向代理地址须列入 `--public-url`。
 
 配置和账号库默认全部保存在程序旁的 `data/`，可用 `--data` 指定目录；升级保留完整 `data/` 后覆盖程序文件。程序锁定数据目录，防止两个服务同时刷新同一份令牌。Windows 保留原 DPAPI 格式，原桌面版本退出后可以直接使用同一份数据；Linux 使用 AES-GCM，主密钥在 `data/.vault-key`，仅服务用户可读。备份必须包括密钥；Windows DPAPI 数据不能直接搬到 Linux 解密。
 

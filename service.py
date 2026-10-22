@@ -10,6 +10,7 @@ from pathlib import Path
 import secrets
 import signal
 import ssl
+import socket
 import sys
 import threading
 import time
@@ -149,7 +150,12 @@ def handler(application, origins, auth=None):
     return Handler
 
 class Server(ThreadingHTTPServer):
-    daemon_threads=True
+    # Drain active handlers before closing the vault or releasing its lock.
+    daemon_threads=False
+    allow_reuse_address=os.name!='nt'
+    def server_bind(self):
+        if os.name=='nt':self.socket.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
+        super().server_bind()
     def __init__(self,*args,**kwargs):
         self.slots=threading.BoundedSemaphore(32)
         super().__init__(*args,**kwargs)
@@ -161,57 +167,152 @@ class Server(ThreadingHTTPServer):
         try: super().process_request_thread(*args)
         finally: self.slots.release()
 
-def main():
-    parser=argparse.ArgumentParser(description='teemerchant HTTP service')
-    parser.add_argument('--config',help='Path to a service JSON configuration')
+class ConfigurationParser(argparse.ArgumentParser):
+    def error(self,message):raise ValueError(message)
+
+
+def options(argv=None, base=None):
+    base=Path(base) if base is not None else (Path(sys.executable).parent if getattr(sys,'frozen',False) else ROOT)
+    parser=ConfigurationParser(description='teemerchant HTTP service')
+    parser.add_argument('--config',default=str(base/'service.json') if (base/'service.json').is_file() else None,help='Path to a service JSON configuration')
+    parser.add_argument('--headless',action='store_true',help='Run without the Windows status window and tray')
     parser.add_argument('--host',default='127.0.0.1')
     parser.add_argument('--port',type=int,default=8910)
     parser.add_argument('--public-url',action='append',default=[])
-    base=Path(sys.executable).parent if getattr(sys,'frozen',False) else ROOT
     parser.add_argument('--data',default=str(base/'data'))
     parser.add_argument('--set-password',action='store_true')
     parser.add_argument('--tls-cert');parser.add_argument('--tls-key')
-    preliminary,_=parser.parse_known_args()
+    preliminary,_=parser.parse_known_args(argv)
     if preliminary.config:
         configuration=json.loads(Path(preliminary.config).read_text(encoding='utf-8'))
         if not isinstance(configuration,dict) or set(configuration)-{'host','port','public_urls','data','tls_cert','tls_key'}:parser.error('Invalid service configuration')
+        for key in ('data','tls_cert','tls_key'):
+            if configuration.get(key):configuration[key]=str((Path(preliminary.config).resolve().parent/str(configuration[key])).resolve())
         if 'public_urls' in configuration:configuration['public_url']=configuration.pop('public_urls')
+        if preliminary.public_url:configuration.pop('public_url',None)
         parser.set_defaults(**configuration)
-    args=parser.parse_args()
-    if not 1<=args.port<=65535: parser.error('port must be 1..65535')
+    args=parser.parse_args(argv)
+    if type(args.port) is not int or not 1<=args.port<=65535: parser.error('port must be 1..65535')
+    if not isinstance(args.host,str) or not args.host or any(c in args.host for c in '/\\?#@'):parser.error('Invalid host')
+    if not isinstance(args.public_url,list) or not all(isinstance(o,str) for o in args.public_url):parser.error('public_urls must be an array of origins')
+    if not isinstance(args.data,str) or not args.data:parser.error('Invalid data directory')
+    if any(value is not None and not isinstance(value,str) for value in (args.tls_cert,args.tls_key)):parser.error('Invalid TLS file path')
     if bool(args.tls_cert)!=bool(args.tls_key): parser.error('tls-cert and tls-key are required together')
-    from desktop_runtime import DataLock
-    from store import Store
-    from app import Application
-    lock=DataLock(args.data)
-    password=getpass.getpass('New administrator password: ') if args.set_password else os.environ.pop('TEEMERCHANT_ADMIN_PASSWORD',None)
-    auth=Auth(args.data,password)
-    if args.set_password:
-        print('Administrator password updated.');lock.close();return
+    args.data=str(Path(args.data).resolve())
     scheme='https' if args.tls_cert else 'http'
     origins={f'{scheme}://127.0.0.1:{args.port}',f'{scheme}://localhost:{args.port}'}
-    if args.host not in ('0.0.0.0','::','127.0.0.1'): origins.add(f'{scheme}://{args.host}:{args.port}')
+    host=f'[{args.host}]' if ':' in args.host else args.host
+    if args.host not in ('0.0.0.0','::','127.0.0.1'): origins.add(f'{scheme}://{host}:{args.port}')
     for origin in args.public_url:
         u=urlsplit(origin)
         if u.scheme not in ('http','https') or not u.hostname or u.username or u.password or u.path not in ('','/') or u.query or u.fragment: parser.error('public-url must be an HTTP(S) origin')
         origins.add(origin.rstrip('/'))
     if args.host in ('0.0.0.0','::') and not args.public_url: parser.error('Specify --public-url for remote access')
-    application=Application(Store(args.data))
-    server=Server((args.host,args.port),handler(application,origins,auth))
-    if args.tls_cert:
-        context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2
-        context.load_cert_chain(args.tls_cert,args.tls_key);server.socket=context.wrap_socket(server.socket,server_side=True)
-    stop=threading.Event()
-    worker=threading.Thread(target=application.background,args=(stop,),daemon=True);worker.start()
-    def shutdown(*_):
-        stop.set();threading.Thread(target=server.shutdown,daemon=True).start()
-    signal.signal(signal.SIGINT,shutdown)
-    if hasattr(signal,'SIGTERM'):signal.signal(signal.SIGTERM,shutdown)
-    print(f'teemerchant listening on {args.host}:{args.port}; login: admin',flush=True)
-    if auth.initial:print(f'Initial password saved to {auth.initial}',flush=True)
-    try:server.serve_forever()
-    finally:
-        stop.set();server.server_close();worker.join(timeout=40)
-        if not worker.is_alive():application.transport.close();application.store.db.close();lock.close()
+    args.origins=origins
+    local_host='127.0.0.1' if args.host=='0.0.0.0' else '[::1]' if args.host=='::' else host
+    args.url=args.public_url[0].rstrip('/') if args.public_url else f'{scheme}://{local_host}:{args.port}'
+    return args
 
-if __name__=='__main__':main()
+
+class Runtime:
+    """One service lifetime, owned by the CLI or the native Windows message loop."""
+    def __init__(self,args):
+        self.args=args
+        self.stop=threading.Event()
+        self.done=threading.Event()
+        self.state='starting'
+        self.error=''
+        self.started_at=None
+        self.thread=None
+
+    def start(self):
+        if self.thread is not None:raise RuntimeError('Service already started')
+        self.thread=threading.Thread(target=self.run,name='merchant-service',daemon=True)
+        self.thread.start()
+
+    def shutdown(self):
+        self.stop.set()
+        if not self.done.is_set():self.state='stopping'
+
+    def run(self):
+        from desktop_runtime import DataLock
+        from store import Store
+        from app import Application
+        args=self.args
+        lock=store=application=server=http_worker=worker=None
+        try:
+            lock=DataLock(args.data)
+            auth=Auth(args.data,os.environ.pop('TEEMERCHANT_ADMIN_PASSWORD',None))
+            store=Store(args.data)
+            application=Application(store)
+            server_type=type('IPv6Server',(Server,),{'address_family':socket.AF_INET6}) if ':' in args.host else Server
+            server=server_type((args.host,args.port),handler(application,args.origins,auth))
+            if args.tls_cert:
+                context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.minimum_version=ssl.TLSVersion.TLSv1_2
+                context.load_cert_chain(args.tls_cert,args.tls_key)
+                server.socket=context.wrap_socket(server.socket,server_side=True)
+            worker=threading.Thread(target=application.background,args=(self.stop,),name='merchant-renewal',daemon=True)
+            worker.start()
+            http_worker=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.2},name='merchant-http',daemon=True)
+            http_worker.start()
+            self.started_at=time.monotonic()
+            self.state='stopping' if self.stop.is_set() else 'running'
+            print(f'teemerchant listening on {args.host}:{args.port}; login: admin',flush=True)
+            if auth.initial:print(f'Initial password saved to {auth.initial}',flush=True)
+            while not self.stop.wait(.25):
+                if not http_worker.is_alive() or not worker.is_alive():
+                    raise RuntimeError('HTTP 服务或后台任务已停止')
+        except OSError as error:
+            code=getattr(error,'winerror',None) or error.errno
+            self.error=(f'端口 {args.port} 已被占用或禁止监听' if code in (48,98,10048,10013) else '无法启动服务，请检查监听地址、目录权限和 TLS 配置')
+        except (ValueError,RuntimeError) as error:
+            # Local setup errors only; never expose remote credential responses.
+            self.error=str(error)
+        except Exception:
+            self.error='服务启动失败，请检查配置和完整程序文件'
+        finally:
+            self.stop.set()
+            self.state='stopping'
+            try:
+                if server:
+                    if http_worker and http_worker.is_alive():server.shutdown();http_worker.join()
+                    server.server_close()
+                if worker:worker.join()
+                if application:application.transport.close()
+                if application:application.store.db.close()
+                elif store:store.db.close()
+            finally:
+                if lock:lock.close()
+                self.state='failed' if self.error else 'stopped'
+                self.done.set()
+
+
+def main():
+    try:args=options()
+    except (ValueError,OSError) as error:
+        message='服务配置无效：'+str(error)
+        print(message,file=sys.stderr)
+        if os.name=='nt' and '--headless' not in sys.argv:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None,message,'teemerchant',0x10)
+        return 2
+    if args.set_password:
+        from desktop_runtime import DataLock
+        lock=DataLock(args.data)
+        try:Auth(args.data,getpass.getpass('New administrator password: '))
+        finally:lock.close()
+        print('Administrator password updated.')
+        return 0
+    runtime=Runtime(args)
+    if os.name=='nt' and not args.headless:
+        from windows_status import run
+        return run(runtime)
+    signal.signal(signal.SIGINT,lambda *_:runtime.shutdown())
+    if hasattr(signal,'SIGTERM'):signal.signal(signal.SIGTERM,lambda *_:runtime.shutdown())
+    if hasattr(signal,'SIGBREAK'):signal.signal(signal.SIGBREAK,lambda *_:runtime.shutdown())
+    runtime.start()
+    runtime.done.wait()
+    if runtime.error:print(runtime.error,file=sys.stderr)
+    return 1 if runtime.error else 0
+
+if __name__=='__main__':sys.exit(main())

@@ -21,7 +21,7 @@ class PortableTests(unittest.TestCase):
             data=Path(folder)/'data'
             log=Path(folder)/'service.log'
             with log.open('wb') as output:
-                child=subprocess.Popen([str(EXE),'--port',str(port),'--data',str(data)],stdout=output,stderr=output,
+                child=subprocess.Popen([str(EXE),'--headless','--port',str(port),'--data',str(data)],stdout=output,stderr=output,
                     creationflags=0x08000000 if os.name=='nt' else 0)
                 try:
                     with httpx.Client(base_url=f'http://127.0.0.1:{port}',trust_env=False,timeout=10) as client:
@@ -50,7 +50,7 @@ class PortableTests(unittest.TestCase):
                         self.assertEqual(result.status_code,400)
                         self.assertNotIn('无法加载',result.text)
                         self.assertNotIn(password,log.read_text(errors='replace'))
-                    another=subprocess.run([str(EXE),'--port',str(port+1),'--data',str(data)],capture_output=True,timeout=15)
+                    another=subprocess.run([str(EXE),'--headless','--port',str(port+1),'--data',str(data)],capture_output=True,timeout=15)
                     self.assertNotEqual(another.returncode,0)
                 finally:
                     child.terminate();child.wait(timeout=20)
