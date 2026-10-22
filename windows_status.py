@@ -158,7 +158,7 @@ class StatusWindow:
         for size,weight in ((15,400),(27,600),(20,600)):
             self.fonts.append(self.gdi.CreateFontW(-self.px(size),0,0,0,weight,0,0,0,1,0,0,5,0,'Segoe UI'))
         self.control(100,'STATIC','teemerchant',24,20,380,40,font=self.fonts[1])
-        self.control(101,'STATIC','HTTP 商户服务',430,31,146,25)
+        self.control(101,'STATIC','本机商户服务',430,31,146,25)
         self.control(102,'STATIC',STATES['starting'],24,78,540,30,font=self.fonts[2])
         self.control(103,'STATIC','',24,112,552,38)
         self.control(104,'STATIC','管理地址',24,158,100,24)

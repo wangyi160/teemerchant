@@ -45,8 +45,8 @@ class RuntimeTests(unittest.TestCase):
         runtime=self.runtime()
         self.assertEqual(runtime.state,'running',runtime.error)
         with httpx.Client(trust_env=False) as client:
-            self.assertEqual(client.get(runtime.args.url+'/login').status_code,200)
             self.assertEqual(client.get(runtime.args.url+'/api/state').status_code,401)
+            self.assertEqual(client.get(runtime.args.url+'/').status_code,200)
         duplicate=self.runtime()
         self.assertTrue(duplicate.done.wait(5))
         self.assertEqual(duplicate.state,'failed')
@@ -115,15 +115,22 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(errors,errors)
 
     def test_portable_config_and_command_line_override(self):
-        (self.base/'service.json').write_text(json.dumps({'host':'0.0.0.0','port':8910,
-            'public_urls':['http://192.0.2.10:8910'],'data':'merchant-data'}))
+        (self.base/'service.json').write_text(json.dumps({'host':'127.0.0.1','port':8910,'data':'merchant-data'}))
         args=options([],self.base)
-        self.assertEqual(args.url,'http://192.0.2.10:8910')
+        self.assertEqual(args.url,'http://127.0.0.1:8910')
         self.assertEqual(Path(args.data),self.base/'merchant-data')
-        args=options(['--port','8911','--public-url','http://192.0.2.10:8911'],self.base)
+        args=options(['--port','8911'],self.base)
         self.assertEqual(args.port,8911)
-        self.assertEqual(args.public_url,['http://192.0.2.10:8911'])
-        self.assertEqual(args.url,'http://192.0.2.10:8911')
+        self.assertEqual(args.url,'http://127.0.0.1:8911')
+
+    def test_remote_bind_and_remote_origins_are_rejected(self):
+        from service import Server,handler
+        for host in ('0.0.0.0','::','192.0.2.10','example.com'):
+            with self.subTest(host=host),self.assertRaises(ValueError):options(['--host',host],self.base)
+        with self.assertRaises(ValueError):options(['--public-url','http://192.0.2.10:8910'],self.base)
+        with self.assertRaises(ValueError):Server(('0.0.0.0',0),object)
+        (self.base/'service.json').write_text('{"host":"0.0.0.0","port":8910}')
+        with self.assertRaises(ValueError):options([],self.base)
 
 
 if __name__=='__main__':unittest.main()

@@ -1,24 +1,24 @@
 # teemerchant
 
-商户自行运行的 HTTP 管理服务，支持 Windows 和 Linux，采用 MIT 开源许可。通过本机或远程浏览器管理账号池、OAuth 授权、客户、收入和归档。无需 Electron；[teeproxy](https://github.com/wangyi160/teeproxy) 仍是独立的用户代理。
+商户自行运行的本机管理程序，支持 Windows 和 Linux，采用 MIT 开源许可。通过本机浏览器管理账号池、OAuth 授权、客户、收入和归档，不支持局域网访问。无需 Electron；[teeproxy](https://github.com/wangyi160/teeproxy) 仍是独立的用户代理。
 
 ## 解压和启动
 
 从 [Releases](https://github.com/wangyi160/teemerchant/releases) 下载 Windows x64 ZIP 或 Linux x64 tar.gz。Windows 直接运行 `teemerchant.exe`，Linux 运行 `./teemerchant`，访问 `http://127.0.0.1:8910`。Linux 发行包要求 glibc 2.36 或更高版本。运行包自带 Python、TEE 原生库和 VLESS 组件，无需安装 Python、Node.js 或 teeproxy。
 
-Windows 默认显示原生服务窗口，展示 HTTP 服务状态、管理地址和运行时间，可打开管理页面、复制地址或打开数据目录。最小化按钮和关闭按钮均收起到系统托盘，服务继续运行；点击托盘图标恢复窗口，右键菜单可以打开管理页面或退出服务。“退出服务”会等待正在处理的请求和令牌续期结束后退出。重复运行同一数据目录的程序会恢复已有窗口，不会启动第二个刷新任务。服务状态指本机 HTTP 服务，Router 连接及账号状态在登录后的管理页面查看。
+Windows 默认显示原生服务窗口，展示 HTTP 服务状态、管理地址和运行时间，可直接打开管理页面、复制地址或打开数据目录，无需登录。最小化按钮和关闭按钮均收起到系统托盘，服务继续运行；点击托盘图标恢复窗口，右键菜单可以打开管理页面或退出服务。“退出服务”会等待正在处理的请求和令牌续期结束后退出。重复运行同一数据目录的程序会恢复已有窗口，不会启动第二个刷新任务。服务状态指本机 HTTP 服务，Router 连接及账号状态在管理页面查看。
 
 Windows 从终端运行 `teemerchant.exe --headless` 可禁用窗口与托盘，保留 HTTP 服务；Linux 默认就是此模式。所有版本仍是解压运行，无需安装。
 
-首次启动生成独立的 HTTP 管理账号 `admin`，随机密码写入程序旁的 `data/initial-password.txt`。登录密码与 Portal 签发的 Merchant Secret 是不同凭据。可用 `--set-password` 在终端交互修改密码；关闭服务后执行，重新启动使旧会话失效。`TEEMERCHANT_ADMIN_PASSWORD` 可用于首次自动部署，启动后会从进程环境移除。
+服务仅监听 `127.0.0.1` 或 `::1`，打开本机页面时自动建立浏览器会话，不设置管理用户名和密码。API 保留会话、Host、Origin 和 CSRF 检查，跨站页面不能自动取得会话或调用凭证接口。Merchant ID / Secret 仍用于绑定 Router 中的商户身份。旧版本留下的 HTTP 密码文件不再读取。
 
-远程访问示例（替换为服务主机实际 IP）：
+修改本机端口示例：
 
 ```sh
-./teemerchant --host 0.0.0.0 --port 8910 --public-url http://192.168.1.10:8910
+./teemerchant --port 8911
 ```
 
-Windows 使用相同参数：`teemerchant.exe --host 0.0.0.0 --port 8910 --public-url http://192.168.1.10:8910`。也可复制 `service.example.json` 为程序旁的 `service.json`，启动时会自动读取；`--config` 可指定其他配置文件，命令行参数覆盖文件中的对应选项。配置文件中的相对数据和证书路径以该文件所在目录为准。`--public-url` 可重复指定，用于限制 Host 和 Origin；窗口展示其中的第一个地址，未配置时使用本机监听地址。公网访问应配置 HTTPS：服务支持 `--tls-cert`、`--tls-key`，也可通过自己的 HTTPS 反向代理访问。反向代理地址须列入 `--public-url`。
+Windows 使用相同参数：`teemerchant.exe --port 8911`。也可复制 `service.example.json` 为程序旁的 `service.json`，启动时会自动读取；`--config` 可指定其他配置文件，命令行参数覆盖文件中的对应选项。配置文件中的相对数据和证书路径以该文件所在目录为准。旧配置中的 `0.0.0.0`、`::`、局域网监听地址或远程 `public_urls` 会被拒绝，升级时请改为回环地址并删除远程地址配置。`--tls-cert` 和 `--tls-key` 可选，用于本机 HTTPS。
 
 配置和账号库默认全部保存在程序旁的 `data/`，可用 `--data` 指定目录；升级保留完整 `data/` 后覆盖程序文件。程序锁定数据目录，防止两个服务同时刷新同一份令牌。Windows 保留原 DPAPI 格式，原桌面版本退出后可以直接使用同一份数据；Linux 使用 AES-GCM，主密钥在 `data/.vault-key`，仅服务用户可读。备份必须包括密钥；Windows DPAPI 数据不能直接搬到 Linux 解密。
 
@@ -30,7 +30,7 @@ Windows 使用相同参数：`teemerchant.exe --host 0.0.0.0 --port 8910 --publi
 
 “连接与身份”顶部展示已保存的 Merchant ID、遮挡的 Merchant Secret，以及是否正在使用这些凭证连接。ID 和 Secret 均可复制，Secret 可点击显示、隐藏；编辑会回填当前凭证。查看和复制从本机加密存储读取，不向 Router 请求，也不重新生成身份。普通状态查询不返回 Secret。新资料目录显示“尚未填写”，填写平台签发的凭证后才能连接商户。
 
-原有商户继续使用 `data/` 中的文件，不迁移或覆盖原账号库。新增商户使用 `data/merchants/<Merchant ID>/`，各自保存加密设置、账号库、归档和策略；`data/active-merchant.json` 仅记录当前身份。新资料完整落盘后才原子切换当前身份，重启恢复最后选择。备份、移动或升级时保留整个 `data/`。商户服务接口 `POST /api/merchant-profile` 接收已保存的 `merchant_id`，受同样的 登录会话、同源、CSRF 保护。
+原有商户继续使用 `data/` 中的文件，不迁移或覆盖原账号库。新增商户使用 `data/merchants/<Merchant ID>/`，各自保存加密设置、账号库、归档和策略；`data/active-merchant.json` 仅记录当前身份。新资料完整落盘后才原子切换当前身份，重启恢复最后选择。备份、移动或升级时保留整个 `data/`。商户服务接口 `POST /api/merchant-profile` 接收已保存的 `merchant_id`，受同样的本机浏览器会话、同源、CSRF 保护。
 用户沿用平台 API key，选择 `/v1/models` 返回的模型 ID；本商户界面不签发用户平台 key。
 
 全部上游账号和账号池归属商户，平台没有自营池。每个池只需设置一个倍率，例如 0.2 表示官方价格的 20%，1 表示官方价格。输入、输出、缓存和长上下文费率均乘以此倍率；平台统一维护官方基准价格，调用开始时保存基准价、倍率及版本。Workbuddy 使用测试基准。缺少倍率或模型基准价时拒绝调用；旧费率仅在可精确还原为全池统一倍率时自动迁移。
@@ -45,7 +45,7 @@ Windows 使用相同参数：`teemerchant.exe --host 0.0.0.0 --port 8910 --publi
 
 ### 官方 OAuth 绑定
 
-先在账号池列表中选中一个池，再点击 **添加账号**；添加窗口中的账号池固定为当前池，只读且不可切换。“全部账号”视图不提供单个账号的添加入口。管理页面将 **OAuth 授权** 与 **JSON 导入** 分为两个切换页，一次只显示一页，各自保留草稿，保存时只使用当前页的凭证。OAuth 页内点击独立的授权按钮，账号别名、代理和限额可稍后填写。ChatGPT/Grok 登录后粘贴浏览器地址栏中的完整回调地址；Claude 粘贴官方页面给出的授权码。官方 localhost 回调在远程浏览器可能显示连接失败，此时复制地址栏的 URL 即可。授权成功后，access token、可选的 refresh token、到期时间等内容显示在 OAuth 页的凭证编辑框中，允许检查和修改；此时尚未写入账号。点击 **保存并同步** 才写入本地加密账号库，再通过已验证的 TEE 连接同步到 Router。取消或关闭窗口会丢弃未保存的编辑。Router 离线时显示等待同步。Workbuddy 只提供 JSON 导入。
+先在账号池列表中选中一个池，再点击 **添加账号**；添加窗口中的账号池固定为当前池，只读且不可切换。“全部账号”视图不提供单个账号的添加入口。管理页面将 **OAuth 授权** 与 **JSON 导入** 分为两个切换页，一次只显示一页，各自保留草稿，保存时只使用当前页的凭证。OAuth 页内点击独立的授权按钮，账号别名、代理和限额可稍后填写。ChatGPT/Grok 登录后粘贴浏览器地址栏中的完整回调地址；Claude 粘贴官方页面给出的授权码。官方 localhost 回调可能显示连接失败，此时复制地址栏的 URL 即可。授权成功后，access token、可选的 refresh token、到期时间等内容显示在 OAuth 页的凭证编辑框中，允许检查和修改；此时尚未写入账号。点击 **保存并同步** 才写入本地加密账号库，再通过已验证的 TEE 连接同步到 Router。取消或关闭窗口会丢弃未保存的编辑。Router 离线时显示等待同步。Workbuddy 只提供 JSON 导入。
 
 已有 OAuth 账号可点击 **重新授权**，保留账号 ID、所属池、倍率、开放模型及启用状态。可选择是否保存 refresh token；重新授权默认沿用本地原凭证的选择，未保存时到期后手动重新授权。保存 refresh token 后由商户服务自动续期，三家供应商的续期请求均使用该账号配置的代理。
 

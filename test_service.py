@@ -12,7 +12,7 @@ from app import Application
 from credential_protocol import access_only, router_update, PROTOCOL, fingerprint
 from oauth_network import OAuthError
 from oauth_service import tokens, refresh
-from service import Auth, Server, handler
+from service import LocalSessions, Server, handler
 from store import Store
 from test_local_accounts import Router, LocalAccountTests
 
@@ -115,7 +115,7 @@ class ProtocolTests(unittest.TestCase):
 class HTTPTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.store=Store(self.tmp.name);self.app=Application(self.store)
-        self.auth=Auth(self.tmp.name,'fixture-password-1234')
+        self.auth=LocalSessions()
         self.server=Server(('127.0.0.1',0),handler(self.app,'http://127.0.0.1',self.auth))
         self.url='http://127.0.0.1:'+str(self.server.server_port)
         self.server.RequestHandlerClass=handler(self.app,self.url,self.auth)
@@ -123,31 +123,41 @@ class HTTPTests(unittest.TestCase):
         self.client=httpx.Client(base_url=self.url,trust_env=False,follow_redirects=False)
     def tearDown(self):
         self.client.close();self.server.shutdown();self.server.server_close();self.thread.join();self.store.db.close();self.tmp.cleanup()
-    def login(self):
-        response=self.client.post('/api/login',json={'username':'admin','password':'fixture-password-1234'},headers={'X-CSRF-Token':self.auth.login_csrf,'Origin':self.url})
+    def open_page(self):
+        response=self.client.get('/')
         self.assertEqual(response.status_code,200)
         session=self.auth.session(response.headers['set-cookie'])
         return {'X-CSRF-Token':session['csrf'],'Origin':self.url,'X-Merchant-ID':self.store.enrollment()['id']}
-    def test_private_pages_and_all_secret_apis_require_login_and_csrf(self):
-        self.assertEqual(self.client.get('/').status_code,303)
+    def test_local_page_creates_session_without_password_and_apis_require_csrf(self):
         for path in ('/api/state','/api/credentials','/app.js'):
             self.assertEqual(self.client.get(path).status_code,401)
-        headers=self.login()
+        headers=self.open_page()
+        self.assertFalse(Path(self.tmp.name,'http-auth.json').exists())
+        self.assertFalse(Path(self.tmp.name,'initial-password.txt').exists())
+        self.assertNotIn('退出登录',self.client.get('/app.js').text)
         self.assertEqual(self.client.get('/api/credentials').status_code,403)
         self.assertEqual(self.client.get('/api/credentials',headers=headers).status_code,200)
         self.assertEqual(self.client.get('/api/credentials',headers={**headers,'Origin':'http://evil.example'}).status_code,403)
         self.assertEqual(self.client.get('/api/state',headers={**headers,'Host':'evil.example'}).status_code,403)
         self.assertNotIn('merchant_secret',self.client.get('/api/state',headers=headers).json())
         self.assertEqual(self.client.get('/.vault-key',headers=headers).status_code,400)
-        self.assertEqual(self.client.post('/api/logout',json={},headers=headers).status_code,200)
+        self.auth.sessions.clear()
         self.assertEqual(self.client.get('/api/credentials',headers=headers).status_code,401)
-    def test_login_throttle_and_no_password_in_store(self):
-        self.assertNotIn('fixture-password',Path(self.tmp.name,'http-auth.json').read_text())
-        for _ in range(5):
-            self.assertEqual(self.client.post('/api/login',json={'username':'admin','password':'wrong'},headers={'X-CSRF-Token':self.auth.login_csrf}).status_code,400)
-        self.assertIn('五分钟',self.client.post('/api/login',json={'username':'admin','password':'fixture-password-1234'},headers={'X-CSRF-Token':self.auth.login_csrf}).json()['error'])
-    def test_remote_pkce_callback_is_session_scoped_and_one_time(self):
-        headers=self.login();identity=self.store.enrollment()['id']
+        headers=self.open_page()
+        self.assertEqual(self.client.get('/api/state',headers=headers).status_code,200)
+    def test_external_pages_cannot_bootstrap_local_sessions(self):
+        for headers in ({'Origin':'https://evil.example'},{'Host':'evil.example'},
+                        {'Sec-Fetch-Site':'cross-site'},{'Sec-Fetch-Site':'same-site'}):
+            response=self.client.get('/',headers=headers)
+            self.assertEqual(response.status_code,403)
+            self.assertNotIn('set-cookie',response.headers)
+        self.assertEqual(len(self.auth.sessions),0)
+        response=self.client.get('/login')
+        self.assertEqual(response.status_code,303)
+        self.assertEqual(response.headers['location'],'/')
+        with self.assertRaises(ValueError):handler(self.app,'http://192.0.2.10:8910')
+    def test_local_pkce_callback_is_session_scoped_and_one_time(self):
+        headers=self.open_page();identity=self.store.enrollment()['id']
         self.app.remote={'pools':[{'name':'gpt','provider':'openai'}]}
         start={'entry':{'pool':'gpt','proxy':'http://127.0.0.1:1'},'credentials_only':True,'save_refresh':True}
         result=self.client.post('/api/oauth/start',headers=headers,json=start).json()

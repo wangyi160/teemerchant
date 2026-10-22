@@ -1,7 +1,6 @@
-"""Authenticated Windows/Linux HTTP service. Static assets never include merchant data."""
+"""Loopback-only Windows/Linux merchant UI with automatic local browser sessions."""
 import argparse
-import getpass
-import hashlib
+import ipaddress
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -18,54 +17,15 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).parent
 
-class Auth:
-    def __init__(self, directory, password=None):
-        self.path = Path(directory) / 'http-auth.json'
+class LocalSessions:
+    def __init__(self):
         self.lock = threading.RLock()
-        self.sessions, self.failures = {}, {}
-        self.gate = threading.BoundedSemaphore(4)
-        self.login_csrf = secrets.token_urlsafe(32)
-        self.initial = None
-        if password is not None or not self.path.exists():
-            if password is None:
-                password = secrets.token_urlsafe(24)
-                self.initial = self.path.parent / 'initial-password.txt'
-                fd=os.open(self.initial,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-                with os.fdopen(fd,'w',encoding='utf-8') as file:
-                    file.write(password+'\n');file.flush();os.fsync(file.fileno())
-            if len(password)<12 or len(password)>256: raise ValueError('管理密码长度须为 12 至 256 个字符')
-            salt=secrets.token_hex(16)
-            record={'username':'admin','salt':salt,'hash':self.derive(password,salt).hex()}
-            temporary=self.path.with_suffix('.tmp')
-            fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
-            with os.fdopen(fd,'w') as file:
-                json.dump(record,file);file.flush();os.fsync(file.fileno())
-            os.replace(temporary,self.path)
-        self.record=json.loads(self.path.read_text())
+        self.sessions = {}
 
-    @staticmethod
-    def derive(password,salt):
-        return hashlib.scrypt(password.encode(),salt=bytes.fromhex(salt),n=16384,r=8,p=1,dklen=32)
-
-    def login(self, body, peer):
-        if not isinstance(body,dict) or not isinstance(body.get('password'),str) or len(body['password'])>256:
-            raise ValueError('用户名或密码错误')
+    def create(self):
         with self.lock:
-            now=time.time()
-            self.failures={k:v for k,v in self.failures.items() if v[1]>now}
-            if self.failures.get(peer,(0,0))[0]>=5: raise ValueError('登录失败次数过多，请五分钟后重试')
-            if len(self.failures)>=4096 and peer not in self.failures: raise ValueError('登录繁忙，请稍后重试')
-        if not self.gate.acquire(blocking=False): raise ValueError('登录繁忙，请稍后重试')
-        try:
-            valid=secrets.compare_digest(self.derive(body['password'],self.record['salt']).hex(),self.record['hash']) and body.get('username')=='admin'
-        finally: self.gate.release()
-        with self.lock:
-            if not valid:
-                self.failures[peer]=(self.failures.get(peer,(0,0))[0]+1,time.time()+300)
-                raise ValueError('用户名或密码错误')
-            self.failures.pop(peer,None)
             self.sessions={k:v for k,v in self.sessions.items() if v['expires']>time.time()}
-            if len(self.sessions)>=64: raise ValueError('登录会话过多，请稍后重试')
+            if len(self.sessions)>=64:self.sessions.pop(next(iter(self.sessions)))
             token=secrets.token_urlsafe(32)
             self.sessions[token]={'id':token,'csrf':secrets.token_urlsafe(32),'expires':time.time()+12*3600}
             return token
@@ -82,7 +42,9 @@ class Auth:
 def handler(application, origins, auth=None):
     if isinstance(origins,str): origins={origins}
     origins={o.rstrip('/') for o in origins}
-    auth=auth or Auth(application.store.root_directory)
+    auth=auth or LocalSessions()
+    if any(urlsplit(o).hostname not in ('127.0.0.1','::1','localhost') for o in origins):
+        raise ValueError('商户管理页面只允许本机访问')
     authorities={urlsplit(o).netloc:o for o in origins}
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
@@ -99,42 +61,40 @@ def handler(application, origins, auth=None):
             try: self.wfile.write(data)
             except (BrokenPipeError,ConnectionResetError): pass
         def handle_request(self):
+            if not ipaddress.ip_address(self.client_address[0]).is_loopback:
+                return self.respond(403,{'error':'商户管理页面只允许本机访问'})
+            if len(self.headers.get_all('Host',[]))!=1 or len(self.headers.get_all('Origin',[]))>1:
+                return self.respond(403,{'error':'访问来源不匹配'})
             origin=authorities.get(self.headers.get('Host'))
             if not origin or self.headers.get('Origin',origin)!=origin:
                 return self.respond(403,{'error':'访问来源不匹配'})
-            if self.headers.get('Sec-Fetch-Site')=='cross-site': return self.respond(403,{'error':'不允许跨站访问'})
+            if self.headers.get('Sec-Fetch-Site') not in (None,'none','same-origin'):
+                return self.respond(403,{'error':'不允许跨站访问'})
             path=urlsplit(self.path).path
             session=auth.session(self.headers.get('Cookie'))
-            if self.command=='GET' and path in ('/login','/login.js','/app.css'):
-                name={'/login':'login.html','/login.js':'login.js','/app.css':'app.css'}[path]
-                data=(ROOT/'static'/name).read_bytes().replace(b'CSRF_PLACEHOLDER',auth.login_csrf.encode())
-                return self.respond(200,data,('text/html' if name.endswith('.html') else 'text/javascript' if name.endswith('.js') else 'text/css')+'; charset=utf-8')
-            if path!='/api/login' and not session:
-                if self.command=='GET' and path=='/': return self.respond(303,b'',headers={'Location':'/login'})
-                return self.respond(401,{'error':'请先登录商户服务'})
-            if self.command=='GET' and path in ('/','/app.js'):
-                if path=='/':
-                    data=(ROOT/'static/index.html').read_bytes().replace(b'CSRF_PLACEHOLDER',session['csrf'].encode())
-                else:
-                    data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['web-bridge.js','account-config.js','app.js','account-ui.js','revenue-ui.js','oauth-ui.js'])
-                return self.respond(200,data,('text/html' if path=='/' else 'text/javascript')+'; charset=utf-8')
-            expected=auth.login_csrf if path=='/api/login' else session['csrf']
-            if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),expected): return self.respond(403,{'error':'页面会话无效，请刷新'})
+            if self.command=='GET' and path=='/login':return self.respond(303,b'',headers={'Location':'/'})
+            if self.command=='GET' and path=='/':
+                headers={}
+                if not session:
+                    token=auth.create()
+                    cookie=f'tm_session={token}; HttpOnly; SameSite=Strict; Path=/' + ('; Secure' if origin.startswith('https:') else '')
+                    headers['Set-Cookie']=cookie
+                    session=auth.session(cookie)
+                data=(ROOT/'static/index.html').read_bytes().replace(b'CSRF_PLACEHOLDER',session['csrf'].encode())
+                return self.respond(200,data,'text/html; charset=utf-8',headers)
+            if not session:return self.respond(401,{'error':'请打开本机管理页面'})
+            if self.command=='GET' and path=='/app.css':
+                return self.respond(200,(ROOT/'static/app.css').read_bytes(),'text/css; charset=utf-8')
+            if self.command=='GET' and path=='/app.js':
+                data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['web-bridge.js','account-config.js','app.js','account-ui.js','revenue-ui.js','oauth-ui.js'])
+                return self.respond(200,data,'text/javascript; charset=utf-8')
+            if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']): return self.respond(403,{'error':'页面会话无效，请刷新'})
             try:
                 length=int(self.headers.get('Content-Length','0'))
                 if length<0 or length>16*1024*1024 or self.headers.get('Transfer-Encoding') or len(self.headers.get_all('Content-Length',[]))>1:
                     return self.respond(413,{'error':'请求过大或格式无效'})
                 if length and self.headers.get_content_type()!='application/json': return self.respond(415,{'error':'需要 JSON 请求'})
                 body=json.loads(self.rfile.read(length)) if length else {}
-                if self.command=='POST' and path=='/api/login':
-                    token=auth.login(body,self.client_address[0])
-                    cookie=f'tm_session={token}; HttpOnly; SameSite=Strict; Path=/' + ('; Secure' if origin.startswith('https:') else '')
-                    return self.respond(200,{'logged_in':True},headers={'Set-Cookie':cookie})
-                if self.command=='POST' and path=='/api/logout':
-                    with auth.lock: auth.sessions.pop(session['id'],None)
-                    with application.state_lock:
-                        application.oauth.flows={k:f for k,f in application.oauth.flows.items() if f['session']!=session['id']}
-                    return self.respond(200,{'logged_out':True},headers={'Set-Cookie':'tm_session=; Max-Age=0; HttpOnly; SameSite=Strict; Path=/'})
                 if path.startswith('/api/oauth/') and self.command=='POST':
                     with application.state_lock:
                         result=application.oauth.dispatch(path.rsplit('/',1)[1],body,self.headers.get('X-Merchant-ID'),session['id'])
@@ -154,6 +114,8 @@ class Server(ThreadingHTTPServer):
     daemon_threads=False
     allow_reuse_address=os.name!='nt'
     def server_bind(self):
+        if self.server_address[0] not in ('127.0.0.1','::1','localhost'):
+            raise ValueError('商户服务只能监听本机回环地址')
         if os.name=='nt':self.socket.setsockopt(socket.SOL_SOCKET,socket.SO_EXCLUSIVEADDRUSE,1)
         super().server_bind()
     def __init__(self,*args,**kwargs):
@@ -180,7 +142,6 @@ def options(argv=None, base=None):
     parser.add_argument('--port',type=int,default=8910)
     parser.add_argument('--public-url',action='append',default=[])
     parser.add_argument('--data',default=str(base/'data'))
-    parser.add_argument('--set-password',action='store_true')
     parser.add_argument('--tls-cert');parser.add_argument('--tls-key')
     preliminary,_=parser.parse_known_args(argv)
     if preliminary.config:
@@ -194,6 +155,8 @@ def options(argv=None, base=None):
     args=parser.parse_args(argv)
     if type(args.port) is not int or not 1<=args.port<=65535: parser.error('port must be 1..65535')
     if not isinstance(args.host,str) or not args.host or any(c in args.host for c in '/\\?#@'):parser.error('Invalid host')
+    if args.host not in ('127.0.0.1','::1','localhost'):parser.error('商户服务只能监听 127.0.0.1 或 ::1，不支持局域网访问')
+    if args.host=='localhost':args.host='127.0.0.1'
     if not isinstance(args.public_url,list) or not all(isinstance(o,str) for o in args.public_url):parser.error('public_urls must be an array of origins')
     if not isinstance(args.data,str) or not args.data:parser.error('Invalid data directory')
     if any(value is not None and not isinstance(value,str) for value in (args.tls_cert,args.tls_key)):parser.error('Invalid TLS file path')
@@ -202,15 +165,15 @@ def options(argv=None, base=None):
     scheme='https' if args.tls_cert else 'http'
     origins={f'{scheme}://127.0.0.1:{args.port}',f'{scheme}://localhost:{args.port}'}
     host=f'[{args.host}]' if ':' in args.host else args.host
-    if args.host not in ('0.0.0.0','::','127.0.0.1'): origins.add(f'{scheme}://{host}:{args.port}')
+    if args.host=='::1':origins.add(f'{scheme}://[::1]:{args.port}')
     for origin in args.public_url:
         u=urlsplit(origin)
         if u.scheme not in ('http','https') or not u.hostname or u.username or u.password or u.path not in ('','/') or u.query or u.fragment: parser.error('public-url must be an HTTP(S) origin')
+        if u.hostname not in ('127.0.0.1','::1','localhost') or u.port!=args.port or u.scheme!=scheme:
+            parser.error('商户管理地址必须是本机回环地址，并与监听端口和协议一致')
         origins.add(origin.rstrip('/'))
-    if args.host in ('0.0.0.0','::') and not args.public_url: parser.error('Specify --public-url for remote access')
     args.origins=origins
-    local_host='127.0.0.1' if args.host=='0.0.0.0' else '[::1]' if args.host=='::' else host
-    args.url=args.public_url[0].rstrip('/') if args.public_url else f'{scheme}://{local_host}:{args.port}'
+    args.url=f'{scheme}://{host}:{args.port}'
     return args
 
 
@@ -242,7 +205,7 @@ class Runtime:
         lock=store=application=server=http_worker=worker=None
         try:
             lock=DataLock(args.data)
-            auth=Auth(args.data,os.environ.pop('TEEMERCHANT_ADMIN_PASSWORD',None))
+            auth=LocalSessions()
             store=Store(args.data)
             application=Application(store)
             server_type=type('IPv6Server',(Server,),{'address_family':socket.AF_INET6}) if ':' in args.host else Server
@@ -257,8 +220,7 @@ class Runtime:
             http_worker.start()
             self.started_at=time.monotonic()
             self.state='stopping' if self.stop.is_set() else 'running'
-            print(f'teemerchant listening on {args.host}:{args.port}; login: admin',flush=True)
-            if auth.initial:print(f'Initial password saved to {auth.initial}',flush=True)
+            print(f'teemerchant local management: {args.url}',flush=True)
             while not self.stop.wait(.25):
                 if not http_worker.is_alive() or not worker.is_alive():
                     raise RuntimeError('HTTP 服务或后台任务已停止')
@@ -296,13 +258,6 @@ def main():
             import ctypes
             ctypes.windll.user32.MessageBoxW(None,message,'teemerchant',0x10)
         return 2
-    if args.set_password:
-        from desktop_runtime import DataLock
-        lock=DataLock(args.data)
-        try:Auth(args.data,getpass.getpass('New administrator password: '))
-        finally:lock.close()
-        print('Administrator password updated.')
-        return 0
     runtime=Runtime(args)
     if os.name=='nt' and not args.headless:
         from windows_status import run

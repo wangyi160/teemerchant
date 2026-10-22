@@ -4,7 +4,7 @@ window.teemerchant={
     const headers={'Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name=csrf]').content};
     if(identity)headers['X-Merchant-ID']=identity;
     const response=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
-    if(response.status===401){location.replace('/login');throw Error('请重新登录');}
+    if(response.status===401){location.replace('/');throw Error('页面会话已过期，正在刷新');}
     const value=await response.json();return response.ok?{ok:true,value}:{ok:false,error:value.error||'操作失败'};
   },
   async oauth(action,body,identity){

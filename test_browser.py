@@ -12,7 +12,7 @@ import time
 import threading
 import unittest
 from app import Application
-from service import Auth, handler
+from service import LocalSessions, handler
 from store import Store
 from credential_protocol import access_only, PROTOCOL
 try:
@@ -76,15 +76,13 @@ class BrowserTests(unittest.TestCase):
         self.app.accept(copy.deepcopy(self.router.remote))
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)
         self.origin = f'http://127.0.0.1:{self.server.server_port}'
-        self.auth = Auth(self.tmp.name, 'browser-test-password')
+        self.auth = LocalSessions()
         self.server.RequestHandlerClass = handler(self.app, self.origin, self.auth)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.launch(channel='msedge', headless=True)
         self.page = self.browser.new_page(viewport={'width': 1440, 'height': 1100})
-        token = self.auth.login({'username':'admin','password':'browser-test-password'}, 'fixture')
-        self.page.context.add_cookies([{'name':'tm_session','value':token,'url':self.origin,'httpOnly':True,'sameSite':'Strict'}])
         self.errors = []
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
         self.page.goto(self.origin)

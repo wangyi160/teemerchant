@@ -15,7 +15,7 @@ EXE=ROOT/'build/service/teemerchant'/('teemerchant.exe' if os.name=='nt' else 't
 
 @unittest.skipUnless(EXE.is_file(),'Build the portable service first')
 class PortableTests(unittest.TestCase):
-    def test_portable_login_native_load_and_data_lock(self):
+    def test_portable_local_page_native_load_and_data_lock(self):
         with tempfile.TemporaryDirectory(prefix='teemerchant-service-test-') as folder:
             with socket.socket() as listener:listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
             data=Path(folder)/'data'
@@ -26,15 +26,14 @@ class PortableTests(unittest.TestCase):
                 try:
                     with httpx.Client(base_url=f'http://127.0.0.1:{port}',trust_env=False,timeout=10) as client:
                         for _ in range(100):
-                            try:page=client.get('/login');break
+                            try:page=client.get('/');break
                             except httpx.ConnectError:time.sleep(.1)
                         else:raise AssertionError(log.read_text())
                         self.assertEqual(page.status_code,200)
-                        self.assertEqual(client.get('/api/state').status_code,401)
+                        self.assertEqual(client.get('/api/state').status_code,403)
                         csrf=re.search('name="csrf" content="([^"]+)"',page.text)[1]
-                        password=(data/'initial-password.txt').read_text().strip()
-                        self.assertEqual(client.post('/api/login',headers={'X-CSRF-Token':csrf},json={'username':'admin','password':password}).status_code,200)
-                        page=client.get('/');csrf=re.search('name="csrf" content="([^"]+)"',page.text)[1]
+                        self.assertFalse((data/'initial-password.txt').exists())
+                        self.assertFalse((data/'http-auth.json').exists())
                         headers={'X-CSRF-Token':csrf}
                         state=client.get('/api/state',headers=headers).json()
                         self.assertFalse(state['connected']);self.assertFalse(state['credentials']['saved'])
@@ -49,7 +48,6 @@ class PortableTests(unittest.TestCase):
                         result=client.post('/api/verify',headers=headers,json={})
                         self.assertEqual(result.status_code,400)
                         self.assertNotIn('无法加载',result.text)
-                        self.assertNotIn(password,log.read_text(errors='replace'))
                     another=subprocess.run([str(EXE),'--headless','--port',str(port+1),'--data',str(data)],capture_output=True,timeout=15)
                     self.assertNotEqual(another.returncode,0)
                 finally:

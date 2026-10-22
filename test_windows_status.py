@@ -71,17 +71,17 @@ class StatusWindowTests(unittest.TestCase):
         url=f'http://127.0.0.1:{self.port}'
         self.assertEqual(self.text(105),url)
         with httpx.Client(trust_env=False,timeout=5) as client:
-            self.assertEqual(client.get(url+'/login').status_code,200)
             self.assertEqual(client.get(url+'/api/state').status_code,401)
+            self.assertEqual(client.get(url+'/').status_code,200)
             self.user.PostMessageW(self.window,0x112,0xf020,0)
             self.wait_for(lambda:not self.user.IsWindowVisible(self.window))
-            self.assertEqual(client.get(url+'/login').status_code,200)
+            self.assertEqual(client.get(url+'/').status_code,200)
             duplicate=subprocess.run(self.command,cwd=self.temp.name,capture_output=True,creationflags=0x08000000,timeout=15)
             self.assertEqual(duplicate.returncode,0,duplicate.stderr)
             self.wait_for(lambda:self.user.IsWindowVisible(self.window))
             self.user.PostMessageW(self.window,0x10,0,0)
             self.wait_for(lambda:not self.user.IsWindowVisible(self.window))
-            self.assertEqual(client.get(url+'/login').status_code,200)
+            self.assertEqual(client.get(url+'/').status_code,200)
             # Notification-area activation follows the v4 shell callback format.
             self.user.PostMessageW(self.window,0x8001,0,(1<<16)|0x203)
             self.wait_for(lambda:self.user.IsWindowVisible(self.window))
