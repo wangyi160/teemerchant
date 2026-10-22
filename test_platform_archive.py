@@ -84,6 +84,12 @@ class PlatformArchiveTests(unittest.TestCase):
         self.assertEqual(self.app.last_error, 'router-specific')
         self.assertEqual(self.app.archive.status()['error'], 'platform offline')
 
+    def test_manual_sync_does_not_report_success_while_background_download_is_busy(self):
+        with self.app.archive.lock:
+            with self.assertRaisesRegex(RuntimeError, '正在同步'):
+                self.app.api('POST', '/api/sync', {})
+        self.assertEqual(self.app.archive.status()['cursor'], 0)
+
     def test_profile_change_during_download_does_not_commit_old_archive(self):
         def fetch(*args):
             result = page(self.store)

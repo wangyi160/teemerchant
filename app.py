@@ -123,7 +123,10 @@ class Application:
         return self.remote
 
     def sync(self):
-        return self.archive.sync()
+        result = self.archive.sync()
+        if result.get('busy'):
+            raise RuntimeError('管理平台账单正在同步，请稍后刷新')
+        return result
 
     def api(self, method, path, body, identity=None):
         # Status remains responsive while a remote archive operation is waiting.
