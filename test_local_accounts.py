@@ -53,6 +53,23 @@ class LocalAccountTests(unittest.TestCase):
         self.store.db.close()
         self.tmp.cleanup()
 
+    def test_refusal_reset_and_threshold_survive_router_reinitialization(self):
+        router='https://fixture.example'
+        customer={'user_id':'u','enabled':True,'models':[],'max_concurrent':3,'rpm':7,'tpm':0,
+                  'refusal_limit':None,'refusal_baseline':9}
+        self.router.remote['settings']['customers']=[customer]
+        self.router.remote['settings']['customer_defaults']['refusal_limit']=3
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.store.accounts.acknowledge(router,self.router.remote)
+        fresh=copy.deepcopy(self.router.remote)
+        fresh['merchant']['configuration_required']=True
+        fresh['settings']['customers'][0]['refusal_baseline']=0
+        fresh['settings']['customer_defaults']['refusal_limit']=0
+        pending=self.store.accounts.restore_pending(router,fresh)
+        self.assertEqual(pending['customers'][0]['refusal_baseline'],9)
+        self.assertIsNone(pending['customers'][0]['refusal_limit'])
+        self.assertEqual(pending['customer_defaults']['refusal_limit'],3)
+
     def config(self):
         return {'expected_revision': self.app.remote['settings']['revision'],
                 '_local_revision': self.app.remote['local_revision'],

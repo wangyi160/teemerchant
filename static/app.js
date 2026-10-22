@@ -53,7 +53,7 @@ function recordsView(){return heading(names[section],'管理平台账单 · 最�
 function view(){if(['usage','refusals'].includes(section))return recordsView();if(section==='revenue')return revenueView();if(section==='connection')return connection();if(!remote())return heading('连接你的 Router','验证 TEE 身份后，管理你的账号、客户和费率。')+`<section class="panel"><h2>从连接与身份开始</h2><p>先在 Router Portal 注册商户并等待审核，再在本工作台填写审核后签发的 Merchant ID 和 Merchant Secret。工作台会将凭证加密保存在本机。</p>${btn('设置连接','nav','connection','primary')}</section>`;
 if(section==='overview')return heading('商户概览','你的上游账号与客户访问状态。')+`<div class="cards"><div class="card"><small>账号池</small><strong>${pools().length}</strong></div><div class="card"><small>已使用客户</small><strong>${settings().customers.length}</strong></div><div class="card"><small>价格 / 配置版本</small><strong>v${settings().revision}</strong></div></div><section class="panel"><h2>${esc(remote().merchant.name)}</h2><p>商户 ID：<code>${esc(remote().merchant.id)}</code></p><p>用户沿用平台 API key；商户标识会出现在模型和账号池名称中。</p><div class="notice">平台资源上限：并发 ${remote().merchant.max_concurrent} · RPM ${remote().merchant.rpm||'不限'} · TPM ${remote().merchant.tpm||'不限'}。实际采用平台与商户配置中较低的限额。</div></section>`;
 if(section==='accounts')return accountsView();
-if(section==='customers')return heading('客户授权','仅显示实际调用过本商户模型账号的用户；查询模型列表不会出现在这里。',btn('默认客户权限','customer-defaults','','primary'))+`<section class="panel"><p>平台已授权的用户首次调用时使用默认权限和限额，之后可在下方单独调整或停用。平台预授权名单不会向商户公开。</p>${table(['平台用户 ID','状态','模型 / 账号池权限','并发 / RPM / TPM','操作'],settings().customers.map(c=>`<tr><td>${esc(c.user_id)}</td><td>${c.enabled?'启用':'停用'}</td><td>${esc(c.models.join(', ')||'全部本商户模型')}</td><td>${c.max_concurrent} / ${c.rpm||'不限'} / ${c.tpm||'不限'}</td><td>${btn('编辑','customer',c.user_id)}</td></tr>`))}</section>`;
+if(section==='customers')return customersView();
 
 }
 function connection(){
@@ -97,6 +97,23 @@ async function merchantCredentialsForm(add=false){
     },{submit:'保存接入凭证',success:'接入凭证已加密保存，请连接商户'});
 }
 
+function customersView(){
+  return heading('客户授权','',btn('默认客户权限','customer-defaults','','primary'))+
+    `<section class="panel">${table(['平台用户 ID','状态','拒答次数 / 阈值','模型 / 账号池权限','并发 / RPM / TPM','操作'],settings().customers.map(c=>{
+      const r=remote().customer_refusals?.[c.user_id];
+      const status=!c.enabled?'停用':r?.blocked?'拒答超限 · 自动停用':'启用';
+      return `<tr><td>${esc(c.user_id)}</td><td>${status}</td><td>${r?esc(r.count)+' / '+(r.limit||'不限'):'—'}</td><td>${esc(c.models.join(', ')||'全部本商户模型')}</td><td>${c.max_concurrent} / ${c.rpm||'不限'} / ${c.tpm||'不限'}</td><td>${btn('编辑','customer',c.user_id)}${r?.count?btn('清零并解除限制','reset-refusals',c.user_id):''}</td></tr>`;
+    }))}</section>`;
+}
+async function resetRefusals(id){
+  const merchant=state.enrollment.id;
+  await api('/api/merchant');await reload();
+  if(state.enrollment.id!==merchant)throw Error('商户已切换，请重新操作');
+  const c=settings().customers.find(c=>c.user_id===id),r=remote().customer_refusals?.[id];
+  if(!c||!r||!Number.isSafeInteger(r.total))throw Error('请刷新客户列表后重试');
+  const d=draft();d.customers=[{...c,enabled:true,refusal_baseline:r.total}];
+  await save(d);
+}
 function customerForm(id){
   const c=id?settings().customers.find(c=>c.user_id===id):settings().customer_defaults;
   if(!c)throw Error('请刷新客户列表后重试');
@@ -105,8 +122,11 @@ function customerForm(id){
     field('权限（逗号分隔；留空为本商户全部模型）','models',c.models.join(', '))+
     field('并发上限','max_concurrent',c.max_concurrent,'number','required min=1 max=4096')+
     field('RPM（0 为不限）','rpm',c.rpm,'number','required min=0')+
-    field('TPM（0 为不限）','tpm',c.tpm,'number','required min=0'),async f=>{
-      const d=draft(),item={enabled:f.has('enabled'),models:f.get('models').split(',').map(v=>v.trim()).filter(Boolean),max_concurrent:Number(f.get('max_concurrent')),rpm:Number(f.get('rpm')),tpm:Number(f.get('tpm'))};
+    field('TPM（0 为不限）','tpm',c.tpm,'number','required min=0')+
+    field(id?'拒答阈值（留空继承默认；0 不限制）':'拒答阈值（0 不限制）','refusal_limit',c.refusal_limit??(id?'':0),'number','min=0 max=1000000000 step=1'+(id?'':' required')),async f=>{
+      const limit=f.get('refusal_limit').trim();
+      const d=draft(),item={enabled:f.has('enabled'),models:f.get('models').split(',').map(v=>v.trim()).filter(Boolean),max_concurrent:Number(f.get('max_concurrent')),rpm:Number(f.get('rpm')),tpm:Number(f.get('tpm')),refusal_limit:limit===''?null:Number(limit)};
+      if(id)item.refusal_baseline=c.refusal_baseline||0;
       // Customer updates are patches. Unrelated edits must not freeze default
       // policies into individual overrides or erase customers discovered later.
       d.customers=id?[{user_id:id,...item}]:[];
@@ -126,7 +146,7 @@ if(a==='merchant-secret')return toggleMerchantSecret();
 if(a==='merchant-copy-secret')return copyMerchantSecret();
 if(a==='merchant-copy-id'){await copyMerchantValue(state.credentials.merchant_id);toast('Merchant ID 已复制');return;}
 if(a==='merchant-edit-secret'){const input=$('#dialog [name=merchant_secret]'),button=$('#dialog [data-action=merchant-edit-secret]');input.type=input.type==='password'?'text':'password';button.textContent=input.type==='password'?'显示 Secret':'隐藏 Secret';return;}
-if(a==='close'){if($('#dialog').dataset.busy)return;$('#dialog').close();$('#dialog').innerHTML='';return;}if(a==='nav'){section=id;if(id==='revenue')await loadRevenue();if(['usage','refusals'].includes(id))records=(await api('/api/records/'+id)).data;render();return;}if(a==='reload'){if(section==='revenue')await loadRevenue();if(state.connected)await api('/api/merchant');return reload();}if(a==='verify'){const result=await api('/api/verify','POST',{});toast(result.verified?'TEE 验证通过':JSON.stringify(result));return;}if(a==='connect'){await api('/api/connect','POST',{});await reload();toast('TEE 已验证，商户已连接');return;}if(a==='merchant-credentials')return merchantCredentialsForm();if(a==='pool')return poolForm();if(a==='edit-pool')return poolForm(id);if(a==='edit-pool-models')return poolModelsForm(id);if(a==='account')return accountForm();if(a==='sync-config'){await api('/api/config/sync','POST',{});await reload();toast(remote().local_sync?.state==='pending'?'本地资料已保留，同步尚未完成':'本地配置已同步至 Router');return;}if(a==='edit-account')return accountForm(id);if(a==='import-accounts')return batchAccountForm();if(a==='account-pool'){selectedAccountPool=id;return render();}if(a==='customer')return customerForm(id);if(a==='customer-defaults')return customerForm('');if(a==='revenue-detail')return revenueDetail(id);if(a==='revenue-page'){revenueQuery.offset=id;await loadRevenue();return render();}if(a==='revenue-reset'){revenueQuery={start:'',end:'',pool:'',offset:'0'};await loadRevenue();return render();}if(a==='refresh'){await api('/api/refresh','POST',{});return reload();}if(a==='toggle-account'){const d=draft(),a=d.pools.flatMap(p=>p.deployments).find(a=>a.id===id);a.enabled=!a.enabled;return save(d);}if(a==='delete-account')return form('删除账号',`<p>删除账号 ${esc(id)} 及其凭证，历史记录保留。</p>`,async()=>{const d=draft();for(const p of d.pools){const a=p.deployments.find(a=>a.id===id);if(a){p.deployments=p.deployments.filter(a=>a.id!==id);if(a.oauth_account)d.delete_accounts=[a.oauth_account];else d.delete_secrets=[a.api_key_ref];}}await save(d);});if(a==='sync'){await api('/api/sync','POST',{});if(section==='revenue')await loadRevenue();if(['usage','refusals'].includes(section))records=(await api('/api/records/'+section)).data;await reload();toast('管理平台账单已同步');return;}if(a==='record'){const dialog=$('#dialog');dialog.innerHTML=`<h2>记录详情</h2><pre>${esc(JSON.stringify(records[Number(id)],null,2))}</pre>${btn('关闭','close')}`;dialog.showModal();}}
+if(a==='close'){if($('#dialog').dataset.busy)return;$('#dialog').close();$('#dialog').innerHTML='';return;}if(a==='nav'){section=id;if(id==='revenue')await loadRevenue();if(['usage','refusals'].includes(id))records=(await api('/api/records/'+id)).data;render();return;}if(a==='reload'){if(section==='revenue')await loadRevenue();if(state.connected)await api('/api/merchant');return reload();}if(a==='verify'){const result=await api('/api/verify','POST',{});toast(result.verified?'TEE 验证通过':JSON.stringify(result));return;}if(a==='connect'){await api('/api/connect','POST',{});await reload();toast('TEE 已验证，商户已连接');return;}if(a==='merchant-credentials')return merchantCredentialsForm();if(a==='pool')return poolForm();if(a==='edit-pool')return poolForm(id);if(a==='edit-pool-models')return poolModelsForm(id);if(a==='account')return accountForm();if(a==='sync-config'){await api('/api/config/sync','POST',{});await reload();toast(remote().local_sync?.state==='pending'?'本地资料已保留，同步尚未完成':'本地配置已同步至 Router');return;}if(a==='edit-account')return accountForm(id);if(a==='import-accounts')return batchAccountForm();if(a==='account-pool'){selectedAccountPool=id;return render();}if(a==='customer')return customerForm(id);if(a==='reset-refusals')return resetRefusals(id);if(a==='customer-defaults')return customerForm('');if(a==='revenue-detail')return revenueDetail(id);if(a==='revenue-page'){revenueQuery.offset=id;await loadRevenue();return render();}if(a==='revenue-reset'){revenueQuery={start:'',end:'',pool:'',offset:'0'};await loadRevenue();return render();}if(a==='refresh'){await api('/api/refresh','POST',{});return reload();}if(a==='toggle-account'){const d=draft(),a=d.pools.flatMap(p=>p.deployments).find(a=>a.id===id);a.enabled=!a.enabled;return save(d);}if(a==='delete-account')return form('删除账号',`<p>删除账号 ${esc(id)} 及其凭证，历史记录保留。</p>`,async()=>{const d=draft();for(const p of d.pools){const a=p.deployments.find(a=>a.id===id);if(a){p.deployments=p.deployments.filter(a=>a.id!==id);if(a.oauth_account)d.delete_accounts=[a.oauth_account];else d.delete_secrets=[a.api_key_ref];}}await save(d);});if(a==='sync'){await api('/api/sync','POST',{});if(section==='revenue')await loadRevenue();if(['usage','refusals'].includes(section))records=(await api('/api/records/'+section)).data;await reload();toast('管理平台账单已同步');return;}if(a==='record'){const dialog=$('#dialog');dialog.innerHTML=`<h2>记录详情</h2><pre>${esc(JSON.stringify(records[Number(id)],null,2))}</pre>${btn('关闭','close')}`;dialog.showModal();}}
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-action]');if(!b)return;e.preventDefault();b.disabled=true;try{await action(b.dataset.action,b.dataset.id);}catch(error){toast(error.message);}finally{b.disabled=false;}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='connection')return;e.preventDefault();try{await api('/api/settings','PUT',Object.fromEntries(new FormData(e.target)));await reload();toast('连接设置已保存');}catch(error){toast(error.message);}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='platform-connection')return;e.preventDefault();try{await api('/api/platform','PUT',Object.fromEntries(new FormData(e.target)));await reload();toast('管理平台地址已保存');}catch(error){toast(error.message);}});

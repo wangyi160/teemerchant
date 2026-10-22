@@ -62,6 +62,10 @@ class FakeRouter:
                     if account.get('proxy'):
                         account['proxy'] = '[redacted]'
             self.remote['settings']['pool_pricing'] = copy.deepcopy(body['pool_pricing'])
+            if body.get('customer_defaults') is not None:
+                self.remote['settings']['customer_defaults'] = copy.deepcopy(body['customer_defaults'])
+            for customer in body.get('customers', []):
+                self.remote['settings']['customers'] = [c for c in self.remote['settings']['customers'] if c['user_id'] != customer['user_id']] + [copy.deepcopy(customer)]
             self.remote['settings']['revision'] += 1
         return copy.deepcopy(self.remote)
 
@@ -102,6 +106,49 @@ class BrowserTests(unittest.TestCase):
     def pass_probe(self):
         self.page.locator('#account-test').click()
         expect(self.page.locator('#account-test-status')).to_contain_text('通过')
+
+    def test_refusal_policy_and_reset_are_user_scoped_and_preserve_other_limits(self):
+        customer={'user_id':'existing-user','enabled':True,'models':[],'max_concurrent':3,
+                  'rpm':7,'tpm':100,'refusal_limit':None,'refusal_baseline':2}
+        self.router.remote['settings']['customers']=[customer]
+        self.router.remote['customer_refusals']={'existing-user':{'total':6,'count':4,'limit':3,'blocked':True}}
+        self.router.remote['settings']['customer_defaults']['refusal_limit']=3
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.page.reload()
+        self.page.locator('aside [data-id=customers]').click()
+        expect(self.page.get_by_text('拒答超限 · 自动停用',exact=True)).to_be_visible()
+        self.page.locator('[data-action=customer-defaults]').click()
+        self.page.locator('[name=refusal_limit]').fill('5')
+        self.page.locator('#dialog button[type=submit]').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(self.router.writes[-1]['customer_defaults']['refusal_limit'],5)
+        self.page.locator('[data-action=customer]').click()
+        self.page.locator('[name=refusal_limit]').fill('0')
+        self.page.locator('#dialog button[type=submit]').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        self.assertEqual(self.router.writes[-1]['customers'][0]['refusal_limit'],0)
+        self.assertEqual(self.router.writes[-1]['customers'][0]['refusal_baseline'],2)
+        self.page.locator('[data-action=reset-refusals]').click()
+        self.page.wait_for_function("!document.querySelector('.toast') || document.querySelector('.toast').textContent !== '操作中'")
+        for _ in range(50):
+            if self.router.writes[-1].get('customers',[{}])[0].get('refusal_baseline')==6:break
+            time.sleep(.02)
+        reset=self.router.writes[-1]['customers'][0]
+        self.assertEqual(reset['user_id'],'existing-user')
+        self.assertEqual(reset['refusal_baseline'],6)
+        self.assertEqual((reset['enabled'],reset['max_concurrent'],reset['rpm'],reset['tpm']),(True,3,7,100))
+
+    def test_refusal_reset_stops_if_merchant_changes_during_refresh(self):
+        result=self.page.evaluate('''async()=>{
+            const oldApi=api,oldReload=reload,id=state.enrollment.id;let writes=0;
+            try{
+                api=async(path,method)=>{if(method==='PUT')writes++;return {}};
+                reload=async()=>{state.enrollment.id='another-merchant'};
+                try{await resetRefusals('u');return {stopped:false,writes}}
+                catch(error){return {stopped:error.message.includes('商户已切换'),writes}}
+            }finally{api=oldApi;reload=oldReload;state.enrollment.id=id}
+        }''')
+        self.assertEqual(result,{'stopped':True,'writes':0})
 
     def test_connection_required_and_invalidated_when_credentials_or_proxy_change(self):
         self.page.locator('[data-action=account]').click()
