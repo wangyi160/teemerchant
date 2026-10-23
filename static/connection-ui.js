@@ -4,6 +4,41 @@ let connectionMode=location.hash==='#connection/register'?'register':location.ha
 let connectionError='', registrationAllowed=false;
 const connectionScope=()=>state.enrollment.id+'@'+state.settings.platform_url;
 const approvalNames={pending:'待审核',provisioning:'开通中',approved:'已开通',rejected:'审核未通过'};
+let routerConnecting=null, routerConnectionError=null;
+const routerScope=()=>JSON.stringify([accessScope(state),state?.settings.router,state?.settings.tdx_policy,state?.settings.snp_policy]);
+const routerError=()=>!state?.auth?.authorized?'':state.error||(routerConnectionError?.scope===routerScope()&&!state.connected?routerConnectionError.message:'');
+const routerStatus=()=>state?.connected?'已连接':routerConnecting?.scope===routerScope()?'连接中':routerError()?'连接失败':'未连接';
+
+function updateRouterStatus(){
+  const status=routerStatus(),badge=$('#router-connection-status'),header=$('header .status'),notice=$('#router-connection-error');
+  if(badge){badge.textContent=status;badge.className='badge'+(state.connected?'':routerError()?' rejected':' pending');}
+  if(header)header.textContent=state.auth?.authorized?'Router '+status:'未登录商户';
+  if(notice){notice.hidden=!routerError();notice.textContent=routerError()?'Router 连接或同步失败：'+routerError():'';}
+}
+function acceptRouterState(next){
+  const changed=state.connected!==next.connected;
+  if(accessScope(state)!==accessScope(next)){acceptState(next);render();return;}
+  state=next;
+  if(changed&&section!=='connection'&&!$('#dialog').open&&!poolModelEditor&&!document.activeElement?.closest('form'))render();
+  else updateRouterStatus();
+}
+async function connectRouterAutomatically(){
+  if(!state?.auth?.authorized||state.connected||!state.settings.router||!(state.settings.tdx_policy||state.settings.snp_policy))return;
+  const scope=routerScope(),epoch=dataEpoch;
+  if(routerConnecting?.scope===scope)return;
+  const attempt={scope};routerConnecting=attempt;routerConnectionError=null;updateRouterStatus();
+  try{
+    await api('/api/connect','POST',{});
+    if(epoch!==dataEpoch||routerScope()!==scope)return;
+    const next=await api('/api/state');
+    if(epoch===dataEpoch&&routerScope()===scope)acceptRouterState(next);
+  }catch(error){
+    if(epoch===dataEpoch&&routerScope()===scope)routerConnectionError={scope,message:error.message};
+  }finally{
+    if(routerConnecting===attempt)routerConnecting=null;
+    updateRouterStatus();
+  }
+}
 
 function policyUpload(kind,path){
   return `<div class="policy-upload"><label id="policy-label-${kind}" for="policy-path-${kind}">${kind.toUpperCase()} 信任策略</label><input id="policy-path-${kind}" type="text" name="${kind}_policy" value="${esc(path||'')}" autocomplete="off" spellcheck="false"><input id="policy-file-${kind}" type="file" data-policy="${kind}" accept=".json,application/json" hidden><button id="policy-button-${kind}" type="button" data-action="upload-policy" data-id="${kind}" aria-labelledby="policy-label-${kind} policy-button-${kind}">浏览文件</button></div>`;
@@ -52,10 +87,10 @@ function connectionAccountView(){
   return content+savedMerchantSelector();
 }
 function connection(){
-  const s=state.settings,saved=!!state.credentials?.saved;
+  const s=state.settings;
   return heading('账号与连接','')+
     `<section id="merchant-account-panel" class="panel identity-panel">${connectionAccountView()}</section>`+
-    (state.auth?.authorized?`<section class="panel"><div class="panelhead"><h2>Router 连接</h2><span class="badge ${state.connected?'':'pending'}">${state.connected?'已连接':'未连接'}</span></div><form id="connection">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${policyUpload('tdx',s.tdx_policy)}${policyUpload('snp',s.snp_policy)}<div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}<button data-action="connect" ${saved?'':'disabled'}>连接商户</button></div></form></section>`:'')+
+    (state.auth?.authorized?`<section class="panel"><div class="panelhead"><h2>Router 连接</h2><span id="router-connection-status" class="badge ${state.connected?'':'pending'}">${routerStatus()}</span></div><form id="connection">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${policyUpload('tdx',s.tdx_policy)}${policyUpload('snp',s.snp_policy)}<div class="actions"><button type="submit" class="primary">保存连接</button></div></form></section>`:'')+
     `<section class="panel"><div class="panelhead"><h2>管理平台</h2><span>${state.auth?.authorized?(state.archive?.synced_at?'上次同步 '+esc(new Date(state.archive.synced_at*1000).toLocaleString()):'尚未同步'):''}</span></div><form id="platform-connection">${field('管理平台地址','platform_url',s.platform_url||'','url')}<div class="actions"><button type="submit" class="primary">保存平台地址</button>${state.auth?.authorized?'<button type="button" data-action="sync">同步账单</button>':''}</div></form></section>`;
 }
 function renderConnectionAccount(){
@@ -80,6 +115,7 @@ async function acceptConnectionAccount(result){
   // update must never erase connection fields the merchant is still editing.
   if(changed){section='connection';render();}
   else renderConnectionAccount();
+  void connectRouterAutomatically();
 }
 async function loadConnectionAccount(force=false){
   if(section!=='connection'||connectionBusy||connectionLoading||(!force&&(connectionMode||connectionLoaded===connectionScope())))return;
@@ -168,7 +204,7 @@ async function pollAccountAccess(){
   authPolling=true;
   try{
     const next=await api('/api/state');
-    if(accessScope(next)!==accessScope(state)){acceptState(next);render();}
+    acceptRouterState(next);
   }catch{}finally{authPolling=false;}
 }
 setInterval(pollAccountAccess,3000);
