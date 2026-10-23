@@ -158,6 +158,6 @@ document.addEventListener('change',async e=>{
   if(button)button.disabled=true;
   try{const file=input.files[0];if(file.size>2*1024*1024)throw Error('策略文件过大');
     const result=await api('/api/policy','POST',{kind,policy:JSON.parse(await file.text())});
-    const form=input.closest('form');if(form){form.elements[kind+'_policy'].value=result.path;if(button)button.textContent='重新上传';}
+    const form=input.closest('form');if(form)form.elements[kind+'_policy'].value=result.path;
   }catch(error){toast(error.message);}finally{input.value='';if(button)button.disabled=false;}
 });

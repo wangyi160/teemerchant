@@ -6,7 +6,7 @@ const connectionScope=()=>state.enrollment.id+'@'+state.settings.platform_url;
 const approvalNames={pending:'待审核',provisioning:'开通中',approved:'已开通',rejected:'审核未通过'};
 
 function policyUpload(kind,path){
-  return `<div class="policy-upload"><label id="policy-label-${kind}" for="policy-file-${kind}">${kind.toUpperCase()} 信任策略</label><input type="hidden" name="${kind}_policy" value="${esc(path||'')}"><input id="policy-file-${kind}" type="file" data-policy="${kind}" accept=".json,application/json" hidden><button id="policy-button-${kind}" type="button" data-action="upload-policy" data-id="${kind}" aria-labelledby="policy-label-${kind} policy-button-${kind}">${path?'重新上传':'上传'}</button></div>`;
+  return `<div class="policy-upload"><label id="policy-label-${kind}" for="policy-path-${kind}">${kind.toUpperCase()} 信任策略</label><input id="policy-path-${kind}" type="text" name="${kind}_policy" value="${esc(path||'')}" autocomplete="off" spellcheck="false"><input id="policy-file-${kind}" type="file" data-policy="${kind}" accept=".json,application/json" hidden><button id="policy-button-${kind}" type="button" data-action="upload-policy" data-id="${kind}" aria-labelledby="policy-label-${kind} policy-button-${kind}">浏览文件</button></div>`;
 }
 
 function resetConnectionAccount(){
