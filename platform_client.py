@@ -109,6 +109,8 @@ class PlatformClient:
             if mode == 'account' and name not in ('login', 'register', 'info') and session.get('identity', identity) != identity:
                 self.sessions.pop(key, None)
                 return Reply(401, b'{"error":"login_required"}')
+            if mode == 'account' and name in ('me', 'logout', 'password', 'bind') and not session.get('cookie'):
+                return Reply(401, b'{"error":"login_required"}')
             headers = {'Accept': 'application/json'}
             if operation:
                 if not re.fullmatch(r'[A-Za-z0-9_.:-]{8,128}', operation):

@@ -40,6 +40,11 @@ class ClientTests(unittest.TestCase):
         for path in ('../api/users','merchant/credentials/reveal','https://evil.test','withdrawals/1/paid'):
             with self.assertRaises(ValueError):self.call('merchant','POST',path)
 
+    def test_logged_out_account_operations_do_not_contact_platform(self):
+        with self.mock(lambda _: self.fail('No platform session should be rejected locally')):
+            for method, path in [('GET', 'me'), ('POST', 'password'), ('POST', 'logout'), ('POST', 'bind')]:
+                self.assertEqual(self.call('account', method, path).status, 401)
+
     def test_account_session_stays_local_and_is_separate_from_merchant_control(self):
         def fetch(request):
             self.assertNotIn('authorization',request.headers)

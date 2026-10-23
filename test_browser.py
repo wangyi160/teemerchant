@@ -263,8 +263,11 @@ class BrowserTests(unittest.TestCase):
         denied = self.page.request.get(self.origin + '/api/credentials')
         self.assertEqual(denied.status, 403)
         self.assertNotIn(secret, denied.text())
-        self.page.get_by_role('button', name='切换账号', exact=True).click()
-        expect(self.page.frame_locator('.platform-frame').get_by_role('heading', name='商户登录')).to_be_visible()
+        self.page.get_by_role('button', name='登录账号', exact=True).click()
+        expect(self.page.get_by_role('heading', name='登录商户')).to_be_visible()
+        expect(self.page.locator('.platform-frame')).to_have_count(0)
+        expect(self.page.locator('aside [data-id=platform]')).to_have_count(0)
+        expect(self.page.get_by_role('heading', name='Router 连接')).to_be_visible()
         self.assertNotIn(secret, json.dumps(self.app.api('GET','/api/state',{})))
 
     def test_no_merchant_total_limits_and_pool_pricing_remains_editable(self):
@@ -291,21 +294,101 @@ class BrowserTests(unittest.TestCase):
                 return httpx.Response(200, json={'merchant_id': merchant_id, 'merchant_secret': secret})
             if request.url.path.endswith('/profile'):
                 return httpx.Response(200, json={'account': account, 'merchant': {'id': merchant_id}, 'legacy': False})
+            if request.url.path.endswith('/password'):
+                self.assertEqual(json.loads(request.content), {'current_password': 'a-test-password', 'new_password': 'a-new-test-password'})
+                return httpx.Response(200, json={'ok': True})
             if not request.headers.get('cookie'):
                 return httpx.Response(401, json={'error': 'login_required'})
             return httpx.Response(200, json=view)
         with patch('platform_client.httpx.Client', side_effect=lambda **kw: original_client(**kw, transport=httpx.MockTransport(fetch))):
-            self.page.locator('aside [data-id=platform]').click()
-            frame = self.page.frame_locator('.platform-frame')
-            frame.locator('[name=username]').fill('seller')
-            frame.locator('[name=password]').fill('a-test-password')
-            frame.get_by_role('button', name='登录', exact=True).click()
-            expect(frame.locator('#identity')).to_have_text('seller')
-            expect(frame.get_by_role('button', name='绑定到本机')).to_have_count(0)
-            self.assertEqual(self.store.enrollment()['id'], merchant_id)
             self.page.locator('aside [data-id=connection]').click()
+            self.page.locator('#merchant-auth [name=username]').fill('seller')
+            self.page.locator('#merchant-auth [name=password]').fill('a-test-password')
+            self.page.locator('#merchant-auth [type=submit]').click()
             expect(self.page.locator('#merchant-username')).to_have_value('seller')
+            expect(self.page.get_by_role('button', name='绑定到本机')).to_have_count(0)
+            self.assertEqual(self.store.enrollment()['id'], merchant_id)
+            expect(self.page.get_by_role('heading', name='Router 连接')).to_be_visible()
+            expect(self.page.locator('iframe')).to_have_count(0)
             self.assertNotIn(secret, self.page.content())
+            self.page.get_by_role('button', name='修改密码', exact=True).click()
+            self.page.locator('#merchant-password [name=current_password]').fill('a-test-password')
+            self.page.locator('#merchant-password [name=new_password]').fill('a-new-test-password')
+            self.page.locator('#merchant-password [type=submit]').click()
+            expect(self.page.locator('#merchant-auth [name=password]')).to_have_value('')
+            self.assertFalse(self.app.platform_client.sessions)
+            self.assertEqual(self.store.enrollment()['id'], merchant_id)
+
+    def test_inline_registration_pending_status_and_refresh_preserve_connection_drafts(self):
+        import httpx
+        from unittest.mock import patch
+        account = {'id': 'p_pending', 'role': 'merchant', 'username': 'pending', 'name': 'New merchant'}
+        view = {'account': account, 'applications': [{'kind': 'merchant', 'status': 'pending'}],
+                'merchant_credentials_available': False}
+        original_client = httpx.Client
+        calls = []
+        def fetch(request):
+            calls.append(request.url.path)
+            if request.url.path.endswith('/info'):
+                return httpx.Response(200, json={'policy': {'registration_enabled': True}})
+            if request.url.path.endswith('/register'):
+                self.assertEqual(json.loads(request.content)['role'], 'merchant')
+                return httpx.Response(201, json={**view, 'csrf': 'csrf'},
+                    headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})
+            if request.url.path.endswith('/logout'):
+                return httpx.Response(200, json={'ok': True})
+            if request.url.path.endswith('/profile'):
+                return httpx.Response(200, json={'account': {**account, 'username': 'Legacy name'},
+                    'merchant': {'id': self.store.enrollment()['id']}, 'legacy': True})
+            return httpx.Response(200, json=view)
+        with patch('platform_client.httpx.Client', side_effect=lambda **kw: original_client(**kw, transport=httpx.MockTransport(fetch))):
+            self.page.locator('aside [data-id=connection]').click()
+            expect(self.page.get_by_role('heading', name='账号与连接', exact=True)).to_be_visible()
+            self.page.get_by_role('tab', name='注册', exact=True).click()
+            form = self.page.locator('#merchant-auth')
+            form.locator('[name=username]').fill('pending')
+            form.locator('[name=name]').fill('New merchant')
+            form.locator('[name=password]').fill('registration-password')
+            self.page.locator('#connection [name=router]').fill('https://unsaved-router.example')
+            self.page.locator('#platform-connection [name=platform_url]').fill('https://unsaved-platform.example')
+            form.locator('[type=submit]').click()
+            expect(self.page.locator('#merchant-username')).to_have_value('pending')
+            expect(self.page.locator('#merchant-approval')).to_have_text('待审核')
+            self.page.get_by_role('button', name='刷新状态', exact=True).click()
+            expect(self.page.locator('#connection [name=router]')).to_have_value('https://unsaved-router.example')
+            expect(self.page.locator('#platform-connection [name=platform_url]')).to_have_value('https://unsaved-platform.example')
+            self.page.get_by_role('button', name='退出登录', exact=True).click()
+            expect(self.page.locator('#merchant-auth [name=password]')).to_have_value('')
+            self.assertNotIn('/portal/api/merchant/credentials/reveal', calls)
+
+    def test_slow_account_status_does_not_block_registration_or_erase_its_draft(self):
+        import httpx
+        from unittest.mock import patch
+        from platform_client import Reply
+        entered, release = threading.Event(), threading.Event()
+        original_call, original_client = self.app.platform_client.call, httpx.Client
+        def delayed(session, mode, method, path, *args):
+            if mode == 'account' and method == 'GET' and path == 'me':
+                entered.set();release.wait(10)
+                return Reply(401, b'{"error":"login_required"}')
+            return original_call(session, mode, method, path, *args)
+        def fetch(request):
+            self.assertTrue(request.url.path.endswith('/info'))
+            return httpx.Response(200, json={'policy': {'registration_enabled': True}})
+        with patch.object(self.app.platform_client, 'call', side_effect=delayed), \
+             patch('platform_client.httpx.Client', side_effect=lambda **kw: original_client(**kw, transport=httpx.MockTransport(fetch))):
+            try:
+                self.page.locator('aside [data-id=connection]').click()
+                self.assertTrue(entered.wait(2))
+                self.page.get_by_role('tab', name='注册', exact=True).click()
+                expect(self.page.locator('#merchant-auth [name=name]')).to_be_visible()
+                self.page.locator('#merchant-auth [name=username]').fill('draft_merchant')
+                release.set()
+                self.page.wait_for_function('!connectionLoading')
+                expect(self.page.locator('#merchant-auth [name=username]')).to_have_value('draft_merchant')
+                expect(self.page.locator('#merchant-auth [name=name]')).to_be_visible()
+            finally:
+                release.set()
 
     def test_revenue_totals_filter_pending_and_historic_bill_details(self):
         from test_revenue import receipt

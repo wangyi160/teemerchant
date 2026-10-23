@@ -73,6 +73,9 @@ def handler(application, origins, auth=None):
             path=urlsplit(self.path).path
             session=auth.session(self.headers.get('Cookie'))
             if self.command=='GET' and path=='/login':return self.respond(303,b'',headers={'Location':'/'})
+            if self.command=='GET' and path in ('/account','/account/login','/account/register'):
+                suffix='' if path=='/account' else '/'+path.rsplit('/',1)[1]
+                return self.respond(303,b'',headers={'Location':'/#connection'+suffix})
             if self.command=='GET' and path=='/':
                 headers={}
                 if not session:
@@ -83,7 +86,7 @@ def handler(application, origins, auth=None):
                 data=(ROOT/'static/index.html').read_bytes().replace(b'CSRF_PLACEHOLDER',session['csrf'].encode())
                 return self.respond(200,data,'text/html; charset=utf-8',headers)
             if not session:return self.respond(401,{'error':'请打开本机管理页面'})
-            if self.command=='GET' and path in ('/account','/account/login','/account/register','/account/finance','/account/receipts'):
+            if self.command=='GET' and path in ('/account/finance','/account/receipts'):
                 name=path.rsplit('/',1)[1]
                 file=name+'.html' if name in ('login','register') else 'index.html'
                 data=(ROOT/'static/platform'/file).read_bytes().replace(b'LOCAL_CSRF',session['csrf'].encode()).replace(b'MERCHANT_ID',application.store.enrollment()['id'].encode())
@@ -98,7 +101,7 @@ def handler(application, origins, auth=None):
             if self.command=='GET' and path=='/app.css':
                 return self.respond(200,(ROOT/'static/app.css').read_bytes(),'text/css; charset=utf-8')
             if self.command=='GET' and path=='/app.js':
-                data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['web-bridge.js','account-config.js','app.js','account-ui.js','revenue-ui.js','oauth-ui.js'])
+                data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['web-bridge.js','account-config.js','app.js','connection-ui.js','account-ui.js','revenue-ui.js','oauth-ui.js'])
                 return self.respond(200,data,'text/javascript; charset=utf-8')
             if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']): return self.respond(403,{'error':'页面会话无效，请刷新'})
             try:

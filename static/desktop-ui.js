@@ -11,7 +11,7 @@ if(window.teemerchant){
       if(!state.connected && state.remote && s.minimum_revision>0 && s.router && (s.tdx_policy||s.snp_policy)){
         // Restore a previously enrolled connection using its existing independent trust policy.
         // Unlock does not replay any pending account edits.
-        api('/api/connect','POST',{}).then(()=>reload()).catch(error=>toast('自动连接未完成：'+error.message+'；可在连接与身份中重试'));
+        api('/api/connect','POST',{}).then(()=>reload()).catch(error=>toast('自动连接未完成：'+error.message+'；可在账号与连接中重试'));
       }
     }
     const footer=document.querySelector('aside footer');

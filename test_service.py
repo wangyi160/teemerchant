@@ -134,7 +134,12 @@ class HTTPTests(unittest.TestCase):
         headers=self.open_page()
         self.assertFalse(Path(self.tmp.name,'http-auth.json').exists())
         self.assertFalse(Path(self.tmp.name,'initial-password.txt').exists())
-        self.assertNotIn('退出登录',self.client.get('/app.js').text)
+        # Platform login/logout now lives in the shared page; opening the local
+        # management service itself still requires no password.
+        for route,suffix in [('/account',''),('/account/login','/login'),('/account/register','/register')]:
+            response=self.client.get(route)
+            self.assertEqual(response.status_code,303)
+            self.assertEqual(response.headers['location'],'/#connection'+suffix)
         self.assertEqual(self.client.get('/api/credentials').status_code,403)
         self.assertEqual(self.client.get('/api/credentials',headers=headers).status_code,200)
         self.assertEqual(self.client.get('/api/credentials',headers={**headers,'Origin':'http://evil.example'}).status_code,403)
