@@ -55,7 +55,7 @@ def handler(application, origins, auth=None):
             self.send_response(status)
             for key,value in {'Content-Type':mime,'Content-Length':str(len(data)),'Cache-Control':'no-store',
                     'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
-                    'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+                    'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'self'",
                     **(headers or {})}.items(): self.send_header(key,value)
             self.end_headers()
             try: self.wfile.write(data)
@@ -83,6 +83,18 @@ def handler(application, origins, auth=None):
                 data=(ROOT/'static/index.html').read_bytes().replace(b'CSRF_PLACEHOLDER',session['csrf'].encode())
                 return self.respond(200,data,'text/html; charset=utf-8',headers)
             if not session:return self.respond(401,{'error':'请打开本机管理页面'})
+            if self.command=='GET' and path in ('/account','/account/login','/account/register','/account/finance','/account/receipts'):
+                name=path.rsplit('/',1)[1]
+                file=name+'.html' if name in ('login','register') else 'index.html'
+                data=(ROOT/'static/platform'/file).read_bytes().replace(b'LOCAL_CSRF',session['csrf'].encode()).replace(b'MERCHANT_ID',application.store.enrollment()['id'].encode())
+                mode='merchant' if name in ('finance','receipts') else 'account'
+                data=data.replace(b'ACCOUNT_MODE',mode.encode())
+                return self.respond(200,data,'text/html; charset=utf-8')
+            if self.command=='GET' and path.startswith('/account-assets/'):
+                name=path[len('/account-assets/'):]
+                allowed={'common.css','local.css','browser-utils.js','common.js','withdrawals.js','finance.js','workspace-receipts.js','merchant.js','workspace.js','local.js','auth.js'}
+                if name not in allowed:return self.respond(404,{'error':'not_found'})
+                return self.respond(200,(ROOT/'static/platform'/name).read_bytes(),'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8')
             if self.command=='GET' and path=='/app.css':
                 return self.respond(200,(ROOT/'static/app.css').read_bytes(),'text/css; charset=utf-8')
             if self.command=='GET' and path=='/app.js':
@@ -95,7 +107,11 @@ def handler(application, origins, auth=None):
                     return self.respond(413,{'error':'请求过大或格式无效'})
                 if length and self.headers.get_content_type()!='application/json': return self.respond(415,{'error':'需要 JSON 请求'})
                 body=json.loads(self.rfile.read(length)) if length else {}
-                if path.startswith('/api/oauth/') and self.command=='POST':
+                if path.startswith('/account-api/'):
+                    result=application.platform_client.call(session['id'],self.headers.get('X-Account-Mode','account'),self.command,
+                        self.path[len('/account-api/'):],body,self.headers.get('Idempotency-Key',''),self.headers.get('X-Merchant-ID',''))
+                    return self.respond(result.status,result.data,result.mime)
+                elif path.startswith('/api/oauth/') and self.command=='POST':
                     with application.state_lock:
                         result=application.oauth.dispatch(path.rsplit('/',1)[1],body,self.headers.get('X-Merchant-ID'),session['id'])
                 else:

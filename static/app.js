@@ -1,6 +1,6 @@
 "use strict";
 const $=s=>document.querySelector(s), esc=v=>String(v??"").replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const names={overview:"概览",accounts:"账号与模型",customers:"客户授权",revenue:"\u6536\u5165",usage:"调用记录",refusals:"拒答记录",connection:"连接与身份"};
+const names={overview:"概览",accounts:"账号与模型",customers:"客户授权",revenue:"收入明细",finance:"提现",receipts:"消费凭据",usage:"调用记录",refusals:"拒答记录",platform:"注册与登录",connection:"连接与身份"};
 let state=null, section="overview", records=[];
 const btn=(label,action,id="",cls="")=>`<button class="${cls}" data-action="${action}" data-id="${esc(id)}">${esc(label)}</button>`;
 const field=(label,name,value="",type="text",attrs="")=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${attrs}></label>`;
@@ -50,7 +50,7 @@ function form(title,html,action,options={}){
 function heading(title,desc,action=""){return `<div class="heading"><div><h1>${title}</h1><p>${desc}</p></div>${action}</div>`;}
 function render(){if(!state)return;$('#app').innerHTML=`<div class="shell"><aside><div class="brand">teemerchant<small>商户管理工作台</small></div>${Object.entries(names).map(([id,label])=>btn(label,'nav',id,section===id?'active':'')).join('')}<footer>商户独立身份 · 本地归档<br>经 TEE 验证后直连 Router</footer></aside><main><header><div><strong>${esc(names[section])}</strong><span class="status">${state.connected?esc(remote().merchant.name)+' · Router 已连接':'Router 尚未连接'}</span></div><div class="actions">${btn('刷新','reload')}</div></header><div class="content">${state.error?`<div class="notice error">Router 同步失败：${esc(state.error)}</div>`:''}${state.archive?.error?`<div class="notice error">管理平台账单同步失败：${esc(state.archive.error)}</div>`:''}${view()}</div></main></div>`;bindPoolModelEditor();bindRevenueFilters();}
 function recordsView(){return heading(names[section],'管理平台账单 · 最近 200 条',btn('立即同步','sync','','primary'))+`<section class="panel">${table(['ID','用户','模型 / 来源','详情'],records.map((r,i)=>{const e=r.event||r;return `<tr><td>${r.seq??r.id}</td><td>${esc(e.user_id||'')}</td><td>${esc(e.model||e.provider||'')}</td><td>${btn('查看','record',String(i))}</td></tr>`}))}</section>`;}
-function view(){if(['usage','refusals'].includes(section))return recordsView();if(section==='revenue')return revenueView();if(section==='connection')return connection();if(!remote())return heading('连接你的 Router','验证 TEE 身份后，管理你的账号、客户和费率。')+`<section class="panel"><h2>从连接与身份开始</h2><p>先在 Router Portal 注册商户并等待审核，再在本工作台填写审核后签发的 Merchant ID 和 Merchant Secret。工作台会将凭证加密保存在本机。</p>${btn('设置连接','nav','connection','primary')}</section>`;
+function view(){if(['platform','finance','receipts'].includes(section)){const path=section==='platform'?'':'/'+section;return `<iframe class="platform-frame" title="${esc(names[section])}" src="/account${path}${section==='platform'?'':'#'+section}"></iframe>`;}if(['usage','refusals'].includes(section))return recordsView();if(section==='revenue')return revenueView();if(section==='connection')return connection();if(!remote())return heading('连接你的 Router','')+`<section class="panel">${btn('注册与登录','nav','platform','primary')}${btn('连接与身份','nav','connection')}</section>`;
 if(section==='overview')return heading('商户概览','你的上游账号与客户访问状态。')+`<div class="cards"><div class="card"><small>账号池</small><strong>${pools().length}</strong></div><div class="card"><small>已使用客户</small><strong>${settings().customers.length}</strong></div><div class="card"><small>价格 / 配置版本</small><strong>v${settings().revision}</strong></div></div><section class="panel"><h2>${esc(remote().merchant.name)}</h2><p>商户 ID：<code>${esc(remote().merchant.id)}</code></p><p>用户沿用平台 API key；商户标识会出现在模型和账号池名称中。</p><div class="notice">平台资源上限：并发 ${remote().merchant.max_concurrent} · RPM ${remote().merchant.rpm||'不限'} · TPM ${remote().merchant.tpm||'不限'}。实际采用平台与商户配置中较低的限额。</div></section>`;
 if(section==='accounts')return accountsView();
 if(section==='customers')return customersView();
@@ -153,6 +153,7 @@ document.addEventListener('submit',async e=>{if(e.target.id!=='platform-connecti
 $('#dialog').addEventListener('cancel',e=>{if($('#dialog').dataset.busy)e.preventDefault();});
 $('#dialog').addEventListener('close',()=>{if(!$('#dialog').open)$('#dialog').innerHTML='';});
 reload().catch(e=>toast(e.message));
+window.addEventListener('message',e=>{if(e.origin===location.origin&&e.source===$('.platform-frame')?.contentWindow&&e.data?.type==='merchant-bound')reload().catch(error=>toast(error.message));});
 // Reflect background model-policy cleanup without discarding an active form.
 let catalogViewPolling=false;
 setInterval(async()=>{

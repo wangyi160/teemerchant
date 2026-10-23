@@ -39,6 +39,13 @@ class PortableTests(unittest.TestCase):
                         self.assertFalse(state['connected']);self.assertFalse(state['credentials']['saved'])
                         self.assertEqual(client.get('/app.js').status_code,200)
                         self.assertIn('window.teemerchant',client.get('/app.js').text)
+                        account=client.get('/account/login')
+                        self.assertEqual(account.status_code,200)
+                        self.assertIn('name="local-csrf" content="'+csrf+'"',account.text)
+                        self.assertNotIn('LOCAL_CSRF',account.text)
+                        self.assertEqual(client.get('/account-assets/withdrawals.js').status_code,200)
+                        self.assertEqual(client.get('/account-assets/../../settings.dpapi').status_code,403)
+                        self.assertEqual(client.post('/account-api/login',json={}).status_code,403)
                         # Exercise the packaged C ABI using an invalid policy. Missing
                         # DLL/SO is a packaging failure, a policy rejection is expected.
                         policy=data/'empty-policy.json';policy.write_text('{"releases":[]}')

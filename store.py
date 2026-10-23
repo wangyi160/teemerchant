@@ -60,7 +60,7 @@ class Store:
         if self.path.exists():
             self.settings = json.loads(self.protect(self.path.read_bytes(), True))
         else:
-            self.settings = {'token': secrets.token_hex(32), 'router': '', 'tdx_policy': '', 'snp_policy': '', 'minimum_revision': 0, 'credentials_saved': False}
+            self.settings = {'token': secrets.token_hex(32), 'router': 'https://router.teerouter.org', 'platform_url':'https://teerouter.org', 'tdx_policy': '', 'snp_policy': '', 'minimum_revision': 0, 'credentials_saved': False}
             self.save()
         if 'transport' in self.settings:
             self.settings.pop('transport')

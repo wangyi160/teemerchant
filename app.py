@@ -27,6 +27,8 @@ class Application:
         self.state_lock = threading.RLock()
         self.last_catalog_check = time.monotonic()
         from platform_archive import PlatformArchive
+        from platform_client import PlatformClient
+        self.platform_client = PlatformClient(self)
         self.archive = PlatformArchive(store)
         from oauth_service import OAuthService
         self.oauth = OAuthService(self)
