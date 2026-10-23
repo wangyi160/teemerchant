@@ -52,6 +52,12 @@ def fingerprint(credential):
 
 def router_update(update):
     result = copy.deepcopy(update)
+    # Empty pools are local drafts. Sending the complete nonempty set also
+    # withdraws a previously published pool when its last account is removed.
+    if 'pools' in result:
+        result['pools'] = [pool for pool in result['pools'] if pool['deployments']]
+        names = {pool['name'] for pool in result['pools']}
+        result['pool_pricing'] = [price for price in result.get('pool_pricing', []) if price['pool'] in names]
     for account in result.get('accounts', {}).values():
         if 'credential' in account and account.get('provider') != 'workbuddy' and 'api_key' not in account['credential']:
             account['credential'] = access_only(account['credential'])

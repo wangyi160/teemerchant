@@ -46,6 +46,8 @@ class Application:
         self.remote, self.connected = self.store.accounts.view(self.store.settings['router']), True
         self.last_catalog_check = time.monotonic()
         router = self.store.settings['router']
+        if clean_catalog and self.store.accounts.withdraw_empty_pools(router):
+            return self.push_config()
         if clean_catalog and self.store.accounts.prune_catalog(router, check_only=True):
             if not catalog_refreshed:
                 # Confirm removals against a new fetch, including an empty catalog.
@@ -74,6 +76,8 @@ class Application:
                 self.store.accounts.acknowledge(self.store.settings['router'], result)
         result = self.accept(result, clean_catalog=False)
         self.sync_credentials()
+        if self.store.accounts.withdraw_empty_pools(self.store.settings['router']):
+            return self.push_config()
         return result
 
     def sync_credentials(self):
@@ -231,6 +235,9 @@ class Application:
                 raise ValueError('账号测试参数无效')
             if 'credential' in body and 'api_key' not in body['credential']:
                 body = {**body, 'credential': access_only(body['credential'])}
+            pool = next((p for p in (self.remote or {}).get('pools', []) if p['name'] == body['pool']), None)
+            if pool and not pool['deployments']:
+                body = {**body, 'draft_pool': {'provider': pool['provider'], 'allowed_models': pool.get('allowed_models')}}
             return self.transport.call('POST', '/merchant/accounts/test', body)
         if method == 'GET' and path.startswith('/api/accounts/'):
             return self.store.accounts.account(self.store.settings['router'], unquote(path[len('/api/accounts/'):]))

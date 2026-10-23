@@ -114,10 +114,13 @@ class AccountBook:
                 raise ValueError('商户限额格式无效')
         def valid_name(value):
             return isinstance(value, str) and re.fullmatch(r'[a-zA-Z0-9_.-]{1,128}', value)
-        ids = set()
+        ids, names = set(), set()
         for pool in body['pools']:
             if not isinstance(pool, dict) or not valid_name(pool.get('name')) or not isinstance(pool.get('deployments'), list):
                 raise ValueError('账号池格式无效')
+            if pool['name'] in names:
+                raise ValueError('账号池名称重复')
+            names.add(pool['name'])
             allowed = pool.get('allowed_models')
             if allowed is not None and (not isinstance(allowed, list) or len(allowed) > 4096
                     or any(not isinstance(model, str) or not re.fullmatch(r'[a-zA-Z0-9._:/-]{1,256}', model)
@@ -323,6 +326,20 @@ class AccountBook:
             book['sync_state'], book['sync_error'] = 'pending', message
             self._write(data)
 
+    def withdraw_empty_pools(self, router):
+        """Upgrade old published empty pools without replaying pending edits."""
+        with self.lock:
+            book = self.data['routers'].get(router)
+            if not book or book['pending'] or book['sync_state'] != 'synced':
+                return False
+            if not any(not pool['deployments'] for pool in book['remote'].get('pools', [])):
+                return False
+            update = copy.deepcopy(book['config'])
+            update['expected_revision'] = book['remote']['settings']['revision']
+            update['_local_revision'] = book['local_revision']
+            self.stage(router, update)
+            return True
+
     def acknowledge(self, router, remote):
         if remote['merchant']['id'] != self.identity:
             raise RuntimeError('商户身份与本地账号库不一致')
@@ -331,6 +348,19 @@ class AccountBook:
             book = self._book(data, router)
             previous = {d['id']: d for d in deployments(book['config'])}
             config = config_from(remote)
+            # Router acknowledges only published pools. Retain local empty
+            # drafts, their order, model selections and multiplier after sync.
+            pools = {pool['name']: pool for pool in config['pools']}
+            empty = set()
+            for pool in book['config']['pools']:
+                if not pool['deployments'] and pool['name'] not in pools:
+                    pools[pool['name']] = copy.deepcopy(pool)
+                    empty.add(pool['name'])
+            ordered = [pool['name'] for pool in book['config']['pools'] if pool['name'] in pools]
+            ordered.extend(name for name in pools if name not in ordered)
+            config['pools'] = [pools[name] for name in ordered]
+            config['pool_pricing'].extend(copy.deepcopy(price) for price in book['config'].get('pool_pricing', [])
+                                          if price['pool'] in empty)
             overrides = {c['user_id']: c for c in book.get('recovery_customers', [])}
             overrides.update({c['user_id']: copy.deepcopy(c) for c in (book['pending'] or {}).get('customers', [])})
             overrides.update({c['user_id']: copy.deepcopy(c) for c in remote['settings'].get('customers', [])})

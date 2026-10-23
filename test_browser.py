@@ -436,7 +436,7 @@ class BrowserTests(unittest.TestCase):
             form.locator('[name=password]').fill('registration-password')
             form.locator('[type=submit]').click()
             expect(self.page.locator('#merchant-username')).to_have_value('pending')
-            expect(self.page.locator('#merchant-approval')).to_have_text('待审核')
+            expect(self.page.locator('#merchant-approval')).to_have_text('开通中')
             expect(self.page.locator('#connection')).to_have_count(0)
             self.page.locator('#platform-connection [name=platform_url]').fill('https://unsaved-platform.example')
             self.page.get_by_role('button', name='刷新状态', exact=True).click()
@@ -644,7 +644,8 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('.selected-row td').nth(2)).to_have_text('0')
         expect(self.page.get_by_role('heading', name='claude-team · 账号（0）')).to_be_visible()
         created = self.router.writes[-1]
-        self.assertEqual(created['pools'][1], {'name':'claude-team','provider':'anthropic','deployments':[]})
+        self.assertEqual([p['name'] for p in created['pools']], ['openai'])
+        self.assertEqual([p['pool'] for p in created['pool_pricing']], ['openai'])
         self.assertEqual(created['accounts'], {})
         self.assertEqual(created['secrets'], {})
         self.page.reload()
@@ -672,6 +673,7 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('.selected-row td').nth(2)).to_have_text('1')
         self.assertEqual(len(self.router.writes), 3)
         added = self.router.writes[-1]
+        self.assertEqual(self.router.probes[-1]['draft_pool'], {'provider':'anthropic','allowed_models':None})
         self.assertEqual(added['pools'][1]['deployments'][0]['provider'], 'anthropic')
         self.assertEqual(added['pool_pricing'], [{'pool':'openai','multiplier_millionths':200000},
                                               {'pool':'claude-team','multiplier_millionths':250000}])

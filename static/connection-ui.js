@@ -3,7 +3,7 @@ let connectionAccount=null, connectionLoaded='', connectionEpoch=0, connectionBu
 let connectionMode=location.hash==='#connection/register'?'register':location.hash==='#connection/login'?'login':null;
 let connectionError='', registrationAllowed=false;
 const connectionScope=()=>state.enrollment.id+'@'+state.settings.platform_url;
-const approvalNames={pending:'待审核',provisioning:'开通中',approved:'已开通',rejected:'审核未通过'};
+const approvalNames={pending:'开通中',provisioning:'开通中',approved:'已开通',rejected:'未开通'};
 let routerConnecting=null, routerConnectionError=null;
 const routerScope=()=>JSON.stringify([accessScope(state),state?.settings.router,state?.settings.tdx_policy,state?.settings.snp_policy]);
 const routerError=()=>!state?.auth?.authorized?'':state.error||(routerConnectionError?.scope===routerScope()&&!state.connected?routerConnectionError.message:'');

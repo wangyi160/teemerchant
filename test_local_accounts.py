@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 from app import Application
 from store import Store
+from credential_protocol import router_update
 
 
 class Router:
@@ -20,7 +21,9 @@ class Router:
         if method == 'PUT':
             # The durable account file must exist before the transport sees any key.
             assert self.store.accounts.path.exists()
-            assert self.store.accounts.pending('https://fixture.example') == body
+            assert router_update(self.store.accounts.pending('https://fixture.example')) == body
+            assert all(pool['deployments'] for pool in body['pools'])
+            assert all(price['pool'] in {pool['name'] for pool in body['pools']} for price in body['pool_pricing'])
             if self.failure:
                 raise RuntimeError('Router 返回 409：revision_conflict')
             if body['expected_revision'] != self.remote['settings']['revision']:
@@ -98,6 +101,99 @@ class LocalAccountTests(unittest.TestCase):
             self.assertEqual(view['pools'][0]['allowed_models'], ['model-a', 'model-b'])
         finally:
             other.db.close()
+
+    def test_empty_pool_lifecycle_preserves_local_settings_and_withdraws_remote(self):
+        body = self.config()
+        body['pools'][0].update(deployments=[], allowed_models=['model-a'])
+        body['secrets'] = {}
+        body['pool_pricing'][0]['multiplier_millionths'] = 750000
+        self.app.api('PUT', '/api/config', body)
+        self.assertEqual(self.router.remote['pools'], [])
+        self.assertEqual(self.router.remote['settings']['pool_pricing'], [])
+        self.assertEqual(self.app.remote['pools'], body['pools'])
+        self.assertEqual(self.app.remote['settings']['pool_pricing'], body['pool_pricing'])
+        other = Store(self.tmp.name)
+        try:
+            view = other.accounts.view(self.store.settings['router'])
+            self.assertEqual(view['pools'], body['pools'])
+            self.assertEqual(view['settings']['pool_pricing'], body['pool_pricing'])
+        finally:
+            other.db.close()
+        populated = self.config()
+        populated['pools'][0]['allowed_models'] = ['model-a']
+        populated['pool_pricing'] = body['pool_pricing']
+        self.app.api('PUT', '/api/config', populated)
+        self.assertEqual(len(self.router.remote['pools'][0]['deployments']), 1)
+        self.assertEqual(self.router.remote['settings']['pool_pricing'], body['pool_pricing'])
+        emptied = self.config()
+        emptied['pools'] = body['pools']
+        emptied['pool_pricing'] = body['pool_pricing']
+        emptied['secrets'] = {}
+        emptied['delete_secrets'] = ['api-1']
+        self.app.api('PUT', '/api/config', emptied)
+        self.assertEqual(self.router.remote['pools'], [])
+        self.assertEqual(self.router.remote['settings']['pool_pricing'], [])
+        self.assertEqual(self.app.remote['pools'], body['pools'])
+        self.assertEqual(self.app.remote['local_sync']['state'], 'synced')
+        self.assertNotIn('api-1', self.store.accounts.data['routers'][self.store.settings['router']]['secrets'])
+
+    def test_disabled_account_is_not_an_empty_pool_and_order_survives_ack(self):
+        body = self.config()
+        body['pools'][0]['deployments'][0]['enabled'] = False
+        body['pools'].insert(0, {'name': 'draft', 'provider': 'xai', 'deployments': [], 'allowed_models': []})
+        body['pool_pricing'].insert(0, {'pool': 'draft', 'multiplier_millionths': 500000})
+        self.app.api('PUT', '/api/config', body)
+        self.assertEqual([p['name'] for p in self.router.remote['pools']], ['openai'])
+        self.assertFalse(self.router.remote['pools'][0]['deployments'][0]['enabled'])
+        self.assertEqual([p['name'] for p in self.app.remote['pools']], ['draft', 'openai'])
+        self.assertEqual(len(self.app.remote['settings']['pool_pricing']), 2)
+
+    def test_empty_pool_withdrawal_failure_and_retry_keep_local_draft(self):
+        self.app.api('PUT', '/api/config', self.config())
+        body = self.config()
+        body['pools'][0]['deployments'] = []
+        body['secrets'], body['delete_secrets'] = {}, ['api-1']
+        self.router.failure = True
+        self.app.api('PUT', '/api/config', body)
+        self.assertTrue(self.router.remote['pools'][0]['deployments'])
+        self.assertEqual(self.app.remote['pools'][0]['deployments'], [])
+        self.assertEqual(self.app.remote['local_sync']['state'], 'pending')
+        self.router.failure = False
+        self.app.push_config()
+        self.assertEqual(self.router.remote['pools'], [])
+        self.assertEqual(self.app.remote['pools'], body['pools'])
+
+    def test_upgrade_withdraws_legacy_empty_pools_without_replaying_pending_edits(self):
+        router = self.store.settings['router']
+        remote = copy.deepcopy(self.router.remote)
+        remote['pools'] = [{'name': 'legacy', 'provider': 'xai', 'deployments': []}]
+        remote['settings']['pool_pricing'] = [{'pool': 'legacy', 'multiplier_millionths': 500000}]
+        self.router.remote = copy.deepcopy(remote)
+        self.store.accounts.observe(router, remote)
+        self.store.accounts.acknowledge(router, remote)
+        self.app.accept(remote)
+        self.assertEqual(self.router.remote['pools'], [])
+        self.assertEqual(self.app.remote['pools'], remote['pools'])
+        self.assertEqual(self.app.remote['settings']['pool_pricing'], remote['settings']['pool_pricing'])
+        writes = len(self.router.writes)
+        self.app.accept(self.router.remote)
+        self.assertEqual(len(self.router.writes), writes)
+        self.app.connected = False
+        self.app.api('PUT', '/api/config', self.config())
+        pending = self.store.accounts.pending(router)
+        self.assertFalse(self.store.accounts.withdraw_empty_pools(router))
+        self.assertEqual(self.store.accounts.pending(router), pending)
+
+    def test_router_restart_does_not_publish_or_forget_empty_local_pools(self):
+        body = self.config()
+        body['pools'][0]['deployments'], body['secrets'] = [], {}
+        self.app.api('PUT', '/api/config', body)
+        remote = copy.deepcopy(self.router.remote)
+        remote['merchant']['configuration_required'] = True
+        pending = self.store.accounts.restore_pending(self.store.settings['router'], remote)
+        self.assertEqual(router_update(pending)['pools'], [])
+        self.app.push_config()
+        self.assertEqual(self.app.remote['pools'], body['pools'])
 
     def test_local_write_precedes_remote_and_is_readable_after_restart(self):
         self.app.api('PUT', '/api/config', self.config())
