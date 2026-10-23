@@ -13,7 +13,10 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
   };
   updatePool();setup.elements.pool.addEventListener('change',updatePool);
   const call=async(action,body)=>{
+    const epoch=dataEpoch;
     const result=await window.teemerchant.oauth(action,body,identity);
+    if(epoch!==dataEpoch||closed)throw Error('账号状态已变化，请重新操作');
+    if(result.status===401)hideMerchantView();
     if(!result.ok)throw Error(result.error);return result.value;
   };
   function lock(value){

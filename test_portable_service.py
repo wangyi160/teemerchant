@@ -43,19 +43,28 @@ class PortableTests(unittest.TestCase):
                         self.assertEqual(account.status_code,303)
                         self.assertEqual(account.headers['location'],'/#connection/login')
                         account=client.get('/account/finance')
-                        self.assertIn('name="local-csrf" content="'+csrf+'"',account.text)
+                        self.assertEqual(account.status_code,401)
                         self.assertEqual(client.get('/account-assets/withdrawals.js').status_code,200)
                         self.assertEqual(client.get('/account-assets/../../settings.dpapi').status_code,403)
                         self.assertEqual(client.post('/account-api/login',json={}).status_code,403)
-                        # Exercise the packaged C ABI using an invalid policy. Missing
-                        # DLL/SO is a packaging failure, a policy rejection is expected.
+                        # A local browser cookie alone cannot edit saved credentials
+                        # or connection settings, even in a fresh distribution.
                         policy=data/'empty-policy.json';policy.write_text('{"releases":[]}')
                         headers['X-Merchant-ID']=state['enrollment']['id']
                         saved=client.put('/api/settings',headers=headers,json={'router':'https://fixture.invalid','tdx_policy':str(policy),'snp_policy':''})
-                        self.assertEqual(saved.status_code,200)
+                        self.assertEqual(saved.status_code,401)
                         result=client.post('/api/verify',headers=headers,json={})
-                        self.assertEqual(result.status_code,400)
-                        self.assertNotIn('无法加载',result.text)
+                        self.assertEqual(result.status_code,401)
+                        self.assertIsNone(state['remote'])
+                        self.assertFalse(state['auth']['authenticated'])
+                        # Load the packaged ABI directly without adding an HTTP bypass.
+                        from unittest.mock import patch
+                        from transport import NativeClient
+                        library=EXE.parent/'_internal'/('teemerchant_attestation.dll' if os.name=='nt' else 'libteemerchant_attestation.so')
+                        with patch('transport.library_path',return_value=library):
+                            with self.assertRaises(RuntimeError) as caught:
+                                NativeClient({'endpoint':'https://fixture.invalid','tdx_policy':str(policy),'snp_policy':None})
+                            self.assertNotIn('无法加载',str(caught.exception))
                     another=subprocess.run([str(EXE),'--headless','--port',str(port+1),'--data',str(data)],capture_output=True,timeout=15)
                     self.assertNotEqual(another.returncode,0)
                 finally:

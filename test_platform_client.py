@@ -2,10 +2,25 @@ import json
 import hashlib
 import tempfile
 import unittest
+import time
 from unittest.mock import patch
 import httpx
 from app import Application
 from store import Store
+
+
+def login_fixture(app, browser, username='seller'):
+    """Exercise the real login grant path using an isolated platform response."""
+    identity = app.store.enrollment()['id']
+    app.store.settings['credentials_saved'] = True
+    account = {'id': 'p_' + username, 'role': 'merchant', 'username': username, 'name': username}
+    view = {'account': account, 'merchant_credentials_available': True,
+            'applications': [{'kind': 'merchant', 'status': 'approved', 'subject': identity}]}
+    response = (200, dict(view, csrf='fixture-csrf'), {'set-cookie': 'teerouter_portal=' + 'A' * 43})
+    with patch.object(app.platform_client, 'request', return_value=response):
+        result = app.platform_client.call(browser, 'account', 'POST', 'login', {}, '', identity)
+    assert result.status == 200 and json.loads(result.data)['local_connected']
+    return app.platform_client.current(browser)
 
 
 class ClientTests(unittest.TestCase):
@@ -28,6 +43,7 @@ class ClientTests(unittest.TestCase):
         return patch('platform_client.httpx.Client',side_effect=lambda **kw:self.client(**kw,transport=httpx.MockTransport(handler)))
 
     def test_merchant_secret_only_scope_and_idempotency(self):
+        login_fixture(self.app, 'browser')
         def fetch(request):
             self.assertEqual(str(request.url),'https://platform.example/merchant-api/v1/withdrawals')
             self.assertEqual(request.headers['authorization'],'Bearer '+self.store.settings['token'])
@@ -46,15 +62,16 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(self.call('account', method, path).status, 401)
 
     def test_account_session_stays_local_and_is_separate_from_merchant_control(self):
+        view, _ = self.account_fixture(False)
         def fetch(request):
             self.assertNotIn('authorization',request.headers)
             if request.url.path.endswith('/login'):
                 self.assertNotIn('cookie',request.headers)
-                return httpx.Response(200,json={'csrf':'cloud-csrf','account':{'role':'merchant'}},
+                return httpx.Response(200,json={**view,'csrf':'cloud-csrf'},
                                       headers={'set-cookie':'teerouter_portal='+'A'*43+'; Secure; HttpOnly'})
             self.assertEqual(request.headers['cookie'],'teerouter_portal='+'A'*43)
             self.assertEqual(request.headers['x-csrf-token'],'cloud-csrf')
-            return httpx.Response(200,json={'ok':True})
+            return httpx.Response(200,json=view)
         with self.mock(fetch):
             reply=self.call('account','POST','login',{'username':'merchant','password':'secret'})
             self.assertNotIn(b'cloud-csrf',reply.data)
@@ -69,6 +86,7 @@ class ClientTests(unittest.TestCase):
         with self.mock(lambda _:httpx.Response(200,json={'csrf':'secret','account':{'role':'user'}})):
             self.assertEqual(self.call('account','POST','login').status,403)
         self.assertFalse(self.app.platform_client.sessions)
+        login_fixture(self.app, 'browser')
         with self.mock(lambda _:httpx.Response(302,headers={'location':'https://evil.test'},json={'error':'redirect'})):
             self.assertEqual(self.call('merchant','GET','finance').status,302)
 

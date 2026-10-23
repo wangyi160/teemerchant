@@ -85,11 +85,15 @@ def handler(application, origins, auth=None):
                     session=auth.session(cookie)
                 data=(ROOT/'static/index.html').read_bytes().replace(b'CSRF_PLACEHOLDER',session['csrf'].encode())
                 return self.respond(200,data,'text/html; charset=utf-8',headers)
-            if not session:return self.respond(401,{'error':'请打开本机管理页面'})
+            if not session:return self.respond(401,{'error':'请打开本机管理页面','code':'local_session_required'})
             if self.command=='GET' and path in ('/account/finance','/account/receipts'):
+                with application.state_lock, application.platform_client.lock:
+                    if not application.platform_client.authorized(session['id']):
+                        return self.respond(401,{'error':'请登录对应的商户账号'})
+                    merchant_id=application.store.enrollment()['id']
                 name=path.rsplit('/',1)[1]
                 file=name+'.html' if name in ('login','register') else 'index.html'
-                data=(ROOT/'static/platform'/file).read_bytes().replace(b'LOCAL_CSRF',session['csrf'].encode()).replace(b'MERCHANT_ID',application.store.enrollment()['id'].encode())
+                data=(ROOT/'static/platform'/file).read_bytes().replace(b'LOCAL_CSRF',session['csrf'].encode()).replace(b'MERCHANT_ID',merchant_id.encode())
                 mode='merchant' if name in ('finance','receipts') else 'account'
                 data=data.replace(b'ACCOUNT_MODE',mode.encode())
                 return self.respond(200,data,'text/html; charset=utf-8')
@@ -114,12 +118,27 @@ def handler(application, origins, auth=None):
                     result=application.platform_client.call(session['id'],self.headers.get('X-Account-Mode','account'),self.command,
                         self.path[len('/account-api/'):],body,self.headers.get('Idempotency-Key',''),self.headers.get('X-Merchant-ID',''))
                     return self.respond(result.status,result.data,result.mime)
-                elif path.startswith('/api/oauth/') and self.command=='POST':
-                    with application.state_lock:
-                        result=application.oauth.dispatch(path.rsplit('/',1)[1],body,self.headers.get('X-Merchant-ID'),session['id'])
-                else:
+                elif self.command=='GET' and path=='/api/state':
+                    result=application.platform_client.snapshot(session['id'])
+                elif self.command=='PUT' and path=='/api/platform':
+                    # Before login, the endpoint is a browser preference only.
+                    # Never redirect a saved merchant's background credentials.
+                    result=application.platform_client.set_base(session['id'],body)
+                elif self.command=='POST' and path=='/api/sync':
+                    with application.state_lock, application.platform_client.lock:
+                        application.platform_client.require(session['id'],self.headers.get('X-Merchant-ID'))
                     result=application.api(self.command,self.path,body,self.headers.get('X-Merchant-ID'))
+                else:
+                    with application.state_lock, application.platform_client.lock:
+                        application.platform_client.require(session['id'],self.headers.get('X-Merchant-ID'))
+                        if path in ('/api/credentials','/api/merchant-profile'):
+                            return self.respond(403,{'error':'请通过账号登录或切换账号'})
+                        if path.startswith('/api/oauth/') and self.command=='POST':
+                            result=application.oauth.dispatch(path.rsplit('/',1)[1],body,self.headers.get('X-Merchant-ID'),session['id'])
+                        else:
+                            result=application.api(self.command,self.path,body,self.headers.get('X-Merchant-ID'))
                 return self.respond(200,result)
+            except PermissionError as error: return self.respond(401,{'error':str(error)})
             except (ValueError,RuntimeError) as error: return self.respond(400,{'error':str(error)})
             except Exception: return self.respond(503,{'error':'商户服务操作失败，请检查配置和账号状态'})
         do_GET=handle_request

@@ -18,6 +18,7 @@ async function api(path,method='GET',data,operationId=newOperationId()){
     body:data===undefined?undefined:JSON.stringify(data)});
   const result=await response.json();
   if(!response.ok){
+    if(response.status===401){document.body.replaceChildren();parent.postMessage({type:'merchant-login-required'},location.origin);}
     if(response.status===401&&document.body.dataset.role&&document.body.dataset.mode!=='merchant')location.replace('/account/login');
     const error=Error(result.detail||result.error||'操作失败');error.status=response.status;throw error;
   }

@@ -141,11 +141,11 @@ class HTTPTests(unittest.TestCase):
             self.assertEqual(response.status_code,303)
             self.assertEqual(response.headers['location'],'/#connection'+suffix)
         self.assertEqual(self.client.get('/api/credentials').status_code,403)
-        self.assertEqual(self.client.get('/api/credentials',headers=headers).status_code,200)
+        self.assertEqual(self.client.get('/api/credentials',headers=headers).status_code,401)
         self.assertEqual(self.client.get('/api/credentials',headers={**headers,'Origin':'http://evil.example'}).status_code,403)
         self.assertEqual(self.client.get('/api/state',headers={**headers,'Host':'evil.example'}).status_code,403)
         self.assertNotIn('merchant_secret',self.client.get('/api/state',headers=headers).json())
-        self.assertEqual(self.client.get('/.vault-key',headers=headers).status_code,400)
+        self.assertEqual(self.client.get('/.vault-key',headers=headers).status_code,401)
         self.auth.sessions.clear()
         self.assertEqual(self.client.get('/api/credentials',headers=headers).status_code,401)
         headers=self.open_page()
@@ -163,6 +163,8 @@ class HTTPTests(unittest.TestCase):
         with self.assertRaises(ValueError):handler(self.app,'http://192.0.2.10:8910')
     def test_local_pkce_callback_is_session_scoped_and_one_time(self):
         headers=self.open_page();identity=self.store.enrollment()['id']
+        from test_platform_client import login_fixture
+        login_fixture(self.app,self.client.cookies['tm_session'])
         self.app.remote={'pools':[{'name':'gpt','provider':'openai'}]}
         start={'entry':{'pool':'gpt','proxy':'http://127.0.0.1:1'},'credentials_only':True,'save_refresh':True}
         result=self.client.post('/api/oauth/start',headers=headers,json=start).json()

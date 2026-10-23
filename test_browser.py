@@ -89,6 +89,10 @@ class BrowserTests(unittest.TestCase):
         self.page = self.browser.new_page(viewport={'width': 1440, 'height': 1100})
         self.errors = []
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
+        from test_platform_client import login_fixture
+        token = self.auth.create()
+        login_fixture(self.app, token)
+        self.page.context.add_cookies([{'name':'tm_session','value':token,'url':self.origin}])
         self.page.goto(self.origin)
         self.page.locator('aside [data-id=accounts]').click()
         expect(self.page.get_by_role('heading', name='账号与模型', exact=True)).to_be_visible()
@@ -263,7 +267,7 @@ class BrowserTests(unittest.TestCase):
         denied = self.page.request.get(self.origin + '/api/credentials')
         self.assertEqual(denied.status, 403)
         self.assertNotIn(secret, denied.text())
-        self.page.get_by_role('button', name='登录账号', exact=True).click()
+        self.page.get_by_role('button', name='添加登录', exact=True).click()
         expect(self.page.get_by_role('heading', name='登录商户')).to_be_visible()
         expect(self.page.locator('.platform-frame')).to_have_count(0)
         expect(self.page.locator('aside [data-id=platform]')).to_have_count(0)
@@ -276,7 +280,87 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('[name=multiplier]')).to_have_value('0.2')
         self.page.get_by_role('button', name='取消', exact=True).click()
 
+    def test_logout_clears_pools_revenue_and_other_browser_cannot_read_them(self):
+        from unittest.mock import patch
+        self.page.locator('aside [data-id=revenue]').click()
+        expect(self.page.get_by_text('累计应收 · USD', exact=True)).to_be_visible()
+        self.page.locator('aside [data-id=connection]').click()
+        with patch.object(self.app.platform_client, 'request', return_value=(200, {'ok':True}, {})):
+            self.page.get_by_role('button', name='退出登录', exact=True).click()
+            expect(self.page.locator('#merchant-auth')).to_be_visible()
+            self.page.wait_for_function('() => !connectionBusy')
+        for section_name in ('accounts','revenue','finance','receipts','customers','usage','refusals'):
+            self.page.locator(f'aside [data-id={section_name}]').click()
+            expect(self.page.locator('.panel.empty')).to_contain_text('请先登录商户账号')
+            expect(self.page.locator('.platform-frame, #revenue-filter, #account-pools')).to_have_count(0)
+        self.assertIsNone(self.page.evaluate('revenueData'))
+        self.assertEqual(self.page.evaluate('pools()'), [])
+        self.assertEqual(len(self.store.accounts.view(self.store.settings['router'])['pools']), 1)
+        other = self.browser.new_context()
+        try:
+            page = other.new_page();page.goto(self.origin)
+            expect(page.locator('#merchant-auth')).to_be_visible()
+            self.assertFalse(page.evaluate('state.auth.authenticated'))
+        finally:
+            other.close()
+
+    def test_expiry_discards_late_revenue_result_and_modal(self):
+        self.page.locator('[data-action=edit-pool][data-id=openai]').click()
+        expect(self.page.locator('#dialog')).to_be_visible()
+        self.page.evaluate('''() => {
+          window.originalRequest=window.teemerchant.request;
+          window.teemerchant.request=(method,path,...rest)=>path.startsWith('/api/revenue')
+            ?new Promise(resolve=>window.releaseRevenue=resolve):window.originalRequest(method,path,...rest);
+          window.lateRevenue=loadRevenue().then(()=>false,()=>true);
+        }''')
+        for session in self.app.platform_client.sessions.values():session['expires']=0
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expect(self.page.locator('main')).not_to_contain_text('example-001')
+        self.page.evaluate("releaseRevenue({ok:true,value:{data:[{pool:'PRIVATE_OLD_POOL'}]}})")
+        self.assertTrue(self.page.evaluate('lateRevenue'))
+        self.assertIsNone(self.page.evaluate('revenueData'))
+        self.page.reload()
+        expect(self.page.locator('#merchant-auth')).to_be_visible()
+
+    def test_only_logged_in_accounts_appear_in_switcher_and_keep_separate_pools(self):
+        import httpx
+        from unittest.mock import patch
+        secret = 'c'*64
+        merchant_id = 'm_' + hashlib.sha256(secret.encode()).hexdigest()[:32]
+        view = {'account':{'id':'p_second','username':'second','name':'Second','role':'merchant'},
+                'applications':[{'kind':'merchant','status':'approved','subject':merchant_id}],
+                'merchant_credentials_available':True}
+        client = httpx.Client
+        def fetch(request):
+            if request.url.path.endswith('/reveal'):
+                return httpx.Response(200,json={'merchant_id':merchant_id,'merchant_secret':secret})
+            return httpx.Response(200,json={**view,'csrf':'csrf'},headers={'set-cookie':'teerouter_portal='+'B'*43})
+        with patch('platform_client.httpx.Client',side_effect=lambda **kw:client(**kw,transport=httpx.MockTransport(fetch))):
+            self.page.locator('aside [data-id=connection]').click()
+            self.page.get_by_role('button',name='添加登录',exact=True).click()
+            self.page.locator('#merchant-auth [name=username]').fill('second')
+            self.page.locator('#merchant-auth [name=password]').fill('test-password')
+            self.page.locator('#merchant-auth [type=submit]').click()
+            expect(self.page.locator('#merchant-username')).to_have_value('second')
+            expect(self.page.locator('#merchant-profile option')).to_have_count(2)
+            self.assertEqual(self.page.evaluate('pools()'),[])
+            self.page.locator('#merchant-profile').select_option('p_seller')
+            self.page.get_by_role('button',name='切换',exact=True).click()
+            expect(self.page.locator('#merchant-username')).to_have_value('seller')
+            self.page.locator('aside [data-id=accounts]').click()
+            expect(self.page.locator('main')).to_contain_text('example-001')
+            self.page.locator('aside [data-id=connection]').click()
+            self.page.get_by_role('button',name='退出登录',exact=True).click()
+            self.page.wait_for_function('() => !connectionBusy')
+            expect(self.page.locator('#merchant-profile option[value=p_seller]')).to_have_count(0)
+            self.page.locator('#merchant-profile').select_option('p_second')
+            self.page.get_by_role('button',name='切换',exact=True).click()
+            expect(self.page.locator('#merchant-username')).to_have_value('second')
+            self.assertEqual(self.page.evaluate('pools()'),[])
+
     def test_login_automatically_binds_and_connection_displays_login_username(self):
+        self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
         import httpx
         from unittest.mock import patch
         secret = 'b' * 64
@@ -320,6 +404,7 @@ class BrowserTests(unittest.TestCase):
             self.assertEqual(self.store.enrollment()['id'], merchant_id)
 
     def test_inline_registration_pending_status_and_refresh_preserve_connection_drafts(self):
+        self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
         import httpx
         from unittest.mock import patch
         account = {'id': 'p_pending', 'role': 'merchant', 'username': 'pending', 'name': 'New merchant'}
@@ -349,19 +434,19 @@ class BrowserTests(unittest.TestCase):
             form.locator('[name=username]').fill('pending')
             form.locator('[name=name]').fill('New merchant')
             form.locator('[name=password]').fill('registration-password')
-            self.page.locator('#connection [name=router]').fill('https://unsaved-router.example')
-            self.page.locator('#platform-connection [name=platform_url]').fill('https://unsaved-platform.example')
             form.locator('[type=submit]').click()
             expect(self.page.locator('#merchant-username')).to_have_value('pending')
             expect(self.page.locator('#merchant-approval')).to_have_text('待审核')
+            expect(self.page.locator('#connection')).to_have_count(0)
+            self.page.locator('#platform-connection [name=platform_url]').fill('https://unsaved-platform.example')
             self.page.get_by_role('button', name='刷新状态', exact=True).click()
-            expect(self.page.locator('#connection [name=router]')).to_have_value('https://unsaved-router.example')
             expect(self.page.locator('#platform-connection [name=platform_url]')).to_have_value('https://unsaved-platform.example')
             self.page.get_by_role('button', name='退出登录', exact=True).click()
             expect(self.page.locator('#merchant-auth [name=password]')).to_have_value('')
             self.assertNotIn('/portal/api/merchant/credentials/reveal', calls)
 
     def test_slow_account_status_does_not_block_registration_or_erase_its_draft(self):
+        self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
         import httpx
         from unittest.mock import patch
         from platform_client import Reply
@@ -384,7 +469,7 @@ class BrowserTests(unittest.TestCase):
                 expect(self.page.locator('#merchant-auth [name=name]')).to_be_visible()
                 self.page.locator('#merchant-auth [name=username]').fill('draft_merchant')
                 release.set()
-                self.page.wait_for_function('!connectionLoading')
+                self.page.wait_for_function('() => !connectionLoading')
                 expect(self.page.locator('#merchant-auth [name=username]')).to_have_value('draft_merchant')
                 expect(self.page.locator('#merchant-auth [name=name]')).to_be_visible()
             finally:
@@ -398,6 +483,8 @@ class BrowserTests(unittest.TestCase):
         c['event']['billing']={'version':1,'state':'pending','reason':'request_incomplete','items':'invalid'}
         from unittest.mock import patch
         self.store.settings['platform_url']='https://platform.example'
+        from test_platform_client import login_fixture
+        login_fixture(self.app, self.page.context.cookies()[0]['value'])
         mid=self.store.enrollment()['id']
         for row in (a,b,c):
             row['cursor']=row['seq']
@@ -594,7 +681,7 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(json.loads(self.page.locator('[name=credential]').input_value())['credential']['api_key'], 'FIXTURE_CLAUDE_KEY')
 
     def test_empty_state_requires_pool_before_accounts(self):
-        empty = self.app._api('GET', '/api/state', None)
+        empty = self.app.platform_client.snapshot(self.page.context.cookies()[0]['value'])
         empty['remote']['pools'] = []
         empty['remote']['settings']['pool_pricing'] = []
         self.page.route('**/api/state', lambda route: route.fulfill(json=empty))

@@ -10,13 +10,13 @@ function resetConnectionAccount(){
   connectionEpoch++;
 }
 function savedMerchantSelector(){
-  const profiles=state.profiles||[];
-  if(profiles.length<2)return '';
-  return `<div class="saved-merchants"><label for="merchant-profile">当前服务账号</label><div class="actions"><select id="merchant-profile">${profiles.map((p,i)=>`<option value="${esc(p.merchant_id)}" ${p.active?'selected':''}>${esc(p.username||p.name||'已有商户 '+(i+1))}</option>`).join('')}</select>${btn('切换','merchant-switch')}</div></div>`;
+  const profiles=state.auth?.accounts||[];
+  if(!profiles.length)return '';
+  return `<div class="saved-merchants"><label for="merchant-profile">已登录账号</label><div class="actions"><select id="merchant-profile">${!state.auth.authenticated?'<option value="" selected disabled>选择账号</option>':''}${profiles.map(p=>`<option value="${esc(p.id)}" ${p.active?'selected':''}>${esc(p.username)}</option>`).join('')}</select>${btn('切换','merchant-switch')}</div></div>`;
 }
 function connectionAccountView(){
-  const account=connectionAccount?.account,identity=state.identity||{};
-  const username=account?.username||identity.username||'';
+  const account=state.auth?.authenticated?(connectionAccount?.account||state.auth.account):null;
+  const username=account?.username||'';
   const mode=connectionMode||(!username?'login':'overview');
   const application=connectionAccount?.applications?.find(a=>a.kind==='merchant');
   const status=application?.status||(state.credentials?.saved?'saved':'');
@@ -43,7 +43,7 @@ function connectionAccountView(){
       ${application?.note?`<p>${esc(application.note)}</p>`:''}
       ${connectionAccount?.local_connection_error?`<p class="error">${esc(connectionAccount.local_connection_error)}</p>`:''}
       ${connectionError?`<p class="error" role="alert">${esc(connectionError)}</p>`:''}
-      <div class="actions identity-actions">${btn(account?'切换账号':'登录账号','identity-login')}${account?btn('修改密码','identity-password')+btn('退出登录','identity-logout'):''}${application?btn('刷新状态','identity-refresh'):''}</div>`;
+      <div class="actions identity-actions">${btn(account?'添加登录':'登录账号','identity-login')}${account?btn('修改密码','identity-password')+btn('退出登录','identity-logout'):''}${application?btn('刷新状态','identity-refresh'):''}</div>`;
   }
   return content+savedMerchantSelector();
 }
@@ -51,8 +51,8 @@ function connection(){
   const s=state.settings,saved=!!state.credentials?.saved;
   return heading('账号与连接','')+
     `<section id="merchant-account-panel" class="panel identity-panel">${connectionAccountView()}</section>`+
-    `<section class="panel"><div class="panelhead"><h2>Router 连接</h2><span class="badge ${state.connected?'':'pending'}">${state.connected?'已连接':'未连接'}</span></div><form id="connection"><div class="grid">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${field('TDX 信任策略','tdx_policy',s.tdx_policy)}<label>上传 TDX 策略<input type="file" data-policy="tdx" accept=".json,application/json"></label>${field('SNP 信任策略','snp_policy',s.snp_policy)}<label>上传 SNP 策略<input type="file" data-policy="snp" accept=".json,application/json"></label></div><div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}<button data-action="connect" ${saved?'':'disabled'}>连接商户</button></div></form></section>`+
-    `<section class="panel"><div class="panelhead"><h2>管理平台</h2><span>${state.archive?.synced_at?'上次同步 '+esc(new Date(state.archive.synced_at*1000).toLocaleString()):'尚未同步'}</span></div><form id="platform-connection">${field('管理平台地址','platform_url',s.platform_url||'','url')}<div class="actions"><button type="submit" class="primary">保存平台地址</button><button type="button" data-action="sync">同步账单</button></div></form></section>`;
+    (state.auth?.authorized?`<section class="panel"><div class="panelhead"><h2>Router 连接</h2><span class="badge ${state.connected?'':'pending'}">${state.connected?'已连接':'未连接'}</span></div><form id="connection"><div class="grid">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${field('TDX 信任策略','tdx_policy',s.tdx_policy)}<label>上传 TDX 策略<input type="file" data-policy="tdx" accept=".json,application/json"></label>${field('SNP 信任策略','snp_policy',s.snp_policy)}<label>上传 SNP 策略<input type="file" data-policy="snp" accept=".json,application/json"></label></div><div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}<button data-action="connect" ${saved?'':'disabled'}>连接商户</button></div></form></section>`:'')+
+    `<section class="panel"><div class="panelhead"><h2>管理平台</h2><span>${state.auth?.authorized?(state.archive?.synced_at?'上次同步 '+esc(new Date(state.archive.synced_at*1000).toLocaleString()):'尚未同步'):''}</span></div><form id="platform-connection">${field('管理平台地址','platform_url',s.platform_url||'','url')}<div class="actions"><button type="submit" class="primary">保存平台地址</button>${state.auth?.authorized?'<button type="button" data-action="sync">同步账单</button>':''}</div></form></section>`;
 }
 function renderConnectionAccount(){
   const panel=$('#merchant-account-panel');
@@ -70,15 +70,11 @@ async function connectionApi(path,method='GET',data){
   return result;
 }
 async function acceptConnectionAccount(result){
-  const current=state.enrollment.id,next=await api('/api/state');
-  if(current!==next.enrollment.id){
-    records=[];selectedAccountPool=null;poolModelEditor=null;
-    revenueData=null;revenueQuery={start:'',end:'',pool:'',offset:'0'};
-  }
-  state=next;connectionAccount=result;connectionLoaded=connectionScope();connectionError='';connectionMode=null;
+  const next=await api('/api/state'),changed=acceptState(next);
+  connectionAccount=next.auth?.view||null;connectionLoaded=connectionScope();connectionError='';connectionMode=null;
   // Refresh only the account card unless the active merchant changed. A status
   // update must never erase connection fields the merchant is still editing.
-  if(current!==next.enrollment.id){section='connection';render();}
+  if(changed){section='connection';render();}
   else renderConnectionAccount();
 }
 async function loadConnectionAccount(force=false){
@@ -94,8 +90,8 @@ async function loadConnectionAccount(force=false){
     connectionLoaded=scope;
     if(error.status===401){
       connectionAccount=null;
-      if(state.credentials?.saved&&!Object.keys(state.identity||{}).length){
-        try{const identity=await api('/api/identity');if(epoch===connectionEpoch)state.identity=identity;}catch{}
+      if(state.auth?.authenticated){
+        hideMerchantView();await reload();return;
       }
     }else connectionError=error.message;
     if(epoch!==connectionEpoch||section!=='connection')return;
@@ -110,8 +106,11 @@ async function connectionAction(action){
   if(connectionBusy&&action!=='identity-refresh')return;
   if(action==='identity-refresh')return loadConnectionAccount(true);
   if(action==='identity-logout'){
-    await connectionApi('logout','POST',{});
-    connectionAccount=null;connectionMode='login';connectionEpoch++;connectionError='';renderConnectionAccount();return;
+    connectionBusy=true;
+    const request=connectionApi('logout','POST',{});
+    hideMerchantView();
+    try{await request;}finally{try{await reload();}finally{connectionBusy=false;}}
+    return;
   }
   connectionEpoch++;connectionError='';
   connectionMode=action==='identity-register'?'register':action==='identity-password'?'password':action==='identity-overview'?null:'login';
@@ -144,7 +143,7 @@ document.addEventListener('submit',async event=>{
     const result=await connectionApi(mode,'POST',data);
     form.reset();
     if(mode==='password'){
-      connectionAccount=null;connectionMode='login';renderConnectionAccount();toast('密码已修改，请重新登录');
+      hideMerchantView();await reload();toast('密码已修改，请重新登录');
     }else await acceptConnectionAccount(result);
   }catch(error){form.querySelector('.error').textContent=error.message;}
   finally{
@@ -157,3 +156,22 @@ setInterval(()=>{
   if(section==='connection'&&!document.hidden&&!connectionMode&&!$('#dialog').open&&
       !document.activeElement?.closest('form')&&(pending||connectionAccount?.local_connection_error))loadConnectionAccount(true).catch(()=>{});
 },5000);
+
+// Reconcile other tabs and server-side expiry without overwriting form drafts.
+let authPolling=false;
+async function pollAccountAccess(){
+  if(authPolling||connectionBusy||document.hidden||!state)return;
+  authPolling=true;
+  try{
+    const next=await api('/api/state');
+    if(accessScope(next)!==accessScope(state)){acceptState(next);render();}
+  }catch{}finally{authPolling=false;}
+}
+setInterval(pollAccountAccess,3000);
+window.addEventListener('focus',pollAccountAccess);
+document.addEventListener('visibilitychange',pollAccountAccess);
+window.addEventListener('message',event=>{
+  if(event.origin===location.origin&&event.source===$('.platform-frame')?.contentWindow&&event.data?.type==='merchant-login-required'){
+    hideMerchantView();reload().catch(()=>{});
+  }
+});
