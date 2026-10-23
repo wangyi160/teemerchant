@@ -103,8 +103,42 @@ class Store:
                 identity = 'm_' + hashlib.sha256(settings['token'].encode()).hexdigest()[:32]
                 if path.parent != self._profile_directory(identity):
                     raise ValueError('已保存的商户资料身份不一致')
-                result.append({'merchant_id': identity, 'active': identity == self.enrollment()['id']})
+                account = settings.get('platform_identity', {})
+                if account.get('platform_url') != settings.get('platform_url', '').rstrip('/'):
+                    account = {}
+                result.append({'merchant_id': identity, 'active': identity == self.enrollment()['id'],
+                               'username': account.get('username', ''), 'name': account.get('name', '')})
             return result
+
+    def platform_identity(self):
+        with self.lock:
+            account = self.settings.get('platform_identity', {})
+            if account.get('platform_url') != self.settings.get('platform_url', '').rstrip('/'):
+                return {}
+            return dict(account)
+
+    def remember_platform_identity(self, base, merchant_id, account, *, legacy=False):
+        """Cache identity received from the authenticated platform, per merchant vault."""
+        with self.lock:
+            if (merchant_id != self.enrollment()['id'] or not self.credentials()['saved']
+                    or base != self.settings.get('platform_url', '').rstrip('/')
+                    or not isinstance(account, dict) or account.get('role') != 'merchant'
+                    or not isinstance(account.get('id'), str)
+                    or not isinstance(account.get('name'), str)
+                    or (not legacy and not re.fullmatch(r'[a-zA-Z0-9_.-]{3,64}', account.get('username', '')))):
+                raise ValueError('平台返回的商户身份不匹配')
+            identity = {'platform_url': base, 'account_id': account['id'],
+                        'username': '' if legacy else account['username'],
+                        'name': account['name'], 'legacy': bool(legacy)}
+            if self.settings.get('platform_identity') == identity:
+                return
+            previous = self.settings.copy()
+            self.settings['platform_identity'] = identity
+            try:
+                self.save()
+            except Exception:
+                self.settings = previous
+                raise
 
     def _activate(self, candidate):
         """Commit the selection only after the target vault and database open.
@@ -274,6 +308,7 @@ class Store:
             self.settings['token'] = body['merchant_secret']
             if not same:
                 self.settings.pop('owner_secret', None)
+                self.settings.pop('platform_identity', None)
             self.settings['credentials_saved'] = True
             self.settings.pop('portal_url', None)
             self.settings.pop('portal_username', None)

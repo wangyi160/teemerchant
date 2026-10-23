@@ -59,7 +59,7 @@ def handler(application, origins, auth=None):
                     **(headers or {})}.items(): self.send_header(key,value)
             self.end_headers()
             try: self.wfile.write(data)
-            except (BrokenPipeError,ConnectionResetError): pass
+            except (BrokenPipeError,ConnectionResetError,ConnectionAbortedError): pass
         def handle_request(self):
             if not ipaddress.ip_address(self.client_address[0]).is_loopback:
                 return self.respond(403,{'error':'商户管理页面只允许本机访问'})

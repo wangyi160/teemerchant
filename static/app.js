@@ -1,7 +1,7 @@
 "use strict";
 const $=s=>document.querySelector(s), esc=v=>String(v??"").replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const names={overview:"概览",accounts:"账号与模型",customers:"客户授权",revenue:"收入明细",finance:"提现",receipts:"消费凭据",usage:"调用记录",refusals:"拒答记录",platform:"注册与登录",connection:"连接与身份"};
-let state=null, section="overview", records=[];
+let state=null, section="overview", records=[], platformPath='/account';
 const btn=(label,action,id="",cls="")=>`<button class="${cls}" data-action="${action}" data-id="${esc(id)}">${esc(label)}</button>`;
 const field=(label,name,value="",type="text",attrs="")=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${attrs}></label>`;
 const table=(heads,rows)=>`<div class="scroll"><table><thead><tr>${heads.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${rows.length?rows.join(""): `<tr><td class="empty" colspan="${heads.length}">暂无记录</td></tr>`}</tbody></table></div>`;
@@ -28,7 +28,7 @@ async function reload(){
   if(state&&state.enrollment.id!==next.enrollment.id){
     records=[];selectedAccountPool=null;poolModelEditor=null;
     revenueData=null;revenueQuery={start:'',end:'',pool:'',offset:'0'};
-    section='connection';
+    if(section!=='platform')section='connection';
   }
   state=next;render();
 }
@@ -50,51 +50,30 @@ function form(title,html,action,options={}){
 function heading(title,desc,action=""){return `<div class="heading"><div><h1>${title}</h1><p>${desc}</p></div>${action}</div>`;}
 function render(){if(!state)return;$('#app').innerHTML=`<div class="shell"><aside><div class="brand">teemerchant<small>商户管理工作台</small></div>${Object.entries(names).map(([id,label])=>btn(label,'nav',id,section===id?'active':'')).join('')}<footer>商户独立身份 · 本地归档<br>经 TEE 验证后直连 Router</footer></aside><main><header><div><strong>${esc(names[section])}</strong><span class="status">${state.connected?esc(remote().merchant.name)+' · Router 已连接':'Router 尚未连接'}</span></div><div class="actions">${btn('刷新','reload')}</div></header><div class="content">${state.error?`<div class="notice error">Router 同步失败：${esc(state.error)}</div>`:''}${state.archive?.error?`<div class="notice error">管理平台账单同步失败：${esc(state.archive.error)}</div>`:''}${view()}</div></main></div>`;bindPoolModelEditor();bindRevenueFilters();}
 function recordsView(){return heading(names[section],'管理平台账单 · 最近 200 条',btn('立即同步','sync','','primary'))+`<section class="panel">${table(['ID','用户','模型 / 来源','详情'],records.map((r,i)=>{const e=r.event||r;return `<tr><td>${r.seq??r.id}</td><td>${esc(e.user_id||'')}</td><td>${esc(e.model||e.provider||'')}</td><td>${btn('查看','record',String(i))}</td></tr>`}))}</section>`;}
-function view(){if(['platform','finance','receipts'].includes(section)){const path=section==='platform'?'':'/'+section;return `<iframe class="platform-frame" title="${esc(names[section])}" src="/account${path}${section==='platform'?'':'#'+section}"></iframe>`;}if(['usage','refusals'].includes(section))return recordsView();if(section==='revenue')return revenueView();if(section==='connection')return connection();if(!remote())return heading('连接你的 Router','')+`<section class="panel">${btn('注册与登录','nav','platform','primary')}${btn('连接与身份','nav','connection')}</section>`;
+function view(){if(['platform','finance','receipts'].includes(section)){const path=section==='platform'?platformPath:'/account/'+section+'#'+section;return `<iframe class="platform-frame" title="${esc(names[section])}" src="${esc(path)}"></iframe>`;}if(['usage','refusals'].includes(section))return recordsView();if(section==='revenue')return revenueView();if(section==='connection')return connection();if(!remote())return heading('连接你的 Router','')+`<section class="panel">${btn('注册与登录','nav','platform','primary')}${btn('连接与身份','nav','connection')}</section>`;
 if(section==='overview')return heading('商户概览','你的上游账号与客户访问状态。')+`<div class="cards"><div class="card"><small>账号池</small><strong>${pools().length}</strong></div><div class="card"><small>已使用客户</small><strong>${settings().customers.length}</strong></div><div class="card"><small>价格 / 配置版本</small><strong>v${settings().revision}</strong></div></div><section class="panel"><h2>${esc(remote().merchant.name)}</h2><p>商户 ID：<code>${esc(remote().merchant.id)}</code></p><p>用户沿用平台 API key；商户标识会出现在模型和账号池名称中。</p><div class="notice">平台资源上限：并发 ${remote().merchant.max_concurrent} · RPM ${remote().merchant.rpm||'不限'} · TPM ${remote().merchant.tpm||'不限'}。实际采用平台与商户配置中较低的限额。</div></section>`;
 if(section==='accounts')return accountsView();
 if(section==='customers')return customersView();
 
 }
 function connection(){
-  const s=state.settings,c=state.credentials,saved=!!c?.saved;
-  const status=saved?(state.connected?'已保存 · 当前连接使用此凭证':'已保存 · 尚未连接 Router'):'尚未填写商户凭证';
-  return heading('连接与身份','连接时会先验证 Router 的 TEE，再使用下方保存的商户凭证认证。')+
-    `<section class="panel"><div class="panelhead"><h2>商户接入凭证</h2><div class="actions">${saved?btn('添加商户','merchant-add'):''}${btn(saved?'编辑凭证':'填写接入凭证','merchant-credentials','','primary')}</div></div>
-      ${(state.profiles||[]).length>1?`<label for="merchant-profile">本机已保存的商户</label><div class="actions"><select id="merchant-profile">${state.profiles.map(p=>`<option value="${esc(p.merchant_id)}" ${p.active?'selected':''}>${esc(p.merchant_id)}${p.active?'（当前）':''}</option>`).join('')}</select>${btn('切换商户','merchant-switch')}</div>`:''}
-      <p id="merchant-credential-status">${status}</p><div class="grid credentials-grid">
-      <div><label for="merchant-saved-id">Merchant ID</label><input id="merchant-saved-id" value="${esc(c?.merchant_id||'')}" readonly placeholder="尚未填写" autocomplete="off"><div class="actions"><button data-action="merchant-copy-id" ${saved?'':'disabled'}>复制 ID</button></div></div>
-      <div><label for="merchant-saved-secret">Merchant Secret</label><input id="merchant-saved-secret" type="password" value="${saved?'********':''}" readonly placeholder="尚未填写" autocomplete="off"><div class="actions"><button data-action="merchant-secret" ${saved?'':'disabled'}>显示</button><button data-action="merchant-copy-secret" ${saved?'':'disabled'}>复制 Secret</button></div></div>
-      </div><p class="muted">${saved?'可添加或切换商户。每个商户的凭证、账号、账单和待同步修改分别保存；切换后点击「连接商户」，不会自动上传原商户的账号。':'在 Portal 注册商户并通过审核后，填写平台签发的 Merchant ID 和 Merchant Secret。'}</p></section>`+
+  const s=state.settings,saved=!!state.credentials?.saved,identity=state.identity||{};
+  return heading('连接与身份','')+
+    `<section class="panel"><div class="panelhead"><h2>当前账号</h2><div class="actions">${btn(identity.username?'切换账号':'登录账号','merchant-login','','primary')}</div></div>
+      <label for="merchant-username">用户名</label><input id="merchant-username" value="${esc(identity.username||'')}" readonly placeholder="${saved?'未关联登录账号':'尚未登录'}" autocomplete="off">
+      ${(state.profiles||[]).length>1?`<label for="merchant-profile">已保存的账号</label><div class="actions"><select id="merchant-profile">${state.profiles.map((p,i)=>`<option value="${esc(p.merchant_id)}" ${p.active?'selected':''}>${esc(p.username||p.name||'已有商户 '+(i+1))}${p.active?'（当前）':''}</option>`).join('')}</select>${btn('切换','merchant-switch')}</div>`:''}</section>`+
     `<section class="panel"><div class="panelhead"><h2>Router 连接</h2></div><form id="connection"><div class="grid">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${field('TDX 信任策略','tdx_policy',s.tdx_policy)}<label>上传 TDX 策略<input type="file" data-policy="tdx" accept=".json,application/json"></label>${field('SNP 信任策略','snp_policy',s.snp_policy)}<label>上传 SNP 策略<input type="file" data-policy="snp" accept=".json,application/json"></label></div><div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}<button data-action="connect" ${saved?'':'disabled'}>连接商户</button></div></form></section>`+
     `<section class="panel"><div class="panelhead"><h2>管理平台 · 账单同步</h2><span>${state.archive?.synced_at?'上次同步 '+esc(new Date(state.archive.synced_at*1000).toLocaleString()):'尚未同步'}</span></div><form id="platform-connection">${field('管理平台地址','platform_url',s.platform_url||'','url')}<div class="actions"><button type="submit" class="primary">保存平台地址</button><button type="button" data-action="sync">同步账单</button></div></form></section>`;
+}
+async function refreshIdentity(){
+  if(!state?.credentials?.saved)return;
+  const identity=state.enrollment.id;
+  await api('/api/identity');
+  if(section==='connection'&&state.enrollment.id===identity)await reload();
 }
 async function copyMerchantValue(value){
   if(window.teemerchant)await window.teemerchant.copyText(value);
   else await navigator.clipboard.writeText(value);
-}
-async function toggleMerchantSecret(){
-  const input=$('#merchant-saved-secret'),button=$('[data-action=merchant-secret]');
-  if(!input||!state.credentials?.saved)return;
-  if(input.type==='text'){input.value='********';input.type='password';button.textContent='显示';return;}
-  const identity=state.credentials.merchant_id,c=await api('/api/credentials');
-  if($('#merchant-saved-secret')!==input||c.merchant_id!==identity||!c.saved)return;
-  input.value=c.merchant_secret;input.type='text';button.textContent='隐藏';
-}
-async function copyMerchantSecret(){
-  const identity=state.credentials?.merchant_id,c=await api('/api/credentials');
-  if(!c.saved||c.merchant_id!==identity||state.credentials?.merchant_id!==identity)throw Error('凭证已变更，请刷新后重试');
-  await copyMerchantValue(c.merchant_secret);toast('Merchant Secret 已复制');
-}
-async function merchantCredentialsForm(add=false){
-  const c=add?{saved:false,merchant_id:'',merchant_secret:''}:await api('/api/credentials');
-  form(c.saved?'编辑商户接入凭证':'填写商户接入凭证',field('Merchant ID','merchant_id',c.merchant_id,'text','required autocomplete="off" placeholder="m_…"')+
-    field('Merchant Secret','merchant_secret',c.merchant_secret,'password','required autocomplete="off"')+
-    btn('显示 Secret','merchant-edit-secret')+
-    '<p>填写另一商户的凭证会切换身份，原商户的资料仍会保留，可随时切回。保存后点击「连接商户」完成认证。</p>',async f=>{
-      try{await api('/api/credentials','POST',Object.fromEntries(f));await reload();}
-      finally{f.delete('merchant_secret');}
-    },{submit:'保存接入凭证',success:'接入凭证已加密保存，请连接商户'});
 }
 
 function customersView(){
@@ -136,24 +115,20 @@ function customerForm(id){
 }
 
 async function action(a,id){
-if(a==='merchant-add')return merchantCredentialsForm(true);
+if(a==='merchant-login'){section='platform';platformPath='/account/login';render();return;}
 if(a==='merchant-switch'){
   const id=$('#merchant-profile').value;
   if(id===state.credentials.merchant_id)return;
-  await api('/api/merchant-profile','POST',{merchant_id:id});await reload();toast('已切换商户，本地资料已恢复；请连接商户');return;
+  await api('/api/merchant-profile','POST',{merchant_id:id});await reload();refreshIdentity().catch(error=>toast(error.message));toast('已切换账号');return;
 }
-if(a==='merchant-secret')return toggleMerchantSecret();
-if(a==='merchant-copy-secret')return copyMerchantSecret();
-if(a==='merchant-copy-id'){await copyMerchantValue(state.credentials.merchant_id);toast('Merchant ID 已复制');return;}
-if(a==='merchant-edit-secret'){const input=$('#dialog [name=merchant_secret]'),button=$('#dialog [data-action=merchant-edit-secret]');input.type=input.type==='password'?'text':'password';button.textContent=input.type==='password'?'显示 Secret':'隐藏 Secret';return;}
-if(a==='close'){if($('#dialog').dataset.busy)return;$('#dialog').close();$('#dialog').innerHTML='';return;}if(a==='nav'){section=id;if(id==='revenue')await loadRevenue();if(['usage','refusals'].includes(id))records=(await api('/api/records/'+id)).data;render();return;}if(a==='reload'){if(section==='revenue')await loadRevenue();if(state.connected)await api('/api/merchant');return reload();}if(a==='verify'){const result=await api('/api/verify','POST',{});toast(result.verified?'TEE 验证通过':JSON.stringify(result));return;}if(a==='connect'){await api('/api/connect','POST',{});await reload();toast('TEE 已验证，商户已连接');return;}if(a==='merchant-credentials')return merchantCredentialsForm();if(a==='pool')return poolForm();if(a==='edit-pool')return poolForm(id);if(a==='edit-pool-models')return poolModelsForm(id);if(a==='account')return accountForm();if(a==='sync-config'){await api('/api/config/sync','POST',{});await reload();toast(remote().local_sync?.state==='pending'?'本地资料已保留，同步尚未完成':'本地配置已同步至 Router');return;}if(a==='edit-account')return accountForm(id);if(a==='import-accounts')return batchAccountForm();if(a==='account-pool'){selectedAccountPool=id;return render();}if(a==='customer')return customerForm(id);if(a==='reset-refusals')return resetRefusals(id);if(a==='customer-defaults')return customerForm('');if(a==='revenue-detail')return revenueDetail(id);if(a==='revenue-page'){revenueQuery.offset=id;await loadRevenue();return render();}if(a==='revenue-reset'){revenueQuery={start:'',end:'',pool:'',offset:'0'};await loadRevenue();return render();}if(a==='refresh'){await api('/api/refresh','POST',{});return reload();}if(a==='toggle-account'){const d=draft(),a=d.pools.flatMap(p=>p.deployments).find(a=>a.id===id);a.enabled=!a.enabled;return save(d);}if(a==='delete-account')return form('删除账号',`<p>删除账号 ${esc(id)} 及其凭证，历史记录保留。</p>`,async()=>{const d=draft();for(const p of d.pools){const a=p.deployments.find(a=>a.id===id);if(a){p.deployments=p.deployments.filter(a=>a.id!==id);if(a.oauth_account)d.delete_accounts=[a.oauth_account];else d.delete_secrets=[a.api_key_ref];}}await save(d);});if(a==='sync'){await api('/api/sync','POST',{});if(section==='revenue')await loadRevenue();if(['usage','refusals'].includes(section))records=(await api('/api/records/'+section)).data;await reload();toast('管理平台账单已同步');return;}if(a==='record'){const dialog=$('#dialog');dialog.innerHTML=`<h2>记录详情</h2><pre>${esc(JSON.stringify(records[Number(id)],null,2))}</pre>${btn('关闭','close')}`;dialog.showModal();}}
+if(a==='close'){if($('#dialog').dataset.busy)return;$('#dialog').close();$('#dialog').innerHTML='';return;}if(a==='nav'){section=id;if(id==='platform')platformPath='/account';if(id==='revenue')await loadRevenue();if(['usage','refusals'].includes(id))records=(await api('/api/records/'+id)).data;render();if(id==='connection')refreshIdentity().catch(error=>toast(error.message));return;}if(a==='reload'){if(section==='revenue')await loadRevenue();if(state.connected)await api('/api/merchant');return reload();}if(a==='verify'){const result=await api('/api/verify','POST',{});toast(result.verified?'TEE 验证通过':JSON.stringify(result));return;}if(a==='connect'){await api('/api/connect','POST',{});await reload();toast('TEE 已验证，商户已连接');return;}if(a==='pool')return poolForm();if(a==='edit-pool')return poolForm(id);if(a==='edit-pool-models')return poolModelsForm(id);if(a==='account')return accountForm();if(a==='sync-config'){await api('/api/config/sync','POST',{});await reload();toast(remote().local_sync?.state==='pending'?'本地资料已保留，同步尚未完成':'本地配置已同步至 Router');return;}if(a==='edit-account')return accountForm(id);if(a==='import-accounts')return batchAccountForm();if(a==='account-pool'){selectedAccountPool=id;return render();}if(a==='customer')return customerForm(id);if(a==='reset-refusals')return resetRefusals(id);if(a==='customer-defaults')return customerForm('');if(a==='revenue-detail')return revenueDetail(id);if(a==='revenue-page'){revenueQuery.offset=id;await loadRevenue();return render();}if(a==='revenue-reset'){revenueQuery={start:'',end:'',pool:'',offset:'0'};await loadRevenue();return render();}if(a==='refresh'){await api('/api/refresh','POST',{});return reload();}if(a==='toggle-account'){const d=draft(),a=d.pools.flatMap(p=>p.deployments).find(a=>a.id===id);a.enabled=!a.enabled;return save(d);}if(a==='delete-account')return form('删除账号',`<p>删除账号 ${esc(id)} 及其凭证，历史记录保留。</p>`,async()=>{const d=draft();for(const p of d.pools){const a=p.deployments.find(a=>a.id===id);if(a){p.deployments=p.deployments.filter(a=>a.id!==id);if(a.oauth_account)d.delete_accounts=[a.oauth_account];else d.delete_secrets=[a.api_key_ref];}}await save(d);});if(a==='sync'){await api('/api/sync','POST',{});if(section==='revenue')await loadRevenue();if(['usage','refusals'].includes(section))records=(await api('/api/records/'+section)).data;await reload();toast('管理平台账单已同步');return;}if(a==='record'){const dialog=$('#dialog');dialog.innerHTML=`<h2>记录详情</h2><pre>${esc(JSON.stringify(records[Number(id)],null,2))}</pre>${btn('关闭','close')}`;dialog.showModal();}}
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-action]');if(!b)return;e.preventDefault();b.disabled=true;try{await action(b.dataset.action,b.dataset.id);}catch(error){toast(error.message);}finally{b.disabled=false;}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='connection')return;e.preventDefault();try{await api('/api/settings','PUT',Object.fromEntries(new FormData(e.target)));await reload();toast('连接设置已保存');}catch(error){toast(error.message);}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='platform-connection')return;e.preventDefault();try{await api('/api/platform','PUT',Object.fromEntries(new FormData(e.target)));await reload();toast('管理平台地址已保存');}catch(error){toast(error.message);}});
 $('#dialog').addEventListener('cancel',e=>{if($('#dialog').dataset.busy)e.preventDefault();});
 $('#dialog').addEventListener('close',()=>{if(!$('#dialog').open)$('#dialog').innerHTML='';});
 reload().catch(e=>toast(e.message));
-window.addEventListener('message',e=>{if(e.origin===location.origin&&e.source===$('.platform-frame')?.contentWindow&&e.data?.type==='merchant-bound')reload().catch(error=>toast(error.message));});
+window.addEventListener('message',e=>{if(e.origin===location.origin&&e.source===$('.platform-frame')?.contentWindow&&e.data?.type==='merchant-bound'){platformPath='/account';reload().catch(error=>toast(error.message));}});
 // Reflect background model-policy cleanup without discarding an active form.
 let catalogViewPolling=false;
 setInterval(async()=>{

@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ class ClientTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory()
         self.store=Store(self.temp.name)
         self.store.settings.update(platform_url='https://platform.example',credentials_saved=True,owner_secret='PRIVATE_OWNER')
+        self.store.save()
         self.app=Application(self.store)
         self.identity=self.store.enrollment()['id']
         self.client=httpx.Client
@@ -64,6 +66,115 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(self.app.platform_client.sessions)
         with self.mock(lambda _:httpx.Response(302,headers={'location':'https://evil.test'},json={'error':'redirect'})):
             self.assertEqual(self.call('merchant','GET','finance').status,302)
+
+    def account_fixture(self, approved=True):
+        secret = 'b' * 64
+        merchant_id = 'm_' + hashlib.sha256(secret.encode()).hexdigest()[:32]
+        return {'account': {'id': 'p_seller', 'role': 'merchant', 'username': 'seller', 'name': 'Seller'},
+                'applications': [{'kind': 'merchant', 'status': 'approved' if approved else 'pending',
+                                  'subject': merchant_id if approved else 'p_seller'}],
+                'merchant': {'id': merchant_id} if approved else None,
+                'merchant_credentials_available': approved}, {'merchant_id': merchant_id, 'merchant_secret': secret}
+
+    def test_login_binds_and_persists_username_without_exposing_credentials(self):
+        view, credentials = self.account_fixture()
+        first = self.identity
+        requests = []
+        def fetch(request):
+            requests.append(request.url.path)
+            self.assertNotIn('PRIVATE_OWNER', str(request.headers) + request.content.decode())
+            if request.url.path.endswith('/login'):
+                return httpx.Response(200, json={**view, 'csrf': 'private-csrf'},
+                    headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})
+            self.assertEqual(request.headers['cookie'], 'teerouter_portal=' + 'A' * 43)
+            self.assertNotIn('authorization', request.headers)
+            if request.url.path.endswith('/reveal'):
+                self.assertEqual(request.headers['x-csrf-token'], 'private-csrf')
+                return httpx.Response(200, json=credentials)
+            return httpx.Response(200, json=view)
+        with self.mock(fetch):
+            reply = self.call('account', 'POST', 'login', {'username': 'seller', 'password': 'not-saved'})
+            result = json.loads(reply.data)
+            self.assertTrue(result['local_connected'])
+            self.assertEqual(result['local_merchant_id'], credentials['merchant_id'])
+            self.assertNotIn(credentials['merchant_secret'].encode(), reply.data)
+            self.assertNotIn(b'private-csrf', reply.data)
+            self.identity = credentials['merchant_id']
+            self.assertEqual(self.call('account', 'GET', 'me').status, 200)
+        self.assertEqual(requests.count('/portal/api/merchant/credentials/reveal'), 1)
+        reopened = Store(self.temp.name)
+        try:
+            self.assertEqual(reopened.platform_identity()['username'], 'seller')
+            self.assertEqual(reopened.credentials()['merchant_id'], self.identity)
+            self.assertNotIn('not-saved', json.dumps(reopened.settings))
+        finally:
+            reopened.db.close()
+        self.assertEqual(len(self.store.profiles()), 2)
+        self.app.api('POST', '/api/merchant-profile', {'merchant_id': first})
+        self.identity = first
+        self.assertEqual(self.store.settings['owner_secret'], 'PRIVATE_OWNER')
+        self.assertEqual(self.store.platform_identity(), {})
+        with self.mock(lambda _: self.fail('Stale login must not switch the selected merchant back')):
+            self.assertEqual(self.call('account', 'GET', 'me').status, 401)
+
+    def test_pending_registration_binds_when_approved_and_retries_failed_delivery(self):
+        pending, credentials = self.account_fixture(False)
+        approved, _ = self.account_fixture(True)
+        current, fail_delivery = pending, True
+        def fetch(request):
+            if request.url.path.endswith('/register'):
+                return httpx.Response(201, json={**pending, 'csrf': 'csrf'},
+                    headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})
+            if request.url.path.endswith('/reveal'):
+                if fail_delivery:
+                    raise httpx.ReadTimeout('delivery interrupted')
+                return httpx.Response(200, json=credentials)
+            return httpx.Response(200, json=current)
+        with self.mock(fetch):
+            response = self.call('account', 'POST', 'register', {'role': 'merchant'})
+            self.assertFalse(json.loads(response.data)['local_connected'])
+            self.assertEqual(self.store.enrollment()['id'], self.identity)
+            current = approved
+            response = self.call('account', 'GET', 'me')
+            self.assertIn('local_connection_error', json.loads(response.data))
+            self.assertEqual(self.store.enrollment()['id'], self.identity)
+            fail_delivery = False
+            response = self.call('account', 'GET', 'me')
+            self.assertTrue(json.loads(response.data)['local_connected'])
+            self.assertEqual(self.store.enrollment()['id'], credentials['merchant_id'])
+
+    def test_existing_profile_uses_verified_username_and_legacy_name_is_not_a_username(self):
+        account = self.account_fixture()[0]['account']
+        profile = {'account': account, 'merchant': {'id': self.identity}, 'legacy': False}
+        def fetch(request):
+            self.assertEqual(request.url.path, '/merchant-api/v1/profile')
+            self.assertNotIn('PRIVATE_OWNER', str(request.headers))
+            return httpx.Response(200, json=profile)
+        with self.mock(fetch):
+            self.assertEqual(self.app.api('GET', '/api/identity', {})['username'], 'seller')
+            self.assertEqual(self.app.api('GET', '/api/state', {})['identity']['username'], 'seller')
+            profile['merchant']['id'] = 'm_' + '0' * 32
+            with self.assertRaises(ValueError): self.app.api('GET', '/api/identity', {})
+            self.assertEqual(self.store.platform_identity()['username'], 'seller')
+            profile['merchant']['id'] = self.identity
+            profile['legacy'] = True
+            self.assertEqual(self.app.api('GET', '/api/identity', {})['username'], '')
+        self.store.settings['platform_url'] = 'https://another.example'
+        self.assertEqual(self.store.platform_identity(), {})
+
+    def test_automatic_binding_rejects_another_merchants_credential(self):
+        view, credentials = self.account_fixture()
+        credentials = dict(credentials, merchant_id=self.identity, merchant_secret=self.store.settings['token'])
+        def fetch(request):
+            if request.url.path.endswith('/login'):
+                return httpx.Response(200, json={**view, 'csrf': 'csrf'},
+                    headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})
+            return httpx.Response(200, json=credentials)
+        with self.mock(fetch):
+            reply = self.call('account', 'POST', 'login')
+            self.assertIn('local_connection_error', json.loads(reply.data))
+            self.assertEqual(self.store.enrollment()['id'], self.identity)
+            self.assertEqual(self.store.platform_identity(), {})
 
 
 if __name__=='__main__':unittest.main()

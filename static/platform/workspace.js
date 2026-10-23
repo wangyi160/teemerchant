@@ -61,6 +61,6 @@ window.addEventListener('pageshow',event=>{if(event.persisted)refresh().catch(er
 refresh().catch(error=>{$('#workspace-content').innerHTML=`<div class="notice warn">${esc(error.message)}。请点击右上角刷新重试。</div>`;});
 setInterval(()=>{
   if(state&&!document.hidden&&!$('#dialog').open&&page!=='security'&&!document.activeElement?.closest('form')&&
-    (state.applications.some(a=>a.status==='pending'||a.status==='provisioning')||state.keys.some(k=>k.state==='provisioning')))
+    (state.local_connection_error||state.applications.some(a=>a.status==='pending'||a.status==='provisioning')||state.keys.some(k=>k.state==='provisioning')))
     refresh().catch(()=>{});
 },5000);

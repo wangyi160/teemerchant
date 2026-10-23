@@ -6,7 +6,7 @@ let policyReady=!register;
 document.querySelectorAll('[data-auth-role-link]').forEach(link=>{if(link.dataset.authRoleLink===authRole)link.setAttribute('aria-current','page');});
 function updateApproval(policy){
   $('#approval-hint').textContent=authRole==='merchant'
-    ?'提交后由管理员审核。通过后可领取 Merchant ID 和 Merchant Secret，用于连接 teemerchant。'
+    ?'提交后等待管理员审核。'
     :policy.user_approval==='manual'?'提交后由管理员审核，可在用户中心查看进度。':'注册后自动开通，可在用户中心创建 API key。';
 }
 async function loadPolicy(){

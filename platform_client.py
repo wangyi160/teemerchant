@@ -22,6 +22,68 @@ class PlatformClient:
         self.sessions = {}
         self.lock = threading.RLock()
 
+    @staticmethod
+    def request(client, method, url, headers, data=None):
+        with client.stream(method, url, headers=headers,
+                           **({'json': data or {}} if method != 'GET' else {})) as response:
+            chunks, size = [], 0
+            for chunk in response.iter_bytes():
+                size += len(chunk)
+                if size > 16 * 1024 * 1024:
+                    raise RuntimeError('账户响应过大')
+                chunks.append(chunk)
+            value = json.loads(b''.join(chunks))
+            if not isinstance(value, dict):
+                raise RuntimeError('平台账户响应无效')
+            return response.status_code, value, response.headers
+
+    def refresh_identity(self):
+        app = self.application
+        with app.state_lock, self.lock:
+            store = app.store
+            if not store.credentials()['saved']:
+                return {}
+            base = platform_url(store.settings.get('platform_url') or 'https://teerouter.org')
+            try:
+                with httpx.Client(trust_env=False, follow_redirects=False, timeout=20) as client:
+                    status, value, _ = self.request(client, 'GET', base + '/merchant-api/v1/profile',
+                        {'Accept': 'application/json', 'Authorization': 'Bearer ' + store.settings['token']})
+                if status != 200:
+                    raise RuntimeError('无法读取商户用户名，请检查管理平台连接')
+                store.remember_platform_identity(base, value.get('merchant', {}).get('id'),
+                    value.get('account'), legacy=value.get('legacy', False))
+                return store.platform_identity()
+            except (httpx.HTTPError, json.JSONDecodeError):
+                raise RuntimeError('无法连接管理平台，请检查平台地址后重试') from None
+
+    def bind_account(self, client, base, session, value):
+        """Resolve the authenticated account locally; never return its secret to the browser."""
+        app, store = self.application, self.application.store
+        value['local_connected'] = False
+        if not value.get('merchant_credentials_available'):
+            return
+        account = value.get('account', {})
+        if (account.get('role') != 'merchant' or not isinstance(account.get('id'), str)
+                or not isinstance(account.get('name'), str)
+                or not re.fullmatch(r'[a-zA-Z0-9_.-]{3,64}', account.get('username', ''))):
+            raise RuntimeError('平台账户响应无效')
+        approved = {a.get('subject') for a in value.get('applications', [])
+                    if a.get('kind') == 'merchant' and a.get('status') == 'approved'}
+        identity = store.enrollment()['id']
+        if not store.credentials()['saved'] or identity not in approved:
+            status, credentials, _ = self.request(client, 'POST', base + '/portal/api/merchant/credentials/reveal',
+                {'Accept': 'application/json', 'Cookie': session['cookie'], 'X-CSRF-Token': session['csrf']})
+            if status != 200:
+                raise RuntimeError('商户连接未完成，请刷新重试')
+            if credentials.get('merchant_id') not in approved:
+                raise RuntimeError('平台返回的商户身份不匹配')
+            app._api('POST', '/api/credentials', {k: credentials.get(k) for k in ('merchant_id', 'merchant_secret')})
+            identity = store.enrollment()['id']
+        store.remember_platform_identity(base, identity, account)
+        session['identity'] = identity
+        value['local_connected'] = True
+        value['local_merchant_id'] = identity
+
     def call(self, session_id, mode, method, path, data, operation, identity):
         if mode not in ('account', 'merchant'):
             raise ValueError('账户模式无效')
@@ -44,6 +106,9 @@ class PlatformClient:
             base = platform_url(store.settings.get('platform_url') or 'https://teerouter.org')
             key = (session_id, base)
             session = self.sessions.get(key, {})
+            if mode == 'account' and name not in ('login', 'register', 'info') and session.get('identity', identity) != identity:
+                self.sessions.pop(key, None)
+                return Reply(401, b'{"error":"login_required"}')
             headers = {'Accept': 'application/json'}
             if operation:
                 if not re.fullmatch(r'[A-Za-z0-9_.:-]{8,128}', operation):
@@ -61,42 +126,34 @@ class PlatformClient:
                 if session.get('cookie'):
                     headers['Cookie'] = session['cookie']
                     headers['X-CSRF-Token'] = session['csrf']
-                upstream = '/portal/api/' + ('merchant/credentials/reveal' if name == 'bind' else path)
+                upstream = '/portal/api/' + ('me' if name == 'bind' else path)
             try:
                 with httpx.Client(trust_env=False, follow_redirects=False, timeout=20) as client:
-                    with client.stream(method, base + upstream, headers=headers,
-                                       **({'json': data} if method != 'GET' else {})) as response:
-                        chunks, size = [], 0
-                        for chunk in response.iter_bytes():
-                            size += len(chunk)
-                            if size > 16 * 1024 * 1024:
-                                raise RuntimeError('账户响应过大')
-                            chunks.append(chunk)
-                        raw = b''.join(chunks)
-                        value = json.loads(raw)
-                        if response.status_code < 300:
-                            if name in ('login', 'register'):
-                                if value.get('account', {}).get('role') != 'merchant':
-                                    self.sessions.pop(key, None)
-                                    return Reply(403, json.dumps({'error': '请使用商户账号登录，用户账号请使用 teeproxy'}).encode())
-                                cookie = response.headers.get('set-cookie', '').split(';')[0]
-                                if not re.fullmatch(r'teerouter_portal=[A-Za-z0-9_-]{40,128}', cookie):
-                                    raise RuntimeError('平台登录响应无效')
-                                if len(self.sessions) >= 64:
-                                    self.sessions.pop(next(iter(self.sessions)))
-                                self.sessions[key] = {'cookie': cookie, 'csrf': value['csrf']}
-                            if name in ('logout', 'password'):
+                    status, value, response_headers = self.request(client, 'GET' if name == 'bind' else method,
+                                                                  base + upstream, headers, data)
+                    if status < 300:
+                        if mode == 'account' and name in ('login', 'register'):
+                            if value.get('account', {}).get('role') != 'merchant':
                                 self.sessions.pop(key, None)
-                            if name == 'bind':
-                                app._api('POST', '/api/credentials', {k: value[k] for k in ('merchant_id', 'merchant_secret')})
-                                raw = b'{"saved":true}'
-                            else:
-                                # The platform session/CSRF values are not browser credentials.
-                                if isinstance(value, dict):
-                                    value.pop('csrf', None)
-                                    raw = json.dumps(value, ensure_ascii=False).encode()
-                        elif response.status_code == 401 and mode == 'account':
+                                return Reply(403, json.dumps({'error': '请使用商户账号登录，用户账号请使用 teeproxy'}).encode())
+                            cookie = response_headers.get('set-cookie', '').split(';')[0]
+                            if not re.fullmatch(r'teerouter_portal=[A-Za-z0-9_-]{40,128}', cookie):
+                                raise RuntimeError('平台登录响应无效')
+                            if len(self.sessions) >= 64:
+                                self.sessions.pop(next(iter(self.sessions)))
+                            session = {'cookie': cookie, 'csrf': value['csrf'], 'identity': identity}
+                            self.sessions[key] = session
+                        if mode == 'account' and name in ('login', 'register', 'me', 'bind'):
+                            # Pending registrations bind on a later status refresh after approval.
+                            try:
+                                self.bind_account(client, base, session, value)
+                            except (httpx.HTTPError, json.JSONDecodeError, ValueError, RuntimeError, OSError):
+                                value['local_connection_error'] = '商户连接未完成，请刷新重试'
+                        if name in ('logout', 'password'):
                             self.sessions.pop(key, None)
-                        return Reply(response.status_code, raw)
+                        value.pop('csrf', None)
+                    elif status == 401 and mode == 'account':
+                        self.sessions.pop(key, None)
+                    return Reply(status, json.dumps(value, ensure_ascii=False).encode())
             except (httpx.HTTPError, json.JSONDecodeError):
                 raise RuntimeError('无法连接管理平台，请检查平台地址后重试') from None

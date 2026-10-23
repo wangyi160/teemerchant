@@ -247,36 +247,24 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('[name=credential]')).to_have_value(credential)
         self.assertEqual(len(self.router.writes), 2)
 
-    def test_merchant_credentials_show_locally_refill_edit_and_clear_on_navigation(self):
+    def test_connection_shows_username_and_login_without_manual_credentials(self):
+        from unittest.mock import patch
         secret = self.store.settings['token']
         identity = self.store.enrollment()['id']
+        self.store.remember_platform_identity(self.store.settings['platform_url'], identity,
+            {'id': 'p_seller', 'role': 'merchant', 'username': 'seller', 'name': 'Seller'})
         requested = []
         self.page.on('request', lambda request: requested.append(request.url) if request.url.endswith('/api/credentials') else None)
-        self.page.locator('aside [data-id=connection]').click()
-        expect(self.page.locator('#merchant-saved-id')).to_have_value(identity)
-        expect(self.page.locator('#merchant-credential-status')).to_contain_text('当前连接使用此凭证')
-        expect(self.page.locator('#merchant-saved-secret')).to_have_value('********')
+        with patch.object(self.app.platform_client, 'refresh_identity', return_value=self.store.platform_identity()):
+            self.page.locator('aside [data-id=connection]').click()
+            expect(self.page.locator('#merchant-username')).to_have_value('seller')
+        expect(self.page.locator('#merchant-saved-id, #merchant-saved-secret, [data-action=merchant-credentials]')).to_have_count(0)
         self.assertEqual(requested, [])
         denied = self.page.request.get(self.origin + '/api/credentials')
         self.assertEqual(denied.status, 403)
         self.assertNotIn(secret, denied.text())
-        self.page.locator('[data-action=merchant-secret]').click()
-        expect(self.page.locator('#merchant-saved-secret')).to_have_value(secret)
-        expect(self.page.locator('#merchant-saved-secret')).to_have_attribute('type','text')
-        self.page.locator('[data-action=merchant-secret]').click()
-        expect(self.page.locator('#merchant-saved-secret')).to_have_value('********')
-        self.page.locator('[data-action=merchant-secret]').click()
-        self.page.locator('aside [data-id=accounts]').click()
-        self.page.locator('aside [data-id=connection]').click()
-        expect(self.page.locator('#merchant-saved-secret')).to_have_value('********')
-        self.page.locator('[data-action=merchant-credentials]').click()
-        expect(self.page.locator('#dialog [name=merchant_id]')).to_have_value(identity)
-        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_value(secret)
-        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_attribute('type','password')
-        self.page.locator('[data-action=merchant-edit-secret]').click()
-        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_attribute('type','text')
-        self.page.get_by_role('button', name='取消', exact=True).click()
-        expect(self.page.locator('#dialog [name=merchant_secret]')).to_have_count(0)
+        self.page.get_by_role('button', name='切换账号', exact=True).click()
+        expect(self.page.frame_locator('.platform-frame').get_by_role('heading', name='商户登录')).to_be_visible()
         self.assertNotIn(secret, json.dumps(self.app.api('GET','/api/state',{})))
 
     def test_no_merchant_total_limits_and_pool_pricing_remains_editable(self):
@@ -284,6 +272,40 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('[data-action=edit-pool][data-id=openai]').click()
         expect(self.page.locator('[name=multiplier]')).to_have_value('0.2')
         self.page.get_by_role('button', name='取消', exact=True).click()
+
+    def test_login_automatically_binds_and_connection_displays_login_username(self):
+        import httpx
+        from unittest.mock import patch
+        secret = 'b' * 64
+        merchant_id = 'm_' + hashlib.sha256(secret.encode()).hexdigest()[:32]
+        account = {'id': 'p_seller', 'role': 'merchant', 'username': 'seller', 'name': 'Seller'}
+        view = {'account': account, 'merchant': {'id': merchant_id}, 'keys': [],
+                'applications': [{'kind': 'merchant', 'status': 'approved', 'subject': merchant_id}],
+                'merchant_credentials_available': True}
+        original_client = httpx.Client
+        def fetch(request):
+            if request.url.path.endswith('/login'):
+                return httpx.Response(200, json={**view, 'csrf': 'csrf'},
+                    headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})
+            if request.url.path.endswith('/reveal'):
+                return httpx.Response(200, json={'merchant_id': merchant_id, 'merchant_secret': secret})
+            if request.url.path.endswith('/profile'):
+                return httpx.Response(200, json={'account': account, 'merchant': {'id': merchant_id}, 'legacy': False})
+            if not request.headers.get('cookie'):
+                return httpx.Response(401, json={'error': 'login_required'})
+            return httpx.Response(200, json=view)
+        with patch('platform_client.httpx.Client', side_effect=lambda **kw: original_client(**kw, transport=httpx.MockTransport(fetch))):
+            self.page.locator('aside [data-id=platform]').click()
+            frame = self.page.frame_locator('.platform-frame')
+            frame.locator('[name=username]').fill('seller')
+            frame.locator('[name=password]').fill('a-test-password')
+            frame.get_by_role('button', name='登录', exact=True).click()
+            expect(frame.locator('#identity')).to_have_text('seller')
+            expect(frame.get_by_role('button', name='绑定到本机')).to_have_count(0)
+            self.assertEqual(self.store.enrollment()['id'], merchant_id)
+            self.page.locator('aside [data-id=connection]').click()
+            expect(self.page.locator('#merchant-username')).to_have_value('seller')
+            self.assertNotIn(secret, self.page.content())
 
     def test_revenue_totals_filter_pending_and_historic_bill_details(self):
         from test_revenue import receipt

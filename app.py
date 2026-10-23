@@ -158,6 +158,8 @@ class Application:
             return {'path':str(destination)}
         if (method, path) == ('GET', '/api/credentials'):
             return self.store.credentials(reveal=True)
+        if (method, path) == ('GET', '/api/identity'):
+            return self.platform_client.refresh_identity()
         if method == 'POST' and path in ('/api/credentials', '/api/merchant-profile'):
             with self.store.lock:
                 if path == '/api/credentials':
@@ -182,7 +184,7 @@ class Application:
                 raise ValueError('收入记录标识无效')
             return self.archive.detail(instance, int(seq))
         if (method, path) == ('GET', '/api/state'):
-            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'profiles': self.store.profiles(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error, 'archive': self.archive.status()}
+            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'identity': self.store.platform_identity(), 'profiles': self.store.profiles(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error, 'archive': self.archive.status()}
         if (method, path) == ('PUT', '/api/platform'):
             from platform_archive import platform_url
             if not isinstance(body, dict) or set(body) != {'platform_url'}:
@@ -207,7 +209,7 @@ class Application:
             return self.transport.call('VERIFY', '')
         if (method, path) == ('POST', '/api/connect'):
             if not self.store.credentials()['saved']:
-                raise ValueError('请先填写平台签发的 Merchant ID 和 Merchant Secret')
+                raise ValueError('请先登录已通过审核的商户账号')
             return self.connect()
         if (method, path) == ('GET', '/api/merchant'):
             return self.accept(self.transport.call('GET', '/merchant/state'))

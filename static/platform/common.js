@@ -21,6 +21,12 @@ async function api(path,method='GET',data,operationId=newOperationId()){
     if(response.status===401&&document.body.dataset.role&&document.body.dataset.mode!=='merchant')location.replace('/account/login');
     const error=Error(result.detail||result.error||'操作失败');error.status=response.status;throw error;
   }
+  if(result.local_merchant_id){
+    const identity=document.querySelector('meta[name=merchant-id]');
+    const changed=identity.content!==result.local_merchant_id;
+    identity.content=result.local_merchant_id;
+    if(changed||path==='login'||path==='register')parent.postMessage({type:'merchant-bound'},location.origin);
+  }
   return result;
 }
 function table(heads,rows,empty='暂无记录'){
