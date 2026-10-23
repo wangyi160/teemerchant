@@ -120,6 +120,7 @@ function customerForm(id){
 }
 
 async function action(a,id){
+if(a==='upload-policy'){$('#policy-file-'+id)?.click();return;}
 if(a.startsWith('identity-'))return connectionAction(a);
 if(a==='merchant-switch'){
   const id=$('#merchant-profile').value;
@@ -153,8 +154,10 @@ setInterval(async()=>{
 document.addEventListener('change',async e=>{
   if(!e.target.dataset.policy||!e.target.files?.length)return;
   const input=e.target,kind=input.dataset.policy;
+  const button=$('#policy-button-'+kind);
+  if(button)button.disabled=true;
   try{const file=input.files[0];if(file.size>2*1024*1024)throw Error('策略文件过大');
     const result=await api('/api/policy','POST',{kind,policy:JSON.parse(await file.text())});
-    const form=input.closest('form');if(form)form.elements[kind+'_policy'].value=result.path;
-  }catch(error){toast(error.message);}finally{input.value='';}
+    const form=input.closest('form');if(form){form.elements[kind+'_policy'].value=result.path;if(button)button.textContent='重新上传';}
+  }catch(error){toast(error.message);}finally{input.value='';if(button)button.disabled=false;}
 });

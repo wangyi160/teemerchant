@@ -5,6 +5,10 @@ let connectionError='', registrationAllowed=false;
 const connectionScope=()=>state.enrollment.id+'@'+state.settings.platform_url;
 const approvalNames={pending:'待审核',provisioning:'开通中',approved:'已开通',rejected:'审核未通过'};
 
+function policyUpload(kind,path){
+  return `<div class="policy-upload"><label id="policy-label-${kind}" for="policy-file-${kind}">${kind.toUpperCase()} 信任策略</label><input type="hidden" name="${kind}_policy" value="${esc(path||'')}"><input id="policy-file-${kind}" type="file" data-policy="${kind}" accept=".json,application/json" hidden><button id="policy-button-${kind}" type="button" data-action="upload-policy" data-id="${kind}" aria-labelledby="policy-label-${kind} policy-button-${kind}">${path?'重新上传':'上传'}</button></div>`;
+}
+
 function resetConnectionAccount(){
   connectionAccount=null;connectionLoaded='';connectionError='';connectionMode=null;
   connectionEpoch++;
@@ -51,7 +55,7 @@ function connection(){
   const s=state.settings,saved=!!state.credentials?.saved;
   return heading('账号与连接','')+
     `<section id="merchant-account-panel" class="panel identity-panel">${connectionAccountView()}</section>`+
-    (state.auth?.authorized?`<section class="panel"><div class="panelhead"><h2>Router 连接</h2><span class="badge ${state.connected?'':'pending'}">${state.connected?'已连接':'未连接'}</span></div><form id="connection"><div class="grid">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${field('TDX 信任策略','tdx_policy',s.tdx_policy)}<label>上传 TDX 策略<input type="file" data-policy="tdx" accept=".json,application/json"></label>${field('SNP 信任策略','snp_policy',s.snp_policy)}<label>上传 SNP 策略<input type="file" data-policy="snp" accept=".json,application/json"></label></div><div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}<button data-action="connect" ${saved?'':'disabled'}>连接商户</button></div></form></section>`:'')+
+    (state.auth?.authorized?`<section class="panel"><div class="panelhead"><h2>Router 连接</h2><span class="badge ${state.connected?'':'pending'}">${state.connected?'已连接':'未连接'}</span></div><form id="connection">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${policyUpload('tdx',s.tdx_policy)}${policyUpload('snp',s.snp_policy)}<div class="actions"><button type="submit" class="primary">保存连接</button>${btn('验证 TEE','verify')}<button data-action="connect" ${saved?'':'disabled'}>连接商户</button></div></form></section>`:'')+
     `<section class="panel"><div class="panelhead"><h2>管理平台</h2><span>${state.auth?.authorized?(state.archive?.synced_at?'上次同步 '+esc(new Date(state.archive.synced_at*1000).toLocaleString()):'尚未同步'):''}</span></div><form id="platform-connection">${field('管理平台地址','platform_url',s.platform_url||'','url')}<div class="actions"><button type="submit" class="primary">保存平台地址</button>${state.auth?.authorized?'<button type="button" data-action="sync">同步账单</button>':''}</div></form></section>`;
 }
 function renderConnectionAccount(){
