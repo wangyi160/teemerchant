@@ -18,6 +18,8 @@ from test_local_accounts import Router, LocalAccountTests
 
 class ProtocolTests(unittest.TestCase):
     def setUp(self):
+        auth = patch('app.verify_account')
+        auth.start(); self.addCleanup(auth.stop)
         self.tmp=tempfile.TemporaryDirectory();self.store=Store(self.tmp.name)
         self.url='https://fixture.example';self.store.settings['router']=self.url;self.store.save()
         self.router=Router(self.store);self.app=Application(self.store,self.router);self.app.accept(self.router.remote)

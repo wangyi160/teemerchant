@@ -12,7 +12,9 @@ from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
 from transport import Transport
-from credential_protocol import PROTOCOL, access_only, router_update
+from credential_protocol import PROTOCOL, access_only, fingerprint
+from account_auth import AccountError, sync_error, verify as verify_account
+from local_accounts import redact
 
 ROOT = Path(__file__).parent
 
@@ -72,19 +74,87 @@ class Application:
         if result['merchant'].get('configuration_required'):
             pending = self.store.accounts.restore_pending(self.store.settings['router'], result)
             if pending:
-                result = self.transport.call('PUT', '/merchant/config', router_update(pending))
-                self.store.accounts.acknowledge(self.store.settings['router'], result)
-        result = self.accept(result, clean_catalog=False)
+                # A failed restore is retained locally, not retried every 10 seconds.
+                self.accept(result, clean_catalog=False)
+                self.push_config()
+            else:
+                self.accept(result, clean_catalog=False)
+        else:
+            self.accept(result, clean_catalog=False)
         self.sync_credentials()
         if self.store.accounts.withdraw_empty_pools(self.store.settings['router']):
             return self.push_config()
-        return result
+        return self.remote
+
+    def check_accounts(self):
+        router, book = self.store.settings['router'], self.store.accounts
+        remote_accounts = {a['name']: a for a in (self.remote or {}).get('accounts', {}).get('data', [])}
+        remote_ids = book.published_deployments(router)
+        for identifier, account in book.sync_accounts(router).items():
+            status = account['sync'].get('state')
+            if status == 'paused':
+                continue
+            missing = not account['credential'] or ('api_key' in account['credential'] and not account['credential']['api_key'])
+            if missing and identifier not in remote_ids:
+                book.account_sync_result(router, identifier, account['basis'], 'paused', 'invalid_credential', '缺少本地账号凭证')
+                continue
+            if not account['enabled']:
+                continue
+            # A legacy remote account without a local credential cannot be
+            # tested or renewed here. Do not withdraw a working remote account
+            # merely because this installation has not imported its material.
+            if missing:
+                continue
+            try:
+                if status in ('checking', 'sending'):
+                    raise AccountError('sync_uncertain')
+                if account['provider'] != 'workbuddy' and account.get('oauth_account'):
+                    token = access_only(account['credential'])
+                    if token.get('expires_at', float('inf')) <= time.time():
+                        raise AccountError('access_token_expired')
+                    remote = remote_accounts.get(account['oauth_account'], {})
+                    if (remote.get('access_sha256') == fingerprint(token)
+                            and remote.get('health', {}).get('state') == 'reauthorization_required'):
+                        raise AccountError('authentication_failed')
+                if status in ('verified', 'synced'):
+                    continue
+                book.account_sync_result(router, identifier, account['basis'], 'checking')
+                self.remote = book.view(router)
+                verify_account(account)
+                book.account_sync_result(router, identifier, account['basis'], 'verified')
+            except Exception as error:
+                if isinstance(error, (ValueError, TypeError, AttributeError)):
+                    error = AccountError('invalid_credential')
+                code, message = sync_error(error)
+                book.account_sync_result(router, identifier, account['basis'], 'paused', code, message)
+        self.remote = book.view(router)
 
     def sync_credentials(self):
         if self.remote and self.remote.get('merchant', {}).get('credential_protocol') == PROTOCOL:
-            update = self.store.accounts.access_updates(self.store.settings['router'], self.remote)
+            router, book = self.store.settings['router'], self.store.accounts
+            self.renew_credentials()
+            self.check_accounts()
+            book.reconcile_accounts(router)
+            pending = book.pending(router)
+            if pending and not book.view(router)['local_sync']['error']:
+                self.push_config()
+            update = book.access_updates(router, self.remote)
             if update:
-                self.accept(self.transport.call('PUT', '/merchant/accounts/access', update), clean_catalog=False)
+                for name, credential in update['accounts'].items():
+                    rows = {i: a for i, a in book.sync_accounts(router).items() if a['oauth_account'] == name and a['enabled']}
+                    for identifier, account in rows.items():
+                        book.account_sync_result(router, identifier, account['basis'], 'sending')
+                    try:
+                        body = {'runtime_id': update['runtime_id'], 'accounts': {name: credential}}
+                        self.accept(self.transport.call('PUT', '/merchant/accounts/access', body), clean_catalog=False)
+                    except Exception as error:
+                        code, message = sync_error(error)
+                        for identifier, account in rows.items():
+                            book.account_sync_result(router, identifier, account['basis'], 'paused', code, message)
+                    else:
+                        for identifier, account in rows.items():
+                            book.account_sync_result(router, identifier, account['basis'], 'synced')
+                self.remote = book.view(router)
 
     def renew_credentials(self):
         from oauth_service import refresh
@@ -100,6 +170,10 @@ class Application:
                 credential = refresh(account['provider'], account['credential'], account.get('proxy', ''))
             except (RuntimeError, ValueError) as error:
                 self.store.accounts.renewal_finished(router, name, basis, error=error)
+                for identifier, account in self.store.accounts.sync_accounts(router).items():
+                    if account['oauth_account'] == name:
+                        code = 'authentication_failed' if getattr(error, 'permanent', False) else 'renewal_failed'
+                        self.store.accounts.account_sync_result(router, identifier, account['basis'], 'paused', code, str(AccountError(code)))
             else:
                 # A failed local save deliberately leaves the durable 'refreshing'
                 # marker. Never send or retry tokens that were not durably saved.
@@ -111,20 +185,43 @@ class Application:
         pending = self.store.accounts.pending(router)
         if not pending:
             return self.remote
+        sending = {}
+        previous = self.store.accounts.published_deployments(router)
+        affected = {d['id'] for p in pending['pools'] for d in p['deployments']
+                    if d.get('oauth_account') in pending.get('accounts', {}) or d.get('api_key_ref') in pending.get('secrets', {})
+                    or redact(d) != redact(previous.get(d['id']))}
         try:
             if not self.connected:
                 self.connect()
                 pending = self.store.accounts.pending(router)
                 if not pending:
                     return self.remote
-            result = self.transport.call('PUT', '/merchant/config', router_update(pending))
+            self.renew_credentials()
+            self.check_accounts()
+            pending = self.store.accounts.pending(router)
+            projected = self.store.accounts.projected_update(router, pending)
+            published = {d['id']: d for p in projected['pools'] for d in p['deployments']}
+            previous = self.store.accounts.published_deployments(router)
+            sending = {i: a for i, a in self.store.accounts.sync_accounts(router).items() if i in published
+                       and (a['oauth_account'] in projected.get('accounts', {}) or
+                            not a['oauth_account'] and a['sync'].get('state') == 'verified' or
+                            redact(published[i]) != redact(previous.get(i)))}
+            for identifier, account in sending.items():
+                self.store.accounts.account_sync_result(router, identifier, account['basis'], 'sending')
+            result = self.transport.call('PUT', '/merchant/config', projected)
             self.accept(result, clean_catalog=False)
             self.store.accounts.acknowledge(router, result)
+            for identifier, account in self.store.accounts.sync_accounts(router).items():
+                if account['sync'].get('state') in ('verified', 'sending'):
+                    self.store.accounts.account_sync_result(router, identifier, account['basis'], 'synced')
         except Exception as error:
             # The local write already committed. Retain it even if a request or its
             # acknowledgement failed; never silently replay credential updates.
-            message = str(error) if isinstance(error, (ValueError, RuntimeError)) else '同步失败，Router 写入结果待确认；本地资料已保存'
-            self.store.accounts.sync_failed(router, message)
+            code, detail = sync_error(error)
+            self.store.accounts.sync_failed(router, detail)
+            for identifier, account in self.store.accounts.sync_accounts(router).items():
+                if (identifier in affected or identifier in sending) and account['sync'].get('state') != 'paused':
+                    self.store.accounts.account_sync_result(router, identifier, account['basis'], 'paused', code, detail)
         self.remote = self.store.accounts.view(router)
         return self.remote
 
@@ -208,7 +305,30 @@ class Application:
             # through /api/config/sync when the user requests synchronization.
             return self.push_config() if self.connected else self.remote
         if (method, path) == ('POST', '/api/config/sync'):
+            router = self.store.settings['router']
+            for identifier, account in self.store.accounts.sync_accounts(router).items():
+                if account['sync'].get('state') == 'paused':
+                    self.store.accounts.retry_account(router, identifier)
             return self.push_config()
+        if (method, path) == ('POST', '/api/accounts/retry'):
+            if not isinstance(body, dict) or set(body) != {'id'} or not isinstance(body['id'], str):
+                raise ValueError('账号重试参数无效')
+            router = self.store.settings['router']
+            self.store.accounts.retry_account(router, body['id'])
+            try:
+                if not self.connected:
+                    self.connect()
+                else:
+                    self.accept(self.transport.call('GET', '/merchant/state'), clean_catalog=False)
+                    if self.store.accounts.pending(router):
+                        self.push_config()
+                    self.sync_credentials()
+            except Exception as error:
+                code, detail = sync_error(error)
+                account = self.store.accounts.sync_accounts(router)[body['id']]
+                self.store.accounts.account_sync_result(router, body['id'], account['basis'], 'paused', code, detail)
+                self.remote = self.store.accounts.view(router)
+            return self.remote
         if (method, path) == ('POST', '/api/accounts/test'):
             if not self.connected:
                 raise ValueError('请先连接 Router 再测试账号')

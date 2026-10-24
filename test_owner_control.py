@@ -11,6 +11,8 @@ from test_local_accounts import LocalAccountTests, Router
 
 class OwnerControlTests(unittest.TestCase):
     def setUp(self):
+        auth = patch('app.verify_account')
+        auth.start(); self.addCleanup(auth.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(self.tmp.name)
         self.store.settings['router'] = 'https://fixture.example'

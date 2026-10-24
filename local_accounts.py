@@ -189,6 +189,7 @@ class AccountBook:
                 update['delete_' + field] = sorted(deleted)
             book['config'] = {k: copy.deepcopy(v) for k, v in update.items()
                               if k not in ('accounts', 'secrets', 'delete_accounts', 'delete_secrets')}
+            book['account_sync'] = {k: v for k, v in book.get('account_sync', {}).items() if k in ids}
             book['pending'] = update
             book['local_revision'] += 1
             book['sync_state'], book['sync_error'] = 'pending', ''
@@ -199,19 +200,113 @@ class AccountBook:
         with self.lock:
             return copy.deepcopy(self.data['routers'].get(router, {}).get('pending'))
 
+    @staticmethod
+    def _sync_accounts(book):
+        result = {}
+        remote_accounts = {a['name']: a for a in (book.get('remote') or {}).get('accounts', {}).get('data', [])}
+        for d in deployments(book.get('config')):
+            account = book.get('accounts', {}).get(d.get('oauth_account'), {})
+            value = {'provider': d['provider'], 'credential': copy.deepcopy(account.get('credential', {})),
+                     'proxy': account.get('proxy', d.get('proxy', '')),
+                     'enabled': d.get('enabled', True) and account.get('enabled', remote_accounts.get(d.get('oauth_account'), {}).get('enabled', True)),
+                     'oauth_account': d.get('oauth_account')}
+            if not d.get('oauth_account'):
+                value['credential'] = {'api_key': book.get('secrets', {}).get(d.get('api_key_ref'))}
+            value['basis'] = hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+            state = book.get('account_sync', {}).get(d['id'], {})
+            value['sync'] = copy.deepcopy(state) if state.get('basis') == value['basis'] else {}
+            result[d['id']] = value
+        return result
+
+    def sync_accounts(self, router):
+        with self.lock:
+            return self._sync_accounts(self.data['routers'].get(router, {}))
+
+    def published_deployments(self, router):
+        with self.lock:
+            remote = self.data['routers'].get(router, {}).get('remote')
+            return {d['id']: copy.deepcopy(d) for d in deployments(remote)}
+
+    def account_sync_result(self, router, identifier, basis, state, code='', message=''):
+        with self.lock:
+            data = copy.deepcopy(self.data)
+            book = self._book(data, router)
+            account = self._sync_accounts(book).get(identifier)
+            if not account or account['basis'] != basis:
+                raise RuntimeError('账号已变更，请重新检查')
+            book.setdefault('account_sync', {})[identifier] = {
+                'basis': basis, 'state': state, 'code': code, 'error': message, 'updated_at': int(time.time())}
+            self._write(data)
+
+    def retry_account(self, router, identifier):
+        with self.lock:
+            data = copy.deepcopy(self.data)
+            book = self._book(data, router)
+            if identifier not in self._sync_accounts(book):
+                raise ValueError('本地账号不存在')
+            book.setdefault('account_sync', {}).pop(identifier, None)
+            ref = self._sync_accounts(book)[identifier]['oauth_account']
+            renewal = book.get('renewals', {}).get(ref, {})
+            if renewal.get('state') == 'retry':
+                renewal['retry_at'] = 0
+            self._write(data)
+
+    def projected_update(self, router, update):
+        """Paused material stays local, including after a fresh Router runtime."""
+        from credential_protocol import router_update
+        with self.lock:
+            result = copy.deepcopy(update)
+            paused = {name for name, account in self.sync_accounts(router).items()
+                      if account['sync'].get('state') in ('paused', 'checking', 'sending')}
+            for pool in result.get('pools', []):
+                pool['deployments'] = [d for d in pool['deployments'] if d['id'] not in paused]
+            refs = {d.get('oauth_account') for d in deployments(result)}
+            keys = {d.get('api_key_ref') for d in deployments(result)}
+            result['accounts'] = {k: v for k, v in result.get('accounts', {}).items() if k in refs}
+            result['secrets'] = {k: v for k, v in result.get('secrets', {}).items() if k in keys}
+            book = self.data['routers'].get(router, {})
+            known = {a['name'] for a in (book.get('remote') or {}).get('accounts', {}).get('data', [])}
+            for ref in refs - known - {None}:
+                if ref in book.get('accounts', {}):
+                    result['accounts'][ref] = copy.deepcopy(book['accounts'][ref])
+            return router_update(result)
+
+    def reconcile_accounts(self, router):
+        """Publish healthy local accounts / withdraw held accounts once, not each tick."""
+        with self.lock:
+            book = self.data['routers'].get(router, {})
+            if not book.get('config') or not book.get('remote') or book.get('pending'):
+                return False
+            projected = self.projected_update(router, book['config'])
+            if {d['id'] for d in deployments(projected)} == {d['id'] for d in deployments(book['remote'])}:
+                return False
+            update = copy.deepcopy(book['config'])
+            update.update(expected_revision=book['remote']['settings']['revision'], _local_revision=book['local_revision'])
+            refs = {d.get('oauth_account') for d in deployments(update)}
+            keys = {d.get('api_key_ref') for d in deployments(update)}
+            update['accounts'] = {k: copy.deepcopy(v) for k, v in book['accounts'].items() if k in refs}
+            update['secrets'] = {k: v for k, v in book['secrets'].items() if k in keys}
+            self.stage(router, update)
+            return True
+
     def renewal_candidates(self, router, now=None):
         """A durable 'refreshing' marker is never blindly retried after a crash."""
         now = time.time() if now is None else now
         with self.lock:
             book = self.data['routers'].get(router, {})
             refs = {d.get('oauth_account') for d in deployments(book.get('config')) if d.get('enabled', True)}
+            paused = {a['oauth_account'] for a in self._sync_accounts(book).values()
+                      if a['sync'].get('state') in ('paused', 'checking', 'sending')}
             result = []
             for name in refs:
                 account = book.get('accounts', {}).get(name)
-                if not account or not account.get('enabled', True) or account.get('provider') == 'workbuddy': continue
-                credential = normalized(account.get('credential', {}))
-                if not credential.get('refresh_token'): continue
-                expiry = access_only(credential).get('expires_at')
+                if name in paused or not account or not account.get('enabled', True) or account.get('provider') == 'workbuddy': continue
+                try:
+                    credential = normalized(account.get('credential', {}))
+                    if not credential.get('refresh_token'): continue
+                    expiry = access_only(credential).get('expires_at')
+                except (ValueError, TypeError, AttributeError):
+                    continue  # The per-account authentication check reports this.
                 if expiry is None or expiry > now + 300: continue
                 basis = hashlib.sha256(json.dumps(account['credential'], sort_keys=True).encode()).hexdigest()
                 status = book.get('renewals', {}).get(name, {})
@@ -250,11 +345,14 @@ class AccountBook:
             pending=book.get('pending') or {}
             enabled_refs={d.get('oauth_account') for d in deployments(book.get('config')) if d.get('enabled',True)}
             statuses={a['name']:a for a in remote.get('accounts',{}).get('data',[])}
+            paused={a['oauth_account'] for a in self._sync_accounts(book).values()
+                    if a['sync'].get('state') in ('paused','checking','sending')}
             updates={}
             for name,account in book.get('accounts',{}).items():
                 status=statuses.get(name)
-                if not status or account.get('provider')=='workbuddy': continue
-                credential=access_only(account['credential'])
+                if not status or name in paused or name not in enabled_refs or not account.get('enabled',True) or account.get('provider')=='workbuddy': continue
+                try: credential=access_only(account['credential'])
+                except (ValueError, TypeError, AttributeError): continue
                 if pending:
                     patch=pending.get('accounts',{}).get(name,{})
                     if name not in enabled_refs or 'proxy' in patch: continue
@@ -285,10 +383,10 @@ class AccountBook:
             rows = deployments(update)
             account_refs = {d['oauth_account'] for d in rows if d.get('oauth_account')}
             secret_refs = {d['api_key_ref'] for d in rows if d.get('api_key_ref')}
-            if account_refs - book['accounts'].keys() or secret_refs - book['secrets'].keys():
-                raise ValueError('本机缺少账号凭据，请重新导入后同步')
-            update['accounts'] = {k: copy.deepcopy(book['accounts'][k]) for k in account_refs}
-            update['secrets'] = {k: book['secrets'][k] for k in secret_refs}
+            # Missing material is held per account by the authentication pass;
+            # it must not prevent the other accounts from restoring service.
+            update['accounts'] = {k: copy.deepcopy(book['accounts'][k]) for k in account_refs if k in book['accounts']}
+            update['secrets'] = {k: book['secrets'][k] for k in secret_refs if k in book['secrets']}
             update['delete_accounts'], update['delete_secrets'] = [], []
             self.observe(router, remote)
             self.stage(router, update)
@@ -356,10 +454,17 @@ class AccountBook:
             # drafts, their order, model selections and multiplier after sync.
             pools = {pool['name']: pool for pool in config['pools']}
             empty = set()
+            paused = {name for name, account in self._sync_accounts(book).items()
+                      if account['sync'].get('state') in ('paused', 'checking', 'sending')}
             for pool in book['config']['pools']:
-                if not pool['deployments'] and pool['name'] not in pools:
+                held = [d for d in pool['deployments'] if d['id'] in paused]
+                if (not pool['deployments'] or held) and pool['name'] not in pools:
                     pools[pool['name']] = copy.deepcopy(pool)
                     empty.add(pool['name'])
+                elif held:
+                    published = {d['id']: d for d in pools[pool['name']]['deployments']}
+                    published.update({d['id']: copy.deepcopy(d) for d in held})
+                    pools[pool['name']]['deployments'] = [published[d['id']] for d in pool['deployments'] if d['id'] in published]
             ordered = [pool['name'] for pool in book['config']['pools'] if pool['name'] in pools]
             ordered.extend(name for name in pools if name not in ordered)
             config['pools'] = [pools[name] for name in ordered]
@@ -389,6 +494,9 @@ class AccountBook:
             # The Router revision guards writes; local_revision guards offline edits.
             view['local_revision'] = book['local_revision']
             view['renewals'] = copy.deepcopy(book.get('renewals', {}))
+            view['account_sync'] = {name: {k: v for k, v in account['sync'].items() if k != 'basis'}
+                                    for name, account in self._sync_accounts(book).items() if account['sync']}
+            view['account_enabled'] = {name: account['enabled'] for name, account in self._sync_accounts(book).items()}
             missing = [d['id'] for d in deployments(config) if not self._material(book, d)['credential_present']]
             view['local_sync'] = {'state': book['sync_state'], 'error': book['sync_error'],
                                   'saved_at': book['saved_at'], 'missing_credentials': missing}

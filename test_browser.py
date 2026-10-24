@@ -67,12 +67,21 @@ class FakeRouter:
             for customer in body.get('customers', []):
                 self.remote['settings']['customers'] = [c for c in self.remote['settings']['customers'] if c['user_id'] != customer['user_id']] + [copy.deepcopy(customer)]
             self.remote['settings']['revision'] += 1
+            for name, account in body.get('accounts', {}).items():
+                previous = next((a for a in self.remote['accounts']['data'] if a['name'] == name), {'name': name})
+                previous = {**previous, 'enabled': account.get('enabled', previous.get('enabled', True)), 'health': {'state': 'active'}}
+                if 'credential' in account and 'api_key' not in account['credential']:
+                    previous['access_sha256'] = hashlib.sha256(access_only(account['credential'])['access_token'].encode()).hexdigest()
+                self.remote['accounts']['data'] = [a for a in self.remote['accounts']['data'] if a['name'] != name] + [previous]
         return copy.deepcopy(self.remote)
 
 
 @unittest.skipUnless(sync_playwright, 'Optional Playwright dependency not installed')
 class BrowserTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        auth = patch('app.verify_account')
+        auth.start(); self.addCleanup(auth.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(self.tmp.name)
         self.router = FakeRouter(self.store)
@@ -155,6 +164,38 @@ class BrowserTests(unittest.TestCase):
         self.app.accept(copy.deepcopy(self.router.remote))
         self.page.evaluate('pollAccountAccess()')
         expect(self.page.get_by_text('目录获取失败', exact=True)).to_be_visible()
+
+    def test_account_auth_failure_and_pause_override_shared_model_catalog(self):
+        self.discover_fixture_model()
+        book, router = self.store.accounts, self.store.settings['router']
+        account = book.sync_accounts(router)['example-001']
+        book.account_sync_result(router, 'example-001', account['basis'], 'paused',
+                                 'authentication_failed', '账号认证失败（HTTP 401）')
+        self.app.remote = book.view(router)
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('账号认证失败', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('目录已就绪', exact=True)).to_have_count(0)
+        expect(self.page.get_by_text('等待模型目录', exact=True)).to_have_count(0)
+        expect(self.page.get_by_text('账号认证失败（HTTP 401） · 自动同步已暂停', exact=True)).to_be_visible()
+        expect(self.page.locator('[data-action=retry-account][data-id=example-001]')).to_be_visible()
+        calls = []
+        def retry(route):
+            calls.append(route.request.post_data_json)
+            book.account_sync_result(router, 'example-001', account['basis'], 'synced')
+            self.app.remote = book.view(router)
+            route.fulfill(status=200, content_type='application/json', body=json.dumps(self.app.remote))
+        self.page.route('**/api/accounts/retry', retry)
+        self.page.locator('[data-action=retry-account]').click()
+        expect(self.page.get_by_text('目录已就绪', exact=True)).to_be_visible()
+        self.assertEqual(calls, [{'id': 'example-001'}])
+
+    def test_disabled_credential_cannot_appear_as_waiting_for_catalog(self):
+        self.router.remote['accounts']['data'][0]['enabled'] = False
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('停用', exact=True)).to_be_visible()
+        expect(self.page.get_by_text('等待模型目录', exact=True)).to_have_count(0)
+        expect(self.page.locator('[data-action=toggle-account]')).to_have_text('启用')
 
     def test_catalog_updates_wait_for_account_edit_to_close_without_losing_draft(self):
         self.page.locator('[data-action=edit-account]').click()

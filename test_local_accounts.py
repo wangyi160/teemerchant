@@ -44,6 +44,9 @@ class Router:
 
 class LocalAccountTests(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        auth = patch('app.verify_account')
+        auth.start(); self.addCleanup(auth.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(self.tmp.name)
         self.store.settings['router'] = 'https://fixture.example'
