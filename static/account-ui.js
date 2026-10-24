@@ -122,7 +122,7 @@ function poolModelCatalog(chosen, catalog) {
     content = '';
     if (poolModelEditor) content += `<div class="notice">${esc(poolModelEditor.poolName)} 的模型名单正在编辑。${btn('继续编辑','edit-pool-models',poolModelEditor.poolName)}</div>`;
     content += table(['账号池','模型','对外开放'],chosen.flatMap(p => [...new Set(catalog.filter(c => c.pool === p.name)
-      .flatMap(c => Object.keys(c.official_models || {})).concat(p.allowed_models || []))].sort().map(id =>
+      .flatMap(c => Object.keys(c.official_models || {})))].sort().map(id =>
       `<tr><td>${esc(p.name)}</td><td>${esc(id)}</td><td><input type="checkbox" disabled aria-label="${esc(p.name)} 开放 ${esc(id)}" ${p.allowed_models == null || p.allowed_models.includes(id)?'checked':''}></td></tr>`)));
   }
   return `<section class="panel" id="pool-model-catalog"><div class="panelhead"><h2>池内模型目录${selectedAccountPool?' · '+esc(selectedAccountPool):''}</h2><div class="actions">${!edit && selectedAccountPool?btn('编辑开放模型','edit-pool-models',selectedAccountPool,'primary'):''}${btn('更新目录','refresh')}</div></div>${content}</section>`;

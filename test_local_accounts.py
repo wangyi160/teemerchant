@@ -264,6 +264,23 @@ class LocalAccountTests(unittest.TestCase):
         self.app.api('GET', '/api/merchant', {})
         self.assertEqual(self.router.writes, [])
 
+    def test_provider_catalog_can_prune_without_exposing_source_account(self):
+        self.selected_models()
+        self.catalog(['kept'], scope='provider', provider='openai', source_deployment=None)
+        result = self.app.api('GET', '/api/merchant', {})
+        self.assertEqual(result['pools'][0]['allowed_models'], ['kept'])
+
+    def test_unavailable_or_foreign_provider_catalog_preserves_selection(self):
+        self.selected_models()
+        for status in ({'provider': 'xai'}, {'provider': None}, {'complete_catalog': False},
+                       {'last_error': 'authentication_failed'}, {'last_error': 'timeout'}):
+            with self.subTest(status=status):
+                self.catalog([], **{'scope': 'provider', 'provider': 'openai',
+                                   'source_deployment': None, **status})
+                result = self.app.api('GET', '/api/merchant', {})
+                self.assertEqual(result['pools'][0]['allowed_models'], ['removed', 'kept'])
+        self.assertEqual(self.router.writes, [])
+
     def test_successful_empty_catalog_keeps_explicit_deny_all(self):
         self.selected_models()
         self.catalog([])

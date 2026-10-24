@@ -34,7 +34,7 @@ def redact(value):
 
 
 def current_pool_models(remote, pool, now):
-    """Return a complete, successful pool snapshot, or None when uncertain."""
+    """Return successful official evidence, or None when unavailable/uncertain."""
     enabled = {d['id'] for d in pool['deployments'] if d.get('enabled', True)}
     rows = [r for r in remote.get('catalog', {}).get('data', [])
             if r.get('pool') == pool['name'] and r.get('deployment') in enabled]
@@ -44,9 +44,13 @@ def current_pool_models(remote, pool, now):
     for row in rows:
         status, models = row.get('catalog') or {}, row.get('official_models')
         fetched, interval = status.get('fetched_at'), status.get('refresh_secs')
-        if (status.get('scope') != 'pool' or status.get('complete_catalog') is not True
+        providers = {d['provider'] for d in pool['deployments'] if d.get('enabled', True)}
+        scope_ok = ((status.get('scope') == 'pool' and status.get('source_deployment') in enabled)
+                    or (status.get('scope') == 'provider' and len(providers) == 1
+                        and status.get('provider') in providers - {'workbuddy'}))
+        if (not scope_ok or status.get('complete_catalog') is not True
                 or status.get('refreshing') is not False or 'last_error' not in status
-                or status['last_error'] is not None or status.get('source_deployment') not in enabled
+                or status['last_error'] is not None
                 or type(fetched) is not int or type(interval) is not int
                 or not 0 <= now - fetched < interval or not isinstance(models, dict)
                 or type(status.get('models')) is not int or status['models'] != len(models)):

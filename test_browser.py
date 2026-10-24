@@ -668,6 +668,9 @@ class BrowserTests(unittest.TestCase):
         config = config_from(self.router.remote)
         config['pools'][0]['allowed_models'] = ['removed', 'kept']
         self.app.api('PUT', '/api/config', config)
+        self.router.remote['catalog']['data'] = [{'pool': 'openai', 'deployment': 'example-001',
+            'official_models': {'removed': {}, 'kept': {}}}]
+        self.app.accept(copy.deepcopy(self.router.remote))
         self.page.reload()
         self.page.locator('aside [data-id=accounts]').click()
         expect(self.page.locator('#pool-model-catalog')).to_contain_text('removed')
@@ -684,6 +687,24 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('[name=allowed_model][value=removed]')).to_have_count(0)
         expect(self.page.locator('[name=allowed_model][value=kept]')).to_be_checked()
         expect(self.page.locator('[name=allowed_model][value=new]')).not_to_be_checked()
+
+    def test_failed_provider_refresh_clears_display_but_preserves_saved_model_selection(self):
+        from local_accounts import config_from
+        config = config_from(self.router.remote)
+        config['pools'][0]['allowed_models'] = ['fixture-discovered-model']
+        self.app.api('PUT', '/api/config', config)
+        self.discover_fixture_model()
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('#pool-model-catalog')).to_contain_text('fixture-discovered-model')
+        self.router.remote['catalog']['data'][0].update({'official_models': {}, 'catalog': {
+            'scope': 'provider', 'provider': 'openai', 'complete_catalog': False, 'models': 0,
+            'fetched_at': None, 'refresh_secs': 300, 'refreshing': False, 'last_error': 'timeout'}})
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('#pool-model-catalog')).not_to_contain_text('fixture-discovered-model')
+        expect(self.page.get_by_text('目录获取失败', exact=True)).to_be_visible()
+        self.page.locator('#pool-model-catalog [data-action=edit-pool-models]').click()
+        expect(self.page.locator('[name=allowed_model][value=fixture-discovered-model]')).to_be_checked()
 
     def test_inline_model_draft_survives_navigation_and_rejects_stale_save(self):
         self.router.remote['catalog']['data'] = [{'pool': 'openai', 'deployment': 'example-001',
