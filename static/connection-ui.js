@@ -5,6 +5,7 @@ let connectionError='', registrationAllowed=false;
 const connectionScope=()=>state.enrollment.id+'@'+state.settings.platform_url;
 const approvalNames={pending:'开通中',provisioning:'开通中',approved:'已开通',rejected:'未开通'};
 let routerConnecting=null, routerConnectionError=null;
+let platformSyncScope='', platformSyncing=null, platformSyncError=null;
 const routerScope=()=>JSON.stringify([accessScope(state),state?.settings.router,state?.settings.tdx_policy,state?.settings.snp_policy]);
 const routerError=()=>!state?.auth?.authorized?'':state.error||(routerConnectionError?.scope===routerScope()&&!state.connected?routerConnectionError.message:'');
 const routerStatus=()=>state?.connected?'已连接':routerConnecting?.scope===routerScope()?'连接中':routerError()?'连接失败':'未连接';
@@ -14,9 +15,41 @@ function updateRouterStatus(){
   if(badge){badge.textContent=status;badge.className='badge'+(state.connected?'':routerError()?' rejected':' pending');}
   if(header)header.textContent=state.auth?.authorized?'Router '+status:'未登录商户';
   if(notice){notice.hidden=!routerError();notice.textContent=routerError()?'Router 连接或同步失败：'+routerError():'';}
+  updatePlatformStatus();
+}
+function updatePlatformStatus(){
+  const allowed=!!state?.auth?.authorized,scope=accessScope(state);
+  const syncing=allowed&&platformSyncing?.scope===scope;
+  const error=allowed?(state.archive?.error||(platformSyncError?.scope===scope?platformSyncError.message:'')):'';
+  const label=$('#platform-sync-status'),notice=$('#platform-sync-error');
+  if(label)label.textContent=!allowed?'':syncing?'账单同步中':error?'账单同步失败':state.archive?.synced_at?'账单已同步 · '+new Date(state.archive.synced_at*1000).toLocaleString():'等待账单同步';
+  if(notice){notice.hidden=!error;notice.textContent=error?'管理平台账单同步失败：'+error:'';}
+  document.querySelectorAll('[data-action=sync]').forEach(button=>button.disabled=syncing);
+}
+async function syncPlatformAutomatically(){
+  if(!state?.auth?.authorized||!state.settings.platform_url)return;
+  const scope=accessScope(state),epoch=dataEpoch;
+  if(platformSyncScope===scope)return;
+  platformSyncScope=scope;
+  const attempt={scope};platformSyncing=attempt;platformSyncError=null;updatePlatformStatus();
+  try{
+    await api('/api/sync','POST',{});
+  }catch(error){
+    if(epoch===dataEpoch&&accessScope(state)===scope)platformSyncError={scope,message:error.message};
+  }finally{
+    if(epoch===dataEpoch&&accessScope(state)===scope){
+      try{
+        const next=await api('/api/state');
+        if(epoch===dataEpoch&&accessScope(state)===scope)acceptRouterState(next);
+      }catch{}
+    }
+    if(platformSyncing===attempt)platformSyncing=null;
+    updatePlatformStatus();
+  }
 }
 function acceptRouterState(next){
   const changed=state.connected!==next.connected;
+  if(state.archive?.synced_at!==next.archive?.synced_at)platformSyncError=null;
   if(accessScope(state)!==accessScope(next)){acceptState(next);render();return;}
   state=next;
   if(changed&&section!=='connection'&&!$('#dialog').open&&!poolModelEditor&&!document.activeElement?.closest('form'))render();
@@ -91,7 +124,7 @@ function connection(){
   return heading('账号与连接','')+
     `<section id="merchant-account-panel" class="panel identity-panel">${connectionAccountView()}</section>`+
     (state.auth?.authorized?`<section class="panel"><div class="panelhead"><h2>Router 连接</h2><span id="router-connection-status" class="badge ${state.connected?'':'pending'}">${routerStatus()}</span></div><form id="connection">${field('Router HTTPS 地址','router',s.router,'url','required placeholder="https://your-router.example"')}${policyUpload('tdx',s.tdx_policy)}${policyUpload('snp',s.snp_policy)}<div class="actions"><button type="submit" class="primary">保存连接</button></div></form></section>`:'')+
-    `<section class="panel"><div class="panelhead"><h2>管理平台</h2><span>${state.auth?.authorized?(state.archive?.synced_at?'上次同步 '+esc(new Date(state.archive.synced_at*1000).toLocaleString()):'尚未同步'):''}</span></div><form id="platform-connection">${field('管理平台地址','platform_url',s.platform_url||'','url')}<div class="actions"><button type="submit" class="primary">保存平台地址</button>${state.auth?.authorized?'<button type="button" data-action="sync">同步账单</button>':''}</div></form></section>`;
+    `<section class="panel"><div class="panelhead"><h2>管理平台</h2><span id="platform-sync-status" aria-live="polite"></span></div><form id="platform-connection">${field('管理平台地址','platform_url',s.platform_url||'','url')}<div class="actions"><button type="submit" class="primary">保存平台地址</button>${state.auth?.authorized?'<button type="button" data-action="sync">同步账单</button>':''}</div></form></section>`;
 }
 function renderConnectionAccount(){
   const panel=$('#merchant-account-panel');
@@ -116,6 +149,7 @@ async function acceptConnectionAccount(result){
   if(changed){section='connection';render();}
   else renderConnectionAccount();
   void connectRouterAutomatically();
+  void syncPlatformAutomatically();
 }
 async function loadConnectionAccount(force=false){
   if(section!=='connection'||connectionBusy||connectionLoading||(!force&&(connectionMode||connectionLoaded===connectionScope())))return;

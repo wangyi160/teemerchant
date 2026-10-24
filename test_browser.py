@@ -78,6 +78,12 @@ class BrowserTests(unittest.TestCase):
         self.router = FakeRouter(self.store)
         self.app = Application(self.store, self.router)
         self.app.accept(copy.deepcopy(self.router.remote))
+        self.archive_fetches = []
+        def archive_page(url, secret, cursor):
+            self.archive_fetches.append((url, cursor))
+            return {'version': 1, 'merchant_id': self.store.enrollment()['id'], 'archive_id': 'a'*32,
+                    'next_cursor': cursor, 'has_more': False, 'data': []}
+        self.app.archive.fetch = archive_page
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)
         self.origin = f'http://127.0.0.1:{self.server.server_port}'
         self.auth = LocalSessions()
@@ -390,6 +396,8 @@ class BrowserTests(unittest.TestCase):
             self.page.locator('#merchant-auth [name=password]').fill('a-test-password')
             self.page.locator('#merchant-auth [type=submit]').click()
             expect(self.page.locator('#merchant-username')).to_have_value('seller')
+            expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
+            self.assertIsNotNone(self.app.archive.status()['synced_at'])
             expect(self.page.get_by_role('button', name='绑定到本机')).to_have_count(0)
             self.assertEqual(self.store.enrollment()['id'], merchant_id)
             expect(self.page.get_by_role('heading', name='Router 连接')).to_be_visible()
@@ -402,6 +410,47 @@ class BrowserTests(unittest.TestCase):
             expect(self.page.locator('#merchant-auth [name=password]')).to_have_value('')
             self.assertFalse(self.app.platform_client.sessions)
             self.assertEqual(self.store.enrollment()['id'], merchant_id)
+
+    def test_platform_sync_status_updates_without_erasing_connection_drafts(self):
+        self.page.locator('aside [data-id=connection]').click()
+        expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
+        self.page.locator('#policy-path-tdx').fill('unsaved-policy.json')
+        calls = len(self.archive_fetches)
+        self.app.archive.error = 'fixture unavailable'
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('#platform-sync-status')).to_have_text('账单同步失败')
+        expect(self.page.locator('#platform-sync-error')).to_contain_text('fixture unavailable')
+        self.app.archive.error = ''
+        with self.store.lock, self.store.db:
+            self.store.db.execute('UPDATE platform_cursors SET synced_at=synced_at+1')
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
+        expect(self.page.locator('#platform-sync-error')).to_be_hidden()
+        expect(self.page.locator('#policy-path-tdx')).to_have_value('unsaved-policy.json')
+        self.assertEqual(len(self.archive_fetches), calls)
+
+    def test_platform_sync_is_immediate_nonblocking_and_late_result_is_discarded(self):
+        self.page.locator('aside [data-id=connection]').click()
+        expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
+        self.page.evaluate('''() => {
+          window.originalRequest=window.teemerchant.request;
+          window.syncCalls=0;
+          window.teemerchant.request=(method,path,...rest)=>{
+            if(path==='/api/sync'){syncCalls++;return new Promise(resolve=>window.releaseSync=resolve)}
+            return window.originalRequest(method,path,...rest);
+          };
+          platformSyncScope='';void syncPlatformAutomatically();void syncPlatformAutomatically();
+        }''')
+        expect(self.page.locator('#platform-sync-status')).to_have_text('账单同步中')
+        self.page.locator('#policy-path-tdx').fill('still-editable.json')
+        self.assertEqual(self.page.evaluate('syncCalls'), 1)
+        for session in self.app.platform_client.sessions.values():session['expires']=0
+        self.page.evaluate('pollAccountAccess()')
+        self.page.evaluate('releaseSync({ok:false,error:"PRIVATE_OLD_ACCOUNT_ERROR"})')
+        self.page.wait_for_function('() => !platformSyncing')
+        expect(self.page.locator('#platform-sync-status')).to_have_text('')
+        expect(self.page.locator('#platform-sync-error')).to_be_hidden()
+        self.assertNotIn('PRIVATE_OLD_ACCOUNT_ERROR', self.page.locator('body').inner_text())
 
     def test_inline_registration_pending_status_and_refresh_preserve_connection_drafts(self):
         self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
