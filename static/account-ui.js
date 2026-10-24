@@ -1,6 +1,12 @@
 "use strict";
 let selectedAccountPool = null;
 let poolModelEditor = null;
+let accountsRendered = '';
+function accountViewKey() {
+  const snapshot = remote();
+  return JSON.stringify([snapshot?.pools, snapshot?.accounts, snapshot?.renewals, snapshot?.catalog,
+    snapshot?.settings.revision, snapshot?.settings.pool_pricing, snapshot?.local_sync]);
+}
 
 function poolSelect(available, selected, label = '所属账号池') {
   return `<label>${label}<select name="pool" required>${available.map(p =>
@@ -48,6 +54,7 @@ function accountState(pool, deployment) {
 }
 
 function accountsView() {
+  accountsRendered = accountViewKey();
   if (selectedAccountPool === null || selectedAccountPool && !pools().some(p => p.name === selectedAccountPool))
     selectedAccountPool = pools()[0]?.name || '';
   const chosen = pools().filter(p => !selectedAccountPool || p.name === selectedAccountPool);

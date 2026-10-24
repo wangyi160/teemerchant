@@ -52,7 +52,8 @@ function acceptRouterState(next){
   if(state.archive?.synced_at!==next.archive?.synced_at)platformSyncError=null;
   if(accessScope(state)!==accessScope(next)){acceptState(next);render();return;}
   state=next;
-  if(changed&&section!=='connection'&&!$('#dialog').open&&!poolModelEditor&&!document.activeElement?.closest('form'))render();
+  const accountsChanged=section==='accounts'&&accountsRendered!==accountViewKey();
+  if((changed&&section!=='connection'||accountsChanged)&&!$('#dialog').open&&!poolModelEditor&&!document.activeElement?.closest('form'))render();
   else updateRouterStatus();
 }
 async function connectRouterAutomatically(){

@@ -117,6 +117,50 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('#account-test').click()
         expect(self.page.locator('#account-test-status')).to_contain_text('通过')
 
+    def discover_fixture_model(self):
+        self.router.remote['catalog'] = {'data': [{'pool': 'openai', 'deployment': 'example-001',
+            'official_models': {'fixture-discovered-model': {}},
+            'catalog': {'fetched_at': int(time.time()), 'last_error': None, 'refreshing': False}}]}
+        self.app.accept(copy.deepcopy(self.router.remote))
+
+    def test_account_status_and_models_update_when_background_catalog_arrives(self):
+        expect(self.page.get_by_text('等待模型目录', exact=True)).to_be_visible()
+        self.discover_fixture_model()
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('目录已就绪', exact=True)).to_be_visible()
+        expect(self.page.locator('#pool-model-catalog')).to_contain_text('fixture-discovered-model')
+        self.assertEqual(self.page.evaluate('selectedAccountPool'), 'openai')
+        self.page.evaluate("window.renderedCatalog=document.querySelector('#pool-model-catalog')")
+        self.page.evaluate('pollAccountAccess()')
+        self.assertTrue(self.page.evaluate("renderedCatalog===document.querySelector('#pool-model-catalog')"))
+        self.router.remote['catalog']['data'][0]['catalog']['last_error'] = 'provider_unavailable'
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('目录获取失败', exact=True)).to_be_visible()
+
+    def test_catalog_updates_wait_for_account_edit_to_close_without_losing_draft(self):
+        self.page.locator('[data-action=edit-account]').click()
+        self.page.locator('[name=max_concurrent]').fill('12')
+        self.discover_fixture_model()
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('[name=max_concurrent]')).to_have_value('12')
+        expect(self.page.locator('#dialog')).to_be_visible()
+        self.page.locator('[data-action=close]').click()
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('目录已就绪', exact=True)).to_be_visible()
+        self.assertEqual(self.router.writes, [])
+
+    def test_catalog_updates_preserve_open_model_selection_editor(self):
+        self.page.locator('#pool-model-catalog [data-action=edit-pool-models]').click()
+        self.page.locator('#pool-model-search').fill('unsaved-filter')
+        self.discover_fixture_model()
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('#pool-model-search')).to_have_value('unsaved-filter')
+        self.page.locator('#pool-model-cancel').click()
+        expect(self.page.locator('#pool-model-catalog')).to_contain_text('fixture-discovered-model')
+        expect(self.page.get_by_text('目录已就绪', exact=True)).to_be_visible()
+        self.assertEqual(self.router.writes, [])
+
     def test_refusal_policy_and_reset_are_user_scoped_and_preserve_other_limits(self):
         customer={'user_id':'existing-user','enabled':True,'models':[],'max_concurrent':3,
                   'rpm':7,'tpm':100,'refusal_limit':None,'refusal_baseline':2}
