@@ -1,18 +1,18 @@
 if(document.body.dataset.mode==='merchant'){
   document.querySelectorAll('header [data-action=logout]').forEach(n=>n.remove());
   workspace.views.finance=()=>`<div class="heading"><h1>提现</h1></div>${withdrawalsView()}`;
-  // Both pages read the merchant's durable local mirror. The service downloads
-  // platform changes independently of whether this frame is open.
+  // Query only the visible platform page; no background history download.
   loadFinance=async(redraw=true)=>{await loadWithdrawals();if(redraw&&page==='finance')render();};
   bindFinance=p=>{if(p==='finance')bindWithdrawals();};
-  let historyPolling=false;
-  async function refreshLocalHistory(){
+  let historyPolling=false,lastPlatformRead=Date.now();
+  async function refreshPlatformPage(force=false){
     if(historyPolling||!state||document.hidden||$('#dialog').open||withdrawalBusy||!['finance','receipts'].includes(page))return;
-    historyPolling=true;
+    if(!force&&Date.now()-lastPlatformRead<60000)return;
+    historyPolling=true;lastPlatformRead=Date.now();
     try{
       if(page==='receipts'){
-        const old=JSON.stringify(ownedReceipts);await loadOwnedReceipts(false);
-        if(page==='receipts'&&!$('#dialog').open&&old!==JSON.stringify(ownedReceipts))render();
+        const old=JSON.stringify([ownedReceipts,ownedReceiptError]);await loadOwnedReceipts(false);
+        if(page==='receipts'&&!$('#dialog').open&&old!==JSON.stringify([ownedReceipts,ownedReceiptError]))render();
       }else{
         const old=JSON.stringify([withdrawalData,withdrawalError]);await loadWithdrawals();
         if(page!=='finance'||$('#dialog').open||withdrawalBusy||old===JSON.stringify([withdrawalData,withdrawalError]))return;
@@ -24,9 +24,10 @@ if(document.body.dataset.mode==='merchant'){
       }
     }catch{}finally{historyPolling=false;}
   }
-  setInterval(refreshLocalHistory,3000);
-  window.addEventListener('focus',refreshLocalHistory);
-  document.addEventListener('visibilitychange',refreshLocalHistory);
+  window.refreshPlatformPage=refreshPlatformPage;
+  setInterval(refreshPlatformPage,60000);
+  window.addEventListener('focus',()=>refreshPlatformPage());
+  document.addEventListener('visibilitychange',()=>refreshPlatformPage());
 }else{
   const actions=document.querySelector('header .actions');
   for(const [id,label] of [['overview','入驻状态'],['security','账号安全']]){const link=document.createElement('a');link.href='/account#'+id;link.textContent=label;actions?.prepend(link);}

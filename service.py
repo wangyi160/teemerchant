@@ -105,7 +105,7 @@ def handler(application, origins, auth=None):
             if self.command=='GET' and path=='/app.css':
                 return self.respond(200,(ROOT/'static/app.css').read_bytes(),'text/css; charset=utf-8')
             if self.command=='GET' and path=='/app.js':
-                data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['web-bridge.js','account-config.js','app.js','connection-ui.js','account-ui.js','revenue-ui.js','oauth-ui.js'])
+                data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['web-bridge.js','account-config.js','app.js','connection-ui.js','account-ui.js','revenue-ui.js','records-ui.js','oauth-ui.js'])
                 return self.respond(200,data,'text/javascript; charset=utf-8')
             if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']): return self.respond(403,{'error':'页面会话无效，请刷新'})
             try:
@@ -124,7 +124,7 @@ def handler(application, origins, auth=None):
                     # Before login, the endpoint is a browser preference only.
                     # Never redirect a saved merchant's background credentials.
                     result=application.platform_client.set_base(session['id'],body)
-                elif self.command=='POST' and path=='/api/sync':
+                elif self.command=='GET' and path in ('/api/revenue','/api/revenue/record','/api/records/usage','/api/records/refusals'):
                     with application.state_lock, application.platform_client.lock:
                         application.platform_client.require(session['id'],self.headers.get('X-Merchant-ID'))
                     result=application.api(self.command,self.path,body,self.headers.get('X-Merchant-ID'))
@@ -240,7 +240,7 @@ class Runtime:
         from store import Store
         from app import Application
         args=self.args
-        lock=store=application=server=http_worker=worker=archive_worker=None
+        lock=store=application=server=http_worker=worker=None
         try:
             lock=DataLock(args.data)
             auth=LocalSessions()
@@ -254,15 +254,13 @@ class Runtime:
                 server.socket=context.wrap_socket(server.socket,server_side=True)
             worker=threading.Thread(target=application.background,args=(self.stop,),name='merchant-renewal',daemon=True)
             worker.start()
-            archive_worker=threading.Thread(target=application.archive_background,args=(self.stop,),name='merchant-platform-archive',daemon=True)
-            archive_worker.start()
             http_worker=threading.Thread(target=server.serve_forever,kwargs={'poll_interval':.2},name='merchant-http',daemon=True)
             http_worker.start()
             self.started_at=time.monotonic()
             self.state='stopping' if self.stop.is_set() else 'running'
             print(f'teemerchant local management: {args.url}',flush=True)
             while not self.stop.wait(.25):
-                if not http_worker.is_alive() or not worker.is_alive() or not archive_worker.is_alive():
+                if not http_worker.is_alive() or not worker.is_alive():
                     raise RuntimeError('HTTP 服务或后台任务已停止')
         except OSError as error:
             code=getattr(error,'winerror',None) or error.errno
@@ -280,7 +278,6 @@ class Runtime:
                     if http_worker and http_worker.is_alive():server.shutdown();http_worker.join()
                     server.server_close()
                 if worker:worker.join()
-                if archive_worker:archive_worker.join()
                 if application:application.transport.close()
                 if application:application.store.db.close()
                 elif store:store.db.close()

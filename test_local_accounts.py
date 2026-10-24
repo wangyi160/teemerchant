@@ -378,7 +378,7 @@ class LocalAccountTests(unittest.TestCase):
         self.app.last_catalog_check -= 61
         stop = unittest.mock.Mock()
         stop.wait.side_effect = [False, False, True]
-        with patch.object(self.app, 'sync'), patch.object(self.router, 'call', wraps=self.router.call) as call:
+        with patch.object(self.router, 'call', wraps=self.router.call) as call:
             self.app.background(stop)
         self.assertEqual(sum(c.args[:2] == ('GET', '/merchant/state') for c in call.call_args_list), 1)
         self.assertEqual(self.app.remote['pools'][0]['allowed_models'], ['kept'])

@@ -26,7 +26,6 @@ function ownedReceiptsView(){
   let html=`<div class="heading"><div><h1>消费凭据</h1><p>${merchant?'本商户':'本人'}已存证的模型调用流水与签名凭据。</p></div><a class="button-link" href="https://github.com/wangyi160/teerouter/releases/tag/receipt-verifier-v0.1.2" target="_blank" rel="noopener noreferrer">开源校验器 ↗</a></div>`;
   if(ownedReceiptError)html+=`<div class="notice warn" role="alert">凭据读取失败：${esc(ownedReceiptError)}。将自动重试。</div>`;
   if(!data)return html+(ownedReceiptError?'':'<p class="loading" role="status">正在读取消费凭据…</p>');
-  if(data.local_sync)html+=`<p class="muted">${data.local_sync.synced_at?'本地记录 · 更新于 '+date(data.local_sync.synced_at):'正在自动同步'}${data.local_sync.error?' · 同步暂未完成，将自动重试':''}</p>`;
   return html+`<section class="panel finance-records"><h2>已存证流水</h2>${table(['流水号','账号池 / 模型','时间','金额 · USD','操作'],data.data.map(row=>`<tr><td>#${esc(row.seq)}</td><td>${esc(row.pool||'—')}<span class="sub">${esc(row.provider)} / ${esc(row.model)}</span></td><td>${date(row.created_at)}</td><td>${row.charge_microusd==null||row.charge_microusd===''?'待核算':financeMoney(row.charge_microusd)}</td><td>${button('查看凭据','receipt-detail',row.seq,'link')}</td></tr>`),merchant?'本商户暂无已存证的调用流水。':'暂无已存证的消费流水。')}
     <div class="finance-pagination"><span>第 ${ownedReceiptPage+1} 页 · 本页 ${data.data.length} 条</span><div class="actions">
       <button type="button" data-action="receipt-first" ${!ownedReceiptPage||ownedReceiptRequest?'disabled':''}>最新</button>

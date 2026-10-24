@@ -88,7 +88,7 @@ class ClientTests(unittest.TestCase):
         self.assertFalse(self.app.platform_client.sessions)
         login_fixture(self.app, 'browser')
         with self.mock(lambda _:httpx.Response(302,headers={'location':'https://evil.test'},json={'error':'redirect'})):
-            self.assertEqual(self.call('merchant','GET','finance').status,302)
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 302'):self.call('merchant','GET','finance')
 
     def account_fixture(self, approved=True):
         secret = 'b' * 64

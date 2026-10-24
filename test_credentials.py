@@ -184,43 +184,6 @@ class CredentialsTests(unittest.TestCase):
         selected.write_bytes(raw)
         self.assertEqual(self.store.enrollment()['id'],second['merchant_id'])
 
-    def test_inflight_platform_archive_is_discarded_after_identity_switch(self):
-        from test_platform_archive import page
-        first,second=issued(),issued()
-        self.store.import_credentials(first)
-        entered,release,attempted,finished=threading.Event(),threading.Event(),threading.Event(),threading.Event()
-        self.store.settings['platform_url']='https://platform.example'
-        def blocked(*args):
-            result=page(self.store)
-            entered.set()
-            if not release.wait(5): raise AssertionError('archive not released')
-            return result
-        failures=[]
-        def sync():
-            try: self.app.sync()
-            except Exception as error: failures.append(error)
-        def switch():
-            attempted.set()
-            try: self.app.api('POST','/api/credentials',second)
-            except Exception as error: failures.append(error)
-            finally: finished.set()
-        with patch.object(self.app.archive,'fetch',side_effect=blocked):
-            worker=threading.Thread(target=sync);worker.start()
-            self.assertTrue(entered.wait(5))
-            changer=threading.Thread(target=switch);changer.start()
-            try:
-                self.assertTrue(attempted.wait(5))
-                self.assertTrue(finished.wait(5))
-                self.assertEqual(self.app.api('GET','/api/state',{})['enrollment']['id'],second['merchant_id'])
-            finally:
-                release.set();worker.join(5);changer.join(5)
-        self.assertEqual(len(failures),1)
-        self.assertIsInstance(failures[0],RuntimeError)
-        self.assertTrue(finished.is_set())
-        self.assertEqual(self.app.archive.records('usage'),[])
-        self.store.switch_profile({'merchant_id':first['merchant_id']})
-        self.assertEqual(self.app.archive.records('usage'),[])
-
     def test_failed_atomic_save_keeps_old_identity_in_memory_and_on_disk(self):
         original = self.store.enrollment()
         with patch('store.os.replace', side_effect=OSError('disk error')):

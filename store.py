@@ -70,9 +70,6 @@ class Store:
         self.accounts = AccountBook(self.directory, self.enrollment()['id'], self.protect)
         self.db = sqlite3.connect(self.directory / 'records.db', check_same_thread=False)
         self.db.execute('CREATE TABLE IF NOT EXISTS records(kind TEXT, instance TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(kind,instance,seq))')
-        self.db.execute('CREATE TABLE IF NOT EXISTS platform_records(url TEXT, archive_id TEXT, seq INTEGER, payload BLOB NOT NULL, PRIMARY KEY(url,seq))')
-        self.db.execute('CREATE TABLE IF NOT EXISTS platform_cursors(url TEXT PRIMARY KEY, archive_id TEXT NOT NULL, cursor INTEGER NOT NULL, synced_at INTEGER NOT NULL)')
-        self.db.execute('CREATE TABLE IF NOT EXISTS platform_history(url TEXT, kind TEXT, key TEXT, payload BLOB NOT NULL, PRIMARY KEY(url,kind,key))')
         self.db.commit()
         self.revenue_index = RevenueIndex()
 

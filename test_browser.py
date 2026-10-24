@@ -78,12 +78,16 @@ class BrowserTests(unittest.TestCase):
         self.router = FakeRouter(self.store)
         self.app = Application(self.store, self.router)
         self.app.accept(copy.deepcopy(self.router.remote))
-        self.archive_fetches = []
-        def archive_page(url, secret, cursor):
-            self.archive_fetches.append((url, cursor))
-            return {'version': 1, 'merchant_id': self.store.enrollment()['id'], 'archive_id': 'a'*32,
-                    'next_cursor': cursor, 'has_more': False, 'data': []}
-        self.app.archive.fetch = archive_page
+        self.platform_reads = []
+        def platform_read(path):
+            self.platform_reads.append(path)
+            if path.startswith('revenue'):
+                from revenue import RevenueIndex
+                return RevenueIndex().report('')
+            if path.startswith('activity?') or path.startswith('receipts/mine'):
+                return {'data': [], 'has_more': False, 'next_before': None}
+            raise AssertionError(path)
+        self.app.platform_data.fetch = platform_read
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), BaseHTTPRequestHandler)
         self.origin = f'http://127.0.0.1:{self.server.server_port}'
         self.auth = LocalSessions()
@@ -440,8 +444,6 @@ class BrowserTests(unittest.TestCase):
             self.page.locator('#merchant-auth [name=password]').fill('a-test-password')
             self.page.locator('#merchant-auth [type=submit]').click()
             expect(self.page.locator('#merchant-username')).to_have_value('seller')
-            expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
-            self.assertIsNotNone(self.app.archive.status()['synced_at'])
             expect(self.page.get_by_role('button', name='绑定到本机')).to_have_count(0)
             self.assertEqual(self.store.enrollment()['id'], merchant_id)
             expect(self.page.get_by_role('heading', name='Router 连接')).to_be_visible()
@@ -454,47 +456,6 @@ class BrowserTests(unittest.TestCase):
             expect(self.page.locator('#merchant-auth [name=password]')).to_have_value('')
             self.assertFalse(self.app.platform_client.sessions)
             self.assertEqual(self.store.enrollment()['id'], merchant_id)
-
-    def test_platform_sync_status_updates_without_erasing_connection_drafts(self):
-        self.page.locator('aside [data-id=connection]').click()
-        expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
-        self.page.locator('#policy-path-tdx').fill('unsaved-policy.json')
-        calls = len(self.archive_fetches)
-        self.app.archive.error = 'fixture unavailable'
-        self.page.evaluate('pollAccountAccess()')
-        expect(self.page.locator('#platform-sync-status')).to_have_text('账单同步失败')
-        expect(self.page.locator('#platform-sync-error')).to_contain_text('fixture unavailable')
-        self.app.archive.error = ''
-        with self.store.lock, self.store.db:
-            self.store.db.execute('UPDATE platform_cursors SET synced_at=synced_at+1')
-        self.page.evaluate('pollAccountAccess()')
-        expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
-        expect(self.page.locator('#platform-sync-error')).to_be_hidden()
-        expect(self.page.locator('#policy-path-tdx')).to_have_value('unsaved-policy.json')
-        self.assertEqual(len(self.archive_fetches), calls)
-
-    def test_platform_sync_is_immediate_nonblocking_and_late_result_is_discarded(self):
-        self.page.locator('aside [data-id=connection]').click()
-        expect(self.page.locator('#platform-sync-status')).to_contain_text('账单已同步')
-        self.page.evaluate('''() => {
-          window.originalRequest=window.teemerchant.request;
-          window.syncCalls=0;
-          window.teemerchant.request=(method,path,...rest)=>{
-            if(path==='/api/sync'){syncCalls++;return new Promise(resolve=>window.releaseSync=resolve)}
-            return window.originalRequest(method,path,...rest);
-          };
-          platformSyncScope='';void syncPlatformAutomatically();void syncPlatformAutomatically();
-        }''')
-        expect(self.page.locator('#platform-sync-status')).to_have_text('账单同步中')
-        self.page.locator('#policy-path-tdx').fill('still-editable.json')
-        self.assertEqual(self.page.evaluate('syncCalls'), 1)
-        for session in self.app.platform_client.sessions.values():session['expires']=0
-        self.page.evaluate('pollAccountAccess()')
-        self.page.evaluate('releaseSync({ok:false,error:"PRIVATE_OLD_ACCOUNT_ERROR"})')
-        self.page.wait_for_function('() => !platformSyncing')
-        expect(self.page.locator('#platform-sync-status')).to_have_text('')
-        expect(self.page.locator('#platform-sync-error')).to_be_hidden()
-        self.assertNotIn('PRIVATE_OLD_ACCOUNT_ERROR', self.page.locator('body').inner_text())
 
     def test_inline_registration_pending_status_and_refresh_preserve_connection_drafts(self):
         self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
@@ -584,8 +545,18 @@ class BrowserTests(unittest.TestCase):
             row['event']['merchant_id']=mid
             row['event']['settlement']={'state':'pending' if row is c else 'settled',
                 'charge_microusd':None if row is c else '50','official_cost_microusd':None}
-        batch={'version':1,'archive_id':'a'*32,'merchant_id':mid,'data':[a,b,c],'next_cursor':3,'has_more':False}
-        with patch.object(self.app.archive,'fetch',return_value=batch): self.app.sync()
+        from revenue import RevenueIndex, entry
+        from urllib.parse import parse_qs
+        index=RevenueIndex()
+        for row in (a,b,c):
+            item=entry('platform',row['seq'],row['event'])
+            item.update(state='pending' if row is c else 'calculated',charge_microusd=None if row is c else '50',basis='platform_settlement')
+            index.entries[('platform',row['seq'])]=item
+        def read(path):
+            if path.startswith('revenue'):
+                return index.report(path.partition('?')[2])
+            return next(row for row in (a,b,c) if str(row['seq'])==path.split('/')[-1])
+        self.app.platform_data.fetch=read
         self.page.locator('aside [data-id=revenue]').click()
         expect(self.page.get_by_role('heading', name='收入', exact=True)).to_be_visible()
         cards=self.page.locator('.revenue-cards .card')
@@ -892,8 +863,8 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('[name=max_concurrent]').fill('12')
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
-        expect(self.page.locator('.notice')).to_contain_text('等待同步')
-        expect(self.page.locator('.notice')).to_contain_text('revision_conflict')
+        expect(self.page.locator('.notice:not([id])')).to_contain_text('等待同步')
+        expect(self.page.locator('.notice:not([id])')).to_contain_text('revision_conflict')
         expect(self.page.locator('#toast')).to_contain_text('已保存到本地，等待同步')
         self.assertEqual(self.router.writes, [])
         self.page.locator('[data-action=edit-account]').click()
@@ -945,7 +916,7 @@ class BrowserTests(unittest.TestCase):
         self.app.connected = False
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
-        expect(self.page.locator('.notice')).to_contain_text('等待同步')
+        expect(self.page.locator('.notice:not([id])')).to_contain_text('等待同步')
         self.assertEqual(self.router.writes, [])
         self.page.reload()
         self.page.locator('aside [data-id=accounts]').click()
@@ -957,7 +928,7 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('#dialog')).not_to_be_visible()
         self.assertEqual(self.router.writes, [])
         self.page.locator('[data-action=sync-config]').click()
-        expect(self.page.locator('.notice')).to_contain_text('已与 Router 同步')
+        expect(self.page.locator('.notice:not([id])')).to_contain_text('已与 Router 同步')
         self.assertEqual(self.router.writes[0]['secrets']['offline-key'], 'LOCAL_PRIVATE_FIXTURE')
 
     def test_grok_native_paste_batch_and_local_edit(self):
@@ -1011,43 +982,69 @@ class BrowserTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_GROK', self.page.locator('body').inner_text())
 
 
-    def test_local_financial_pages_update_automatically_and_preserve_withdrawal_draft(self):
-        from test_platform_history import withdrawal, withdrawals, receipt, proof
-        ctx = self.app.history.context()
-        self.app.history.put(ctx, 'meta', 'withdrawals', {k: v for k, v in withdrawals().items() if k != 'data'})
-        self.app.history.save_withdrawal(ctx, withdrawal())
-        self.page.locator('aside [data-id=finance]').click()
-        frame = self.page.frame_locator('.platform-frame')
-        expect(frame.locator('#withdrawal-form')).to_be_visible()
-        frame.locator('[name=address]').fill('unsaved-withdrawal-address')
-        frame.locator('[name=amount]').fill('0.5')
-        # Change persisted state without a UI click, platform fetch or Router call.
-        self.app.history.save_withdrawal(ctx, withdrawal(state='paid', version=2))
-        expect(frame.locator('tbody').last).to_contain_text('已打款', timeout=10000)
-        expect(frame.locator('[name=address]')).to_have_value('unsaved-withdrawal-address')
-        expect(frame.locator('[name=amount]')).to_have_value('0.5')
-        self.page.locator('aside [data-id=receipts]').click()
-        expect(frame.locator('tbody')).to_contain_text('暂无')
-        self.app.history.put(ctx, 'proofs', 'batch:' + 'a' * 64, proof())
-        self.app.history.put(ctx, 'receipts', 1, {**receipt(), 'proof_key': 'batch:' + 'a' * 64})
-        expect(frame.locator('tbody')).to_contain_text('fixture-model', timeout=10000)
-        frame.locator('[data-action=receipt-detail]').click()
-        expect(frame.locator('#dialog')).to_contain_text('Ed25519')
-        for session in self.app.platform_client.sessions.values():session['expires'] = 0
-        self.page.evaluate('pollAccountAccess()')
-        expect(self.page.locator('iframe')).to_have_count(0)
-        self.assertNotIn('fixture-model', self.page.locator('body').inner_text())
 
-    def test_refusals_appear_after_background_archive_without_manual_refresh(self):
-        from test_platform_archive import page
+
+    def test_platform_records_are_queried_on_open_without_sync_controls_or_local_writes(self):
+        self.page.locator('aside [data-id=connection]').click()
+        expect(self.page.locator('[data-action=sync]')).to_have_count(0)
+        self.assertEqual(self.platform_reads, [])
+        rows=[];writes=[]
+        def query(path):
+            self.platform_reads.append(path)
+            return {'data':copy.deepcopy(rows),'has_more':False,'next_before':None}
+        self.app.platform_data.fetch=query
+        self.store.db.set_trace_callback(lambda sql:writes.append(sql) if sql.split()[0] in ('INSERT','UPDATE','DELETE') else None)
         self.page.locator('aside [data-id=refusals]').click()
-        expect(self.page.get_by_role('heading', name='拒答记录', exact=True)).to_be_visible()
+        expect(self.page.get_by_role('heading',name='拒答记录',exact=True)).to_be_visible()
         expect(self.page.locator('tbody')).to_contain_text('暂无记录')
-        self.app.archive.fetch = lambda *_: page(self.store)
-        self.app.archive.sync()
-        expect(self.page.locator('tbody')).to_contain_text('grok-4.7', timeout=10000)
+        rows.append({'seq':'17','event':{'model':'fixture-model','refusal_type':'provider_refusal'}})
+        self.page.evaluate('refreshPlatformRecords(true)')
+        expect(self.page.locator('tbody')).to_contain_text('fixture-model')
+        self.assertEqual(self.platform_reads,['activity?kind=refusals&limit=50']*2)
+        self.assertEqual(writes,[])
         self.page.locator('[data-action=record]').click()
         expect(self.page.locator('#dialog')).to_contain_text('provider_refusal')
+
+    def test_remote_withdrawal_refresh_preserves_form_and_displays_platform_errors(self):
+        from test_platform_data import withdrawals
+        status='pending';offline=False
+        def query(path):
+            self.assertEqual(path,'withdrawals')
+            if offline:raise RuntimeError('fixture platform offline')
+            return withdrawals(status)
+        self.app.platform_data.fetch=query
+        self.page.locator('aside [data-id=finance]').click()
+        frame=self.page.frame_locator('.platform-frame')
+        expect(frame.locator('#withdrawal-form')).to_be_visible()
+        frame.locator('[name=address]').fill('unsaved-address')
+        frame.locator('[name=amount]').fill('0.5')
+        status='paid'
+        self.page.frames[-1].evaluate('refreshPlatformPage(true)')
+        expect(frame.locator('tbody').last).to_contain_text('已打款')
+        expect(frame.locator('[name=address]')).to_have_value('unsaved-address')
+        expect(frame.locator('[name=amount]')).to_have_value('0.5')
+        offline=True
+        self.page.frames[-1].evaluate('refreshPlatformPage(true)')
+        expect(frame.locator('.notice.warn')).to_contain_text('fixture platform offline')
+        expect(frame.locator('tbody').last).to_contain_text('已打款')
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='platform_history'").fetchone()[0],0)
+
+    def test_receipt_query_errors_are_visible_and_clear_after_automatic_retry(self):
+        offline=False
+        def query(path):
+            self.assertEqual(path,'receipts/mine')
+            if offline:raise RuntimeError('fixture receipt unavailable')
+            return {'data':[],'has_more':False}
+        self.app.platform_data.fetch=query
+        self.page.locator('aside [data-id=receipts]').click()
+        frame=self.page.frame_locator('.platform-frame')
+        expect(frame.locator('.finance-records')).to_be_visible()
+        offline=True
+        self.page.frames[-1].evaluate('refreshPlatformPage(true)')
+        expect(frame.locator('.notice.warn')).to_contain_text('fixture receipt unavailable')
+        offline=False
+        self.page.frames[-1].evaluate('refreshPlatformPage(true)')
+        expect(frame.locator('.notice.warn')).to_have_count(0)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 "use strict";
-let revenueData = null;
+let revenueData = null, revenueError='', revenueLoadedAt=0;
 let revenueQuery = {start:'', end:'', pool:'', offset:'0'};
 const money = value => {
   if (value === null || value === undefined) return '待核算';
@@ -16,11 +16,12 @@ const revenueReasons = {
 };
 
 async function loadRevenue() {
-  revenueData=await api('/api/revenue?'+new URLSearchParams(revenueQuery));
+  const epoch=dataEpoch;
+  try{revenueData=await api('/api/revenue?'+new URLSearchParams(revenueQuery));revenueError='';revenueLoadedAt=Date.now();}catch(error){if(epoch===dataEpoch)revenueError=error.message;throw error;}
 }
 
 function revenueView() {
-  if(!revenueData)return heading('收入','正在读取本地归档…');
+  if(!revenueData)return heading('收入','')+`<p>${esc(revenueError||'正在读取管理平台数据…')}</p>`;
   const r=revenueData,s=r.summary;
   const card=(label,value,note)=>`<div class="card"><small>${label}</small><strong>${value}</strong><small>${note}</small></div>`;
   const rows=r.data.map((row,i)=>`<tr>
@@ -31,13 +32,13 @@ function revenueView() {
     <td class="money">${money(row.charge_microusd)}</td>
     <td><span class="${row.state==='pending'?'error':'badge'}">${row.state==='pending'?'待核算':row.basis==='not_forwarded'?'未转发 · 不计费':['estimated','mixed'].includes(row.usage_source)?'已计费 · 含估算':row.coverage==='partial'?'已计费 · 部分用量':row.usage_source==='none'?'不计费':'已计费'}</span><small>HTTP ${row.status??'—'}${row.state==='pending'?'<br>'+esc(revenueReasons[row.reason]||row.reason):''}</small></td>
   </tr>`);
-  return heading('收入','管理平台结算账单',btn('同步账单','sync','','primary'))+
+  return heading('收入','管理平台结算账单')+(revenueError?`<p class="error">${esc(revenueError)} · 以下为上次查询结果</p>`:'')+
     `<div class="cards revenue-cards">
     ${card('累计应收 · USD',money(s.charge_microusd),`${s.calculated} 笔金额已确认`)}
-    ${card('今日应收 · USD',money(s.today_microusd),'按商户本机日期')}
-    ${card('本月应收 · USD',money(s.month_microusd),'按商户本机日期')}
+    ${card('今日应收 · USD',money(s.today_microusd),'按北京时间')}
+    ${card('本月应收 · USD',money(s.month_microusd),'按北京时间')}
     ${card('待核算请求',s.pending,'未计入应收合计')}
-    </div><p class="revenue-scope">已从管理平台同步 ${s.requests} 笔 · 每 5 分钟更新</p>
+    </div><p class="revenue-scope">平台账单 ${s.requests} 笔 · 自动刷新</p>
     <section class="panel"><form id="revenue-filter" class="revenue-filter">
       ${field('开始日期','start',revenueQuery.start,'date')}${field('结束日期（含当天）','end',revenueQuery.end,'date')}
       <label>账号池<select name="pool"><option value="">全部账号池</option>${r.pools.map(p=>`<option value="${esc(p)}" ${p===revenueQuery.pool?'selected':''}>${esc(p||'未选池')}</option>`).join('')}</select></label>
@@ -49,7 +50,7 @@ function revenueView() {
       <div class="revenue-pagination"><span>${r.filtered.requests?`${r.offset+1}–${r.offset+r.data.length} / ${r.filtered.requests}`:'暂无账单'}</span><div class="actions">
         <button data-action="revenue-page" data-id="${Math.max(0,r.offset-r.limit)}" ${r.offset?'':'disabled'}>上一页</button>
         <button data-action="revenue-page" data-id="${r.offset+r.limit}" ${r.has_more?'':'disabled'}>下一页</button></div></div></section>
-    <p>${r.sync?.synced_at?'上次同步 '+esc(revenueTime(r.sync.synced_at)):'尚未从管理平台同步'}</p>`;
+    <p>查询时间 ${esc(revenueTime(revenueLoadedAt/1000))}</p>`;
 }
 
 function bindRevenueFilters() {
