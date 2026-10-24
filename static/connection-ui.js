@@ -35,7 +35,7 @@ async function syncPlatformAutomatically(){
   try{
     await api('/api/sync','POST',{});
   }catch(error){
-    if(epoch===dataEpoch&&accessScope(state)===scope)platformSyncError={scope,message:error.message};
+    if(epoch===dataEpoch&&accessScope(state)===scope&&!error.message.includes('账单正在同步'))platformSyncError={scope,message:error.message};
   }finally{
     if(epoch===dataEpoch&&accessScope(state)===scope){
       try{
@@ -53,7 +53,7 @@ function acceptRouterState(next){
   if(accessScope(state)!==accessScope(next)){acceptState(next);render();return;}
   state=next;
   const accountsChanged=section==='accounts'&&accountsRendered!==accountViewKey();
-  if((changed&&section!=='connection'||accountsChanged)&&!$('#dialog').open&&!poolModelEditor&&!document.activeElement?.closest('form'))render();
+  if((changed&&!['connection','finance','receipts'].includes(section)||accountsChanged)&&!$('#dialog').open&&!poolModelEditor&&!document.activeElement?.closest('form'))render();
   else updateRouterStatus();
 }
 async function connectRouterAutomatically(){
@@ -240,6 +240,7 @@ async function pollAccountAccess(){
   try{
     const next=await api('/api/state');
     acceptRouterState(next);
+    await refreshLocalRecords();
   }catch{}finally{authPolling=false;}
 }
 setInterval(pollAccountAccess,3000);

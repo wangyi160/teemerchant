@@ -58,8 +58,9 @@ document.addEventListener('click',async event=>{
 $('#dialog').addEventListener('close',()=>$('#dialog').replaceChildren());
 window.addEventListener('hashchange',()=>{page=location.hash.slice(1)||'overview';render();});
 window.addEventListener('pageshow',event=>{if(event.persisted)refresh().catch(error=>toast(error.message));});
-refresh().catch(error=>{$('#workspace-content').innerHTML=`<div class="notice warn">${esc(error.message)}。请点击右上角刷新重试。</div>`;});
+refresh().catch(error=>{$('#workspace-content').innerHTML=`<div class="notice warn">${esc(error.message)}。将自动重试。</div>`;});
 setInterval(()=>{
+  if(!state&&document.body.dataset.mode==='merchant'){refresh().catch(()=>{});return;}
   if(state&&!document.hidden&&!$('#dialog').open&&page!=='security'&&!document.activeElement?.closest('form')&&
     (state.local_connection_error||state.applications.some(a=>a.status==='pending'||a.status==='provisioning')||state.keys.some(k=>k.state==='provisioning')))
     refresh().catch(()=>{});

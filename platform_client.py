@@ -2,6 +2,7 @@
 import json
 import re
 import secrets
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -107,6 +108,7 @@ class PlatformClient:
         else:
             session['identity'] = self.application.store.enrollment()['id']
         self.sessions[key[:2]] = session
+        self.application.request_platform_sync()
         return Reply(200, json.dumps(session['view'], ensure_ascii=False).encode())
 
     @staticmethod
@@ -214,6 +216,13 @@ class PlatformClient:
             if mode == 'merchant':
                 if not self.authorized(session_id, identity):
                     return Reply(401, b'{"error":"login_required"}')
+                if method == 'GET' and name == 'me':
+                    value = {**session.get('view', {}), 'account': session['account'], 'keys': [],
+                             'applications': session.get('view', {}).get('applications', [])}
+                    return Reply(200, json.dumps(value, ensure_ascii=False).encode())
+                if method == 'GET' and (name.startswith('withdrawals') or name.startswith('receipts/')):
+                    value = app.history.read(path)
+                    return Reply(200, json.dumps(value, ensure_ascii=False).encode())
                 headers['Authorization'] = 'Bearer ' + store.settings['token']
                 upstream = '/merchant-api/v1/' + ('profile' if name == 'me' else path)
             else:
@@ -263,6 +272,17 @@ class PlatformClient:
                                 session['merchants'] = set()
                                 value['local_connection_error'] = '商户连接未完成，请刷新重试'
                             session['view'] = {k: v for k, v in value.items() if k != 'csrf'}
+                            if value.get('local_connected') and name in ('login', 'register', 'bind'):
+                                app.request_platform_sync()
+                        if mode == 'merchant' and method == 'POST' and name.startswith('withdrawals'):
+                            try:
+                                app.history.save_withdrawal(app.history.context(), value)
+                            except (RuntimeError, ValueError, OSError, sqlite3.Error):
+                                # The platform write already succeeded. Do not turn a local
+                                # cache failure into an apparently failed financial action.
+                                app.history.error = '提现已提交，等待本地记录同步'
+                            app.history.last_attempt = 0
+                            app.platform_wake.set()
                         if name in ('logout', 'password'):
                             self.revoke(session_id, session)
                             if name == 'password':

@@ -30,6 +30,9 @@ class Application:
         from platform_client import PlatformClient
         self.platform_client = PlatformClient(self)
         self.archive = PlatformArchive(store)
+        from platform_history import PlatformHistory
+        self.history = PlatformHistory(store)
+        self.platform_wake = threading.Event()
         from oauth_service import OAuthService
         self.oauth = OAuthService(self)
 
@@ -129,6 +132,8 @@ class Application:
         return self.remote
 
     def sync(self):
+        self.history.last_attempt = 0
+        self.platform_wake.set()
         result = self.archive.sync()
         if result.get('busy'):
             raise RuntimeError('管理平台账单正在同步，请稍后刷新')
@@ -172,6 +177,7 @@ class Application:
                     self.store.switch_profile(body)
                 self.transport.close()
                 self.archive.reset()
+                self.history.reset()
                 self.remote = self.store.accounts.view(self.store.settings['router'])
                 self.connected = False
                 self.last_error = ''
@@ -188,7 +194,7 @@ class Application:
                 raise ValueError('收入记录标识无效')
             return self.archive.detail(instance, int(seq))
         if (method, path) == ('GET', '/api/state'):
-            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'identity': self.store.platform_identity(), 'profiles': self.store.profiles(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error, 'archive': self.archive.status()}
+            return {'settings': self.store.public(), 'enrollment': self.store.enrollment(), 'credentials': self.store.credentials(), 'identity': self.store.platform_identity(), 'profiles': self.store.profiles(), 'connected': self.connected, 'remote': self.remote, 'error': self.last_error, 'archive': self.archive.status(), 'history': self.history.status()}
         if (method, path) == ('PUT', '/api/platform'):
             from platform_archive import platform_url
             if not isinstance(body, dict) or set(body) != {'platform_url'}:
@@ -203,6 +209,7 @@ class Application:
                     self.store.settings = previous
                     raise
                 self.archive.reset()
+                self.history.reset()
             return {'saved': True}
         if (method, path) == ('PUT', '/api/settings'):
             self.store.save_connection(body)
@@ -275,16 +282,29 @@ class Application:
                             except Exception as reconnect_error:
                                 self.last_error = str(reconnect_error)
 
+    def request_platform_sync(self):
+        self.archive.last_attempt = 0
+        self.history.last_attempt = 0
+        self.platform_wake.set()
+
     def archive_background(self, stop):
         from platform_archive import INTERVAL
-        while not stop.wait(10):
+        while not stop.is_set():
+            self.platform_wake.wait(1)
+            self.platform_wake.clear()
+            if stop.is_set():
+                break
             with self.store.lock:
                 ready = self.store.credentials()['saved'] and bool(self.store.settings.get('platform_url'))
-            if ready and time.monotonic() - self.archive.last_attempt >= INTERVAL:
+            if not ready:
+                continue
+            for channel in (self.archive, self.history):
+                if channel.last_attempt and time.monotonic() - channel.last_attempt < INTERVAL:
+                    continue
                 try:
-                    self.archive.sync(stop)
+                    channel.sync(stop)
                 except Exception:
-                    pass  # The archive channel retains its own error and cursor.
+                    pass  # Each platform channel retains its own error and progress.
 
 def handler(application, origin):
     from service import handler as service_handler

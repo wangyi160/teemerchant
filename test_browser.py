@@ -1011,5 +1011,44 @@ class BrowserTests(unittest.TestCase):
         self.assertNotIn('PRIVATE_GROK', self.page.locator('body').inner_text())
 
 
+    def test_local_financial_pages_update_automatically_and_preserve_withdrawal_draft(self):
+        from test_platform_history import withdrawal, withdrawals, receipt, proof
+        ctx = self.app.history.context()
+        self.app.history.put(ctx, 'meta', 'withdrawals', {k: v for k, v in withdrawals().items() if k != 'data'})
+        self.app.history.save_withdrawal(ctx, withdrawal())
+        self.page.locator('aside [data-id=finance]').click()
+        frame = self.page.frame_locator('.platform-frame')
+        expect(frame.locator('#withdrawal-form')).to_be_visible()
+        frame.locator('[name=address]').fill('unsaved-withdrawal-address')
+        frame.locator('[name=amount]').fill('0.5')
+        # Change persisted state without a UI click, platform fetch or Router call.
+        self.app.history.save_withdrawal(ctx, withdrawal(state='paid', version=2))
+        expect(frame.locator('tbody').last).to_contain_text('已打款', timeout=10000)
+        expect(frame.locator('[name=address]')).to_have_value('unsaved-withdrawal-address')
+        expect(frame.locator('[name=amount]')).to_have_value('0.5')
+        self.page.locator('aside [data-id=receipts]').click()
+        expect(frame.locator('tbody')).to_contain_text('暂无')
+        self.app.history.put(ctx, 'proofs', 'batch:' + 'a' * 64, proof())
+        self.app.history.put(ctx, 'receipts', 1, {**receipt(), 'proof_key': 'batch:' + 'a' * 64})
+        expect(frame.locator('tbody')).to_contain_text('fixture-model', timeout=10000)
+        frame.locator('[data-action=receipt-detail]').click()
+        expect(frame.locator('#dialog')).to_contain_text('Ed25519')
+        for session in self.app.platform_client.sessions.values():session['expires'] = 0
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.locator('iframe')).to_have_count(0)
+        self.assertNotIn('fixture-model', self.page.locator('body').inner_text())
+
+    def test_refusals_appear_after_background_archive_without_manual_refresh(self):
+        from test_platform_archive import page
+        self.page.locator('aside [data-id=refusals]').click()
+        expect(self.page.get_by_role('heading', name='拒答记录', exact=True)).to_be_visible()
+        expect(self.page.locator('tbody')).to_contain_text('暂无记录')
+        self.app.archive.fetch = lambda *_: page(self.store)
+        self.app.archive.sync()
+        expect(self.page.locator('tbody')).to_contain_text('grok-4.7', timeout=10000)
+        self.page.locator('[data-action=record]').click()
+        expect(self.page.locator('#dialog')).to_contain_text('provider_refusal')
+
+
 if __name__ == '__main__':
     unittest.main()
