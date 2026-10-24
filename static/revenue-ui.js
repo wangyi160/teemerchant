@@ -26,10 +26,35 @@ async function loadRevenue() {
   finally{if(revenueRequest===attempt)revenueRequest=null;}
 }
 
-function revenueView() {
-  if(!revenueData)return heading('收入','')+`<p>${esc(revenueError||'正在读取管理平台数据…')}</p>`;
-  const r=revenueData,s=r.summary;
+function revenueSummary() {
+  if(!revenueData)return `<p>${esc(revenueError||'正在读取收入…')}</p>`;
+  const s=revenueData.summary;
   const card=(label,value,note)=>`<div class="card"><small>${label}</small><strong>${value}</strong><small>${note}</small></div>`;
+  return (revenueError?`<p class="error">${esc(revenueError)} · 以下为上次查询结果</p>`:'')+
+    `<div class="cards revenue-cards">
+    ${card('累计应收 · USD',money(s.charge_microusd),`${s.calculated} 笔金额已确认`)}
+    ${card('今日应收 · USD',money(s.today_microusd),'按北京时间')}
+    ${card('本月应收 · USD',money(s.month_microusd),'按北京时间')}
+    ${card('待核算请求',s.pending,'未计入应收合计')}
+    </div>`;
+}
+
+function revenueView() {
+  return heading('收入','')+`<div id="income-page" data-epoch="${pageEpoch}">
+    <div id="income-summary">${revenueSummary()}</div>
+    <iframe class="platform-frame income-withdrawals" title="收入提现" src="/account/finance?embedded=income#finance"></iframe>
+    <div id="income-ledger">${revenueLedger()}</div></div>`;
+}
+
+function renderIncome(){
+  $('#income-summary').innerHTML=revenueSummary();
+  $('#income-ledger').innerHTML=revenueLedger();
+  bindRevenueFilters();
+}
+
+function revenueLedger() {
+  if(!revenueData)return '';
+  const r=revenueData;
   const rows=r.data.map((row,i)=>`<tr>
     <td>${esc(revenueTime(row.created_at))}<small>${btn('查看账单','revenue-detail',String(i))}</small></td>
     <td>${esc(row.pool||'未选池')}<small>${esc(row.model)}</small></td>
@@ -38,14 +63,7 @@ function revenueView() {
     <td class="money">${money(row.charge_microusd)}</td>
     <td><span class="${row.state==='pending'?'error':'badge'}">${row.state==='pending'?'待核算':row.basis==='not_forwarded'?'未转发 · 不计费':['estimated','mixed'].includes(row.usage_source)?'已计费 · 含估算':row.coverage==='partial'?'已计费 · 部分用量':row.usage_source==='none'?'不计费':'已计费'}</span><small>HTTP ${row.status??'—'}${row.state==='pending'?'<br>'+esc(revenueReasons[row.reason]||row.reason):''}</small></td>
   </tr>`);
-  return heading('收入','管理平台结算账单')+(revenueError?`<p class="error">${esc(revenueError)} · 以下为上次查询结果</p>`:'')+
-    `<div class="cards revenue-cards">
-    ${card('累计应收 · USD',money(s.charge_microusd),`${s.calculated} 笔金额已确认`)}
-    ${card('今日应收 · USD',money(s.today_microusd),'按北京时间')}
-    ${card('本月应收 · USD',money(s.month_microusd),'按北京时间')}
-    ${card('待核算请求',s.pending,'未计入应收合计')}
-    </div><p class="revenue-scope">平台账单 ${s.requests} 笔 · 自动刷新</p>
-    <section class="panel"><form id="revenue-filter" class="revenue-filter">
+  return `<section class="panel"><div class="panelhead"><h2>收入明细</h2><span>${r.summary.requests} 笔</span></div><form id="revenue-filter" class="revenue-filter">
       ${field('开始日期','start',revenueQuery.start,'date')}${field('结束日期（含当天）','end',revenueQuery.end,'date')}
       <label>账号池<select name="pool"><option value="">全部账号池</option>${r.pools.map(p=>`<option value="${esc(p)}" ${p===revenueQuery.pool?'selected':''}>${esc(p||'未选池')}</option>`).join('')}</select></label>
       <button type="submit" class="primary">筛选</button>${btn('重置','revenue-reset')}
@@ -58,6 +76,13 @@ function revenueView() {
         <button data-action="revenue-page" data-id="${r.offset+r.limit}" ${r.has_more?'':'disabled'}>下一页</button></div></div></section>
     <p>查询时间 ${esc(revenueTime(revenueLoadedAt/1000))}</p>`;
 }
+
+window.addEventListener('message',event=>{
+  const frame=$('.income-withdrawals');
+  if(event.origin!==location.origin||event.source!==frame?.contentWindow||event.data?.type!=='income-withdrawals-size')return;
+  const height=event.data.height;
+  if(Number.isFinite(height)&&height>0)frame.style.height=Math.min(30000,Math.max(120,height))+'px';
+});
 
 function bindRevenueFilters() {
   const form=$('#revenue-filter');if(!form)return;

@@ -81,6 +81,9 @@ class BrowserTests(unittest.TestCase):
         self.platform_reads = []
         def platform_read(path):
             self.platform_reads.append(path)
+            if path=='withdrawals':
+                from test_platform_data import withdrawals
+                return withdrawals()
             if path.startswith('revenue'):
                 from revenue import RevenueIndex
                 return RevenueIndex().report('')
@@ -354,7 +357,7 @@ class BrowserTests(unittest.TestCase):
             self.page.get_by_role('button', name='退出登录', exact=True).click()
             expect(self.page.locator('#merchant-auth')).to_be_visible()
             self.page.wait_for_function('() => !connectionBusy')
-        for section_name in ('accounts','revenue','finance','receipts','customers','usage','refusals'):
+        for section_name in ('accounts','revenue','receipts','customers','usage','refusals'):
             self.page.locator(f'aside [data-id={section_name}]').click()
             expect(self.page.locator('.panel.empty')).to_contain_text('请先登录商户账号')
             expect(self.page.locator('.platform-frame, #revenue-filter, #account-pools')).to_have_count(0)
@@ -564,6 +567,9 @@ class BrowserTests(unittest.TestCase):
             item.update(state='pending' if row is c else 'calculated',charge_microusd=None if row is c else '50',basis='platform_settlement')
             index.entries[('platform',row['seq'])]=item
         def read(path):
+            if path=='withdrawals':
+                from test_platform_data import withdrawals
+                return withdrawals()
             if path.startswith('revenue'):
                 return index.report(path.partition('?')[2])
             return next(row for row in (a,b,c) if str(row['seq'])==path.split('/')[-1])
@@ -1021,8 +1027,10 @@ class BrowserTests(unittest.TestCase):
 
     def test_slow_previous_page_does_not_block_revenue_or_overwrite_reentry(self):
         from revenue import RevenueIndex
+        from test_platform_data import withdrawals
         release=threading.Event();started=threading.Event();reads=[]
         def query(path):
+            if path=='withdrawals':return withdrawals()
             reads.append(path)
             if path.startswith('activity?'):
                 started.set();release.wait(15)
@@ -1044,8 +1052,10 @@ class BrowserTests(unittest.TestCase):
 
     def test_revenue_reentry_discards_late_old_response(self):
         from revenue import RevenueIndex
+        from test_platform_data import withdrawals
         release=threading.Event();started=threading.Event();reads=[]
         def query(path):
+            if path=='withdrawals':return withdrawals()
             reads.append(path);number=len(reads)
             report=RevenueIndex().report('');report['summary']['charge_microusd']=str(number*1000000)
             if number==1:started.set();release.wait(15)
@@ -1071,14 +1081,16 @@ class BrowserTests(unittest.TestCase):
 
     def test_embedded_page_navigation_queries_platform_on_every_entry(self):
         from test_platform_data import withdrawals
+        from revenue import RevenueIndex
         reads=[];status='pending'
         def query(path):
+            if path.startswith('revenue'):return RevenueIndex().report('')
             reads.append(path)
             if path=='withdrawals':return withdrawals(status)
             self.assertEqual(path,'receipts/mine')
             return {'data':[],'has_more':False}
         self.app.platform_data.fetch=query
-        self.page.locator('aside [data-id=finance]').click()
+        self.page.locator('aside [data-id=revenue]').click()
         frame=self.page.frame_locator('.platform-frame')
         expect(frame.locator('#withdrawal-form')).to_be_visible()
         self.page.frames[-1].evaluate("location.hash='receipts'")
@@ -1092,17 +1104,30 @@ class BrowserTests(unittest.TestCase):
 
     def test_remote_withdrawal_refresh_preserves_form_and_displays_platform_errors(self):
         from test_platform_data import withdrawals
+        from revenue import RevenueIndex
         status='pending';offline=False
         def query(path):
+            if path.startswith('revenue'):return RevenueIndex().report('')
             self.assertEqual(path,'withdrawals')
             if offline:raise RuntimeError('fixture platform offline')
             return withdrawals(status)
         self.app.platform_data.fetch=query
-        self.page.locator('aside [data-id=finance]').click()
+        self.page.locator('aside [data-id=revenue]').click()
         frame=self.page.frame_locator('.platform-frame')
         expect(frame.locator('#withdrawal-form')).to_be_visible()
+        expect(self.page.locator('aside [data-id=finance]')).to_have_count(0)
+        expect(self.page.locator('aside [data-id=revenue]')).to_have_text('收入')
+        expect(self.page.locator('.revenue-cards')).to_be_visible()
+        expect(frame.locator('header')).not_to_be_visible()
         frame.locator('[name=address]').fill('unsaved-address')
         frame.locator('[name=amount]').fill('0.5')
+        self.page.frames[-1].evaluate('window.retainedWithdrawalForm=document.querySelector("#withdrawal-form")')
+        # Income polling and filtering must not remount the withdrawal form.
+        self.page.evaluate('refreshPlatformRecords(true)')
+        self.page.locator('#revenue-filter [type=submit]').click()
+        expect(frame.locator('[name=address]')).to_have_value('unsaved-address')
+        self.assertTrue(self.page.frames[-1].evaluate('retainedWithdrawalForm===document.querySelector("#withdrawal-form")'))
+        self.page.wait_for_function('() => document.querySelector(".income-withdrawals").getBoundingClientRect().height>500')
         status='paid'
         self.page.frames[-1].evaluate('refreshPlatformPage(true)')
         expect(frame.locator('tbody').last).to_contain_text('已打款')
@@ -1113,6 +1138,35 @@ class BrowserTests(unittest.TestCase):
         expect(frame.locator('.notice.warn')).to_contain_text('fixture platform offline')
         expect(frame.locator('tbody').last).to_contain_text('已打款')
         self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='platform_history'").fetchone()[0],0)
+
+    def test_merged_income_can_submit_withdrawal_without_router_writes(self):
+        from test_platform_data import withdrawals
+        from revenue import RevenueIndex
+        from unittest.mock import patch
+        submitted=[]
+        def query(path):
+            if path.startswith('revenue'):return RevenueIndex().report('')
+            result=withdrawals()
+            result['balance']['available_microusd']='500000' if submitted else '1000000'
+            return result
+        self.app.platform_data.fetch=query
+        def post(client,method,url,headers,data=None):
+            self.assertEqual(method,'POST');self.assertTrue(url.endswith('/merchant-api/v1/withdrawals'))
+            self.assertTrue(headers['Idempotency-Key'])
+            submitted.append(data)
+            return 201,{'id':'2'},{}
+        self.page.locator('aside [data-id=revenue]').click()
+        frame=self.page.frame_locator('.income-withdrawals')
+        expect(frame.locator('#withdrawal-form')).to_be_visible()
+        frame.locator('[name=address]').fill('fixture-address')
+        frame.locator('[name=amount]').fill('0.5')
+        with patch.object(self.app.platform_client,'request',side_effect=post):
+            frame.locator('#withdrawal-form [type=submit]').click()
+            expect(frame.locator('#toast')).to_contain_text('提现申请已提交')
+        self.assertEqual(submitted,[{'network':'tron','amount':'0.5','address':'fixture-address','policy_version':1}])
+        expect(frame.locator('.withdrawal-cards .card').first).to_contain_text('$0.50')
+        expect(frame.locator('[name=address]')).to_have_value('')
+        self.assertEqual(self.router.writes,[])
 
     def test_receipt_query_errors_are_visible_and_clear_after_automatic_retry(self):
         offline=False

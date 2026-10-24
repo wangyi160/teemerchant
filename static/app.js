@@ -1,6 +1,6 @@
 "use strict";
 const $=s=>document.querySelector(s), esc=v=>String(v??"").replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const names={overview:"概览",accounts:"账号与模型",customers:"客户授权",revenue:"收入明细",finance:"提现",receipts:"消费凭据",usage:"调用记录",refusals:"拒答记录",connection:"账号与连接"};
+const names={overview:"概览",accounts:"账号与模型",customers:"客户授权",revenue:"收入",receipts:"消费凭据",usage:"调用记录",refusals:"拒答记录",connection:"账号与连接"};
 let state=null, section=location.hash.startsWith('#connection')?'connection':'overview', records=[];
 let dataEpoch=0,pageEpoch=0;
 const accessScope=s=>[s?.auth?.scope||'',!!s?.auth?.authorized,s?.enrollment.id,s?.settings.platform_url].join('|');
@@ -54,6 +54,7 @@ async function reload(){
   acceptState(next);render();
 }
 async function enterSection(id){
+  if(id==='finance')id='revenue';
   section=id;
   const navigation=++pageEpoch,epoch=dataEpoch;
   resetRecordPage();
@@ -88,7 +89,7 @@ function form(title,html,action,options={}){
   };dialog.showModal();
 }
 function heading(title,desc,action=""){return `<div class="heading"><div><h1>${title}</h1><p>${desc}</p></div>${action}</div>`;}
-function render(){if(!state)return;$('#app').innerHTML=`<div class="shell"><aside><div class="brand">teemerchant<small>商户管理工作台</small></div>${Object.entries(names).map(([id,label])=>btn(label,'nav',id,section===id?'active':'')).join('')}<footer>商户独立身份 · 平台账务<br>经 TEE 验证后直连 Router</footer></aside><main><header><div><strong>${esc(names[section])}</strong><span class="status">${state.connected?esc(remote().merchant.name)+' · Router 已连接':'Router 尚未连接'}</span></div><div class="actions">${btn('刷新','reload')}</div></header><div class="content"><div id="router-connection-error" class="notice error" hidden></div>${view()}</div></main></div>`;bindPoolModelEditor();bindRevenueFilters();updateRouterStatus();}
+function render(){if(!state)return;if(section==='revenue'&&state.auth?.authorized&&$('#income-page')?.dataset.epoch===String(pageEpoch)){renderIncome();updateRouterStatus();return;}$('#app').innerHTML=`<div class="shell"><aside><div class="brand">teemerchant<small>商户管理工作台</small></div>${Object.entries(names).map(([id,label])=>btn(label,'nav',id,section===id?'active':'')).join('')}<footer>商户独立身份 · 平台账务<br>经 TEE 验证后直连 Router</footer></aside><main><header><div><strong>${esc(names[section])}</strong><span class="status">${state.connected?esc(remote().merchant.name)+' · Router 已连接':'Router 尚未连接'}</span></div><div class="actions">${btn('刷新','reload')}</div></header><div class="content"><div id="router-connection-error" class="notice error" hidden></div>${view()}</div></main></div>`;bindPoolModelEditor();bindRevenueFilters();updateRouterStatus();}
 function view(){if(section==='connection')return connection();if(!state.auth?.authorized)return heading(names[section],'')+`<section class="panel empty">${state.auth?.authenticated?'当前账号尚未开通商户服务':'请先登录商户账号'}<div class="actions">${btn('账号与连接','nav','connection','primary')}</div></section>`;if(['finance','receipts'].includes(section))return `<iframe class="platform-frame" title="${esc(names[section])}" src="/account/${section}#${section}"></iframe>`;if(['usage','refusals'].includes(section))return recordsView();if(section==='revenue')return revenueView();if(!remote())return heading('连接你的 Router','')+`<section class="panel">${btn('账号与连接','nav','connection','primary')}</section>`;
 if(section==='overview')return heading('商户概览','你的上游账号与客户访问状态。')+`<div class="cards"><div class="card"><small>账号池</small><strong>${pools().length}</strong></div><div class="card"><small>已使用客户</small><strong>${settings().customers.length}</strong></div><div class="card"><small>价格 / 配置版本</small><strong>v${settings().revision}</strong></div></div><section class="panel"><h2>${esc(remote().merchant.name)}</h2><p>商户 ID：<code>${esc(remote().merchant.id)}</code></p><p>用户沿用平台 API key；商户标识会出现在模型和账号池名称中。</p><div class="notice">平台资源上限：并发 ${remote().merchant.max_concurrent} · RPM ${remote().merchant.rpm||'不限'} · TPM ${remote().merchant.tpm||'不限'}。实际采用平台与商户配置中较低的限额。</div></section>`;
 if(section==='accounts')return accountsView();

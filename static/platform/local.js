@@ -1,6 +1,17 @@
 if(document.body.dataset.mode==='merchant'){
+  const embeddedIncome=new URLSearchParams(location.search).get('embedded')==='income';
+  if(embeddedIncome){
+    document.body.dataset.embedded='income';
+    const theme=document.createElement('link');theme.rel='stylesheet';theme.href='/app.css';
+    document.head.insertBefore(theme,document.querySelector('link[href="/account-assets/local.css"]'));
+    let previousHeight=0;
+    new ResizeObserver(()=>{
+      const height=Math.ceil(document.querySelector('.shell').getBoundingClientRect().height);
+      if(height!==previousHeight){previousHeight=height;parent.postMessage({type:'income-withdrawals-size',height},location.origin);}
+    }).observe(document.querySelector('.shell'));
+  }
   document.querySelectorAll('header [data-action=logout]').forEach(n=>n.remove());
-  workspace.views.finance=()=>`<div class="heading"><h1>提现</h1></div>${withdrawalsView()}`;
+  workspace.views.finance=()=>`${embeddedIncome?'':'<div class="heading"><h1>提现</h1></div>'}${withdrawalsView()}`;
   // Query only the visible platform page; no background history download.
   loadFinance=async(redraw=true)=>{await loadWithdrawals();if(redraw&&page==='finance')render();};
   bindFinance=p=>{if(p==='finance')bindWithdrawals();};
