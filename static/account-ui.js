@@ -4,7 +4,7 @@ let poolModelEditor = null;
 let accountsRendered = '';
 function accountViewKey() {
   const snapshot = remote();
-  return JSON.stringify([snapshot?.pools, snapshot?.accounts, snapshot?.renewals, snapshot?.catalog, snapshot?.account_sync, snapshot?.account_enabled,
+  return JSON.stringify([snapshot?.pools, snapshot?.accounts, snapshot?.renewals, snapshot?.catalog, snapshot?.account_sync, snapshot?.account_enabled, snapshot?.access_token_sync,
     snapshot?.settings.revision, snapshot?.settings.pool_pricing, snapshot?.local_sync]);
 }
 
@@ -64,6 +64,15 @@ function accountState(pool, deployment) {
   return ['目录已就绪', 'badge'];
 }
 
+function tokenSyncTime(deployment) {
+  if (!deployment.oauth_account || deployment.provider === 'workbuddy') return '—';
+  const sync = remote().access_token_sync?.[deployment.id];
+  if (!sync?.last_success_at) return '<span class="muted">尚无记录</span>';
+  const date = new Date(sync.last_success_at * 1000);
+  return `<time datetime="${date.toISOString()}">${esc(date.toLocaleString('zh-CN', {hour12:false}))}</time>`+
+    (sync.current ? '' : '<small class="muted">当前 Token 尚未同步</small>');
+}
+
 function accountsView() {
   accountsRendered = accountViewKey();
   if (selectedAccountPool === null || selectedAccountPool && !pools().some(p => p.name === selectedAccountPool))
@@ -76,7 +85,8 @@ function accountsView() {
     const paused = sync?.state === 'paused';
     return `<tr><td><strong>${esc(d.id)}</strong><small>${esc(p.name)}</small></td>
       <td>${esc(d.provider)}<small>${d.oauth_account && d.provider !== 'workbuddy' ? 'OAuth' : 'API key'}</small></td>
-      <td><span class="${cls}">${status}</span>${paused?`<small class="error">${esc(sync.error)} · 自动同步已暂停</small>`:''}</td><td>${d.max_concurrent} / ${d.rpm || '不限'}</td>
+      <td><span class="${cls}">${status}</span>${paused?`<small class="error">${esc(sync.error)} · 自动同步已暂停</small>`:''}</td>
+      <td data-token-sync="${esc(d.id)}">${tokenSyncTime(d)}</td><td>${d.max_concurrent} / ${d.rpm || '不限'}</td>
       <td class="row-actions">${paused?btn('重试同步','retry-account',d.id):''} ${btn('编辑','edit-account',d.id)} ${window.teemerchant?.oauth && d.oauth_account && ['openai','anthropic','xai'].includes(d.provider)?btn('重新授权','oauth-renew',d.id):''} ${btn(accountEnabled(d)?'停用':'启用','toggle-account',d.id)} ${btn('删除','delete-account',d.id)}</td></tr>`;
   }));
   const poolRows = pools().map(p => {
@@ -99,7 +109,7 @@ function accountsView() {
     ${table(['账号池','服务','账号数量','倍率','对外模型','操作'],poolRows)}</section>
     <section class="panel"><div class="panelhead"><h2>${selectedAccountPool ? esc(selectedAccountPool)+' · 账号' : '全部账号'}<small class="muted">（${rows.length}）</small></h2>
     <div class="actions">${pools().length?btn('批量导入','import-accounts'):''}${selectedAccountPool?btn('添加账号','account','','primary'):''}</div></div>
-    ${table(['账号别名 / 账号池','服务 / 凭证','状态','并发 / RPM','操作'],rows)}</section>
+    ${table(['账号别名 / 账号池','服务 / 凭证','状态','最近 Access Token 同步','并发 / RPM','操作'],rows)}</section>
     ${poolModelCatalog(chosen, catalog)}`;
 }
 

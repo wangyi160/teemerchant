@@ -250,6 +250,69 @@ class AccountSyncTests(unittest.TestCase):
         self.assertEqual(self.app.remote['account_sync']['bad']['state'], 'paused')
         self.assertEqual(self.app.remote['account_sync']['good']['state'], 'synced')
 
+    def test_token_time_advances_only_for_successful_upload_and_survives_failure(self):
+        self.installed()
+        now = int(time.time())
+        with patch('local_accounts.time.time', return_value=now):
+            self.app.sync_credentials()
+        expected = {'last_success_at': now, 'current': True}
+        self.assertEqual(self.app.remote['access_token_sync']['good'], expected)
+        with patch('local_accounts.time.time', return_value=now + 10):
+            self.app.check_accounts()
+            self.app.sync_credentials()
+        self.assertEqual(self.router.access_calls, ['bad', 'good'])
+        self.assertEqual(self.app.remote['access_token_sync']['good'], expected)
+        self.book.data['routers'][self.url]['accounts']['bad']['credential']['access_token'] = 'REPLACEMENT'
+        self.router.rejected.add('bad')
+        with patch('local_accounts.time.time', return_value=now + 20):
+            self.app.sync_credentials()
+        self.assertEqual(self.app.remote['access_token_sync']['bad'], {'last_success_at': now, 'current': False})
+        self.assertEqual(self.app.remote['access_token_sync']['good'], expected)
+        self.book.retry_account(self.url, 'bad')
+        self.assertEqual(self.book.view(self.url)['access_token_sync']['bad']['last_success_at'], now)
+        reloaded = Store(self.tmp.name)
+        try: self.assertEqual(reloaded.accounts.view(self.url)['access_token_sync']['good'], expected)
+        finally: reloaded.db.close()
+
+    def test_config_saves_without_token_do_not_change_token_sync_time(self):
+        now = int(time.time())
+        with patch('local_accounts.time.time', return_value=now):
+            self.app.api('PUT', '/api/config', self.config)
+        self.assertEqual(self.app.remote['access_token_sync']['good']['last_success_at'], now)
+        update = copy.deepcopy(self.config)
+        update.update(accounts={}, expected_revision=self.app.remote['settings']['revision'], _local_revision=self.app.remote['local_revision'])
+        update['pools'][0]['deployments'][1]['rpm'] = 20
+        with patch('local_accounts.time.time', return_value=now + 30):
+            self.app.api('PUT', '/api/config', update)
+        self.assertEqual(self.app.remote['access_token_sync']['good']['last_success_at'], now)
+        self.assertEqual(self.router.writes[-1]['accounts'], {})
+
+    def test_existing_tokens_without_history_confirm_once_per_runtime(self):
+        self.installed()
+        for a in self.router.remote['accounts']['data']:
+            a['access_sha256'] = fingerprint(self.config['accounts'][a['name']]['credential'])
+        self.app.accept(self.router.remote)
+        self.assertIsNone(self.app.remote['access_token_sync']['good']['last_success_at'])
+        self.app.sync_credentials()
+        self.assertEqual(self.router.access_calls, ['bad', 'good'])
+        self.app.sync_credentials()
+        self.assertEqual(self.router.access_calls, ['bad', 'good'])
+        self.router.remote['merchant']['runtime_id'] = 'new-runtime'
+        self.app.accept(self.router.remote)
+        self.assertFalse(self.app.remote['access_token_sync']['good']['current'])
+        self.app.sync_credentials()
+        self.assertEqual(self.router.access_calls, ['bad', 'good', 'bad', 'good'])
+        self.assertTrue(self.app.remote['access_token_sync']['good']['current'])
+
+    def test_no_success_time_without_matching_router_acknowledgement(self):
+        self.installed()
+        self.book.confirm_token_upload(self.url, self.config['accounts'], self.router.remote)
+        self.assertIsNone(self.book.view(self.url)['access_token_sync']['good']['last_success_at'])
+        for a in self.router.remote['accounts']['data']:
+            a['access_sha256'] = fingerprint(self.config['accounts'][a['name']]['credential'])
+        self.book.confirm_token_upload(self.url, {'good': {'enabled': True}}, self.router.remote)
+        self.assertIsNone(self.book.view(self.url)['access_token_sync']['good']['last_success_at'])
+
 
 class AuthenticationTests(unittest.TestCase):
     def account(self, provider='anthropic'):

@@ -197,6 +197,24 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('等待模型目录', exact=True)).to_have_count(0)
         expect(self.page.locator('[data-action=toggle-account]')).to_have_text('启用')
 
+    def test_token_sync_timestamp_updates_in_place_and_remains_visible_on_failure(self):
+        cell = self.page.locator('[data-token-sync=example-001]')
+        expect(self.page.get_by_role('columnheader', name='最近 Access Token 同步')).to_be_visible()
+        expect(cell).to_have_text('尚无记录')
+        self.app.remote['access_token_sync'] = {'example-001': {'last_success_at': 1792836300, 'current': True}}
+        self.page.evaluate('pollAccountAccess()')
+        expected = self.page.evaluate("new Date(1792836300000).toLocaleString('zh-CN',{hour12:false})")
+        expect(cell.locator('time')).to_have_text(expected)
+        self.app.remote['account_sync'] = {'example-001': {'state': 'paused', 'code': 'connection_failed', 'error': '无法连接账号代理或官方服务'}}
+        self.app.remote['access_token_sync']['example-001']['current'] = False
+        self.page.evaluate('pollAccountAccess()')
+        expect(cell.locator('time')).to_have_text(expected)
+        expect(cell).to_contain_text('当前 Token 尚未同步')
+        self.app.remote['access_token_sync']['example-001'] = {'last_success_at':1792836360, 'current':True}
+        self.page.evaluate('pollAccountAccess()')
+        expect(cell.locator('time')).not_to_have_text(expected)
+        expect(cell).not_to_contain_text('当前 Token 尚未同步')
+
     def test_catalog_updates_wait_for_account_edit_to_close_without_losing_draft(self):
         self.page.locator('[data-action=edit-account]').click()
         self.page.locator('[name=max_concurrent]').fill('12')

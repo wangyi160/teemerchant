@@ -146,7 +146,9 @@ class Application:
                         book.account_sync_result(router, identifier, account['basis'], 'sending')
                     try:
                         body = {'runtime_id': update['runtime_id'], 'accounts': {name: credential}}
-                        self.accept(self.transport.call('PUT', '/merchant/accounts/access', body), clean_catalog=False)
+                        result = self.transport.call('PUT', '/merchant/accounts/access', body)
+                        self.accept(result, clean_catalog=False)
+                        book.confirm_token_upload(router, body['accounts'], result)
                     except Exception as error:
                         code, message = sync_error(error)
                         for identifier, account in rows.items():
@@ -210,6 +212,7 @@ class Application:
                 self.store.accounts.account_sync_result(router, identifier, account['basis'], 'sending')
             result = self.transport.call('PUT', '/merchant/config', projected)
             self.accept(result, clean_catalog=False)
+            self.store.accounts.confirm_token_upload(router, projected.get('accounts', {}), result)
             self.store.accounts.acknowledge(router, result)
             for identifier, account in self.store.accounts.sync_accounts(router).items():
                 if account['sync'].get('state') in ('verified', 'sending'):

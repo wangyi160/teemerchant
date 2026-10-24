@@ -185,6 +185,8 @@ class AccountBook:
                 for key in deleted:
                     merged.pop(key, None)
                     book[field].pop(key, None)
+                    if field == 'accounts':
+                        book.get('token_sync', {}).pop(key, None)
                 update[field] = merged
                 update['delete_' + field] = sorted(deleted)
             book['config'] = {k: copy.deepcopy(v) for k, v in update.items()
@@ -237,6 +239,29 @@ class AccountBook:
             book.setdefault('account_sync', {})[identifier] = {
                 'basis': basis, 'state': state, 'code': code, 'error': message, 'updated_at': int(time.time())}
             self._write(data)
+
+    def confirm_token_upload(self, router, sent, remote):
+        """Record only a token actually sent and acknowledged by this Router runtime."""
+        if remote.get('merchant', {}).get('id') != self.identity:
+            raise RuntimeError('商户身份与本地账号库不一致')
+        runtime = remote.get('merchant', {}).get('runtime_id')
+        if not isinstance(runtime, str) or not runtime:
+            return
+        statuses = {a['name']: a for a in remote.get('accounts', {}).get('data', [])}
+        confirmed = {}
+        now = int(time.time())
+        for name, update in sent.items():
+            credential = update.get('credential', {})
+            if not credential.get('access_token'):
+                continue
+            digest = fingerprint(credential)
+            if statuses.get(name, {}).get('access_sha256') == digest:
+                confirmed[name] = {'last_success_at': now, 'access_sha256': digest, 'runtime_id': runtime}
+        if confirmed:
+            with self.lock:
+                data = copy.deepcopy(self.data)
+                self._book(data, router).setdefault('token_sync', {}).update(confirmed)
+                self._write(data)
 
     def retry_account(self, router, identifier):
         with self.lock:
@@ -360,7 +385,11 @@ class AccountBook:
                     # A manual credential/proxy edit still follows its explicit
                     # configuration save, rather than being partially applied.
                     if 'credential' in patch and book.get('renewals',{}).get(name,{}).get('access_sha256')!=fingerprint(credential): continue
-                if status.get('access_sha256')==fingerprint(credential): continue
+                receipt = book.get('token_sync', {}).get(name, {})
+                if (status.get('access_sha256') == fingerprint(credential)
+                        and receipt.get('access_sha256') == fingerprint(credential)
+                        and receipt.get('runtime_id') == remote['merchant'].get('runtime_id')):
+                    continue
                 if not isinstance(status.get('access_sha256'),str): continue
                 updates[name]={'expected_access_sha256':status['access_sha256'],'credential':credential}
             if not updates: return None
@@ -497,6 +526,19 @@ class AccountBook:
             view['account_sync'] = {name: {k: v for k, v in account['sync'].items() if k != 'basis'}
                                     for name, account in self._sync_accounts(book).items() if account['sync']}
             view['account_enabled'] = {name: account['enabled'] for name, account in self._sync_accounts(book).items()}
+            view['access_token_sync'] = {}
+            statuses = {a['name']: a for a in book['remote'].get('accounts', {}).get('data', [])}
+            for name, account in self._sync_accounts(book).items():
+                ref = account['oauth_account']
+                if not ref or account['provider'] == 'workbuddy':
+                    continue
+                receipt = book.get('token_sync', {}).get(ref, {})
+                try: digest = fingerprint(account['credential'])
+                except (ValueError, TypeError, AttributeError): digest = None
+                current = bool(digest and receipt.get('access_sha256') == digest
+                               and statuses.get(ref, {}).get('access_sha256') == digest
+                               and receipt.get('runtime_id') == book['remote']['merchant'].get('runtime_id'))
+                view['access_token_sync'][name] = {'last_success_at': receipt.get('last_success_at'), 'current': current}
             missing = [d['id'] for d in deployments(config) if not self._material(book, d)['credential_present']]
             view['local_sync'] = {'state': book['sync_state'], 'error': book['sync_error'],
                                   'saved_at': book['saved_at'], 'missing_credentials': missing}

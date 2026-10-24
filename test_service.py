@@ -79,6 +79,10 @@ class ProtocolTests(unittest.TestCase):
         update=self.book.access_updates(self.url,state)
         self.assertEqual(update['runtime_id'],'runtime');self.assertNotIn('refresh',json.dumps(update))
         state['accounts']['data'][0]['access_sha256']=fingerprint(book['accounts']['a']['credential'])
+        # An older installation has no timestamp: confirm once, then skip
+        # unchanged tokens instead of inventing a time from a status read.
+        self.assertIsNotNone(self.book.access_updates(self.url,state))
+        self.book.confirm_token_upload(self.url, {'a': {'credential': access_only(book['accounts']['a']['credential'])}}, state)
         self.assertIsNone(self.book.access_updates(self.url,state))
 
     def test_probe_does_not_send_refresh_token(self):
