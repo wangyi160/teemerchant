@@ -100,7 +100,7 @@ function renderConnectionAccount(){
 }
 async function connectionApi(path,method='GET',data){
   const identity=state.enrollment.id;
-  const response=await fetch('/account-api/'+path,{method,credentials:'same-origin',
+  const response=await fetch('/account-api/'+path,{method,credentials:'same-origin',cache:'no-store',
     headers:{'Content-Type':'application/json','X-CSRF-Token':$('meta[name=csrf]').content,
       'X-Account-Mode':'account','X-Merchant-ID':identity,'Idempotency-Key':crypto.randomUUID()},
     body:data===undefined?undefined:JSON.stringify(data)});

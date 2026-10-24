@@ -1,9 +1,10 @@
 "use strict";
-let ownedReceipts=null,ownedReceiptError='',ownedReceiptRequest=null;
+let ownedReceipts=null,ownedReceiptError='',ownedReceiptRequest=null,ownedReceiptAttempt=0;
 let ownedReceiptCursors=[null],ownedReceiptPage=0,ownedReceiptDetail=null;
 
 async function loadOwnedReceipts(redraw=true,move=0,reset=false){
-  if(ownedReceiptRequest)return ownedReceiptRequest;
+  if(ownedReceiptRequest&&!reset)return ownedReceiptRequest;
+  const attempt=++ownedReceiptAttempt;
   const target=reset?0:Math.max(0,ownedReceiptPage+move);
   const cursor=reset?null:move===1?ownedReceipts?.next_before:ownedReceiptCursors[target];
   if(move===1&&(!ownedReceipts?.has_more||cursor==null))return;
@@ -11,12 +12,13 @@ async function loadOwnedReceipts(redraw=true,move=0,reset=false){
   ownedReceiptRequest=(async()=>{
     try{
       const result=await api('receipts/mine'+(cursor==null?'':'?before='+encodeURIComponent(cursor)));
+      if(attempt!==ownedReceiptAttempt)return;
       // Keep the last successful page and cursor on a failed request.
       ownedReceipts=result;ownedReceiptPage=target;
       if(reset)ownedReceiptCursors=[null];
       else if(move===1){ownedReceiptCursors=ownedReceiptCursors.slice(0,target);ownedReceiptCursors.push(cursor);}
-    }catch(error){ownedReceiptError=error.message;}
-    finally{ownedReceiptRequest=null;if(redraw&&page==='receipts')render();}
+    }catch(error){if(attempt===ownedReceiptAttempt)ownedReceiptError=error.message;}
+    finally{if(attempt===ownedReceiptAttempt){ownedReceiptRequest=null;if(redraw&&page==='receipts')render();}}
   })();
   return ownedReceiptRequest;
 }

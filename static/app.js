@@ -2,10 +2,10 @@
 const $=s=>document.querySelector(s), esc=v=>String(v??"").replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const names={overview:"概览",accounts:"账号与模型",customers:"客户授权",revenue:"收入明细",finance:"提现",receipts:"消费凭据",usage:"调用记录",refusals:"拒答记录",connection:"账号与连接"};
 let state=null, section=location.hash.startsWith('#connection')?'connection':'overview', records=[];
-let dataEpoch=0;
+let dataEpoch=0,pageEpoch=0;
 const accessScope=s=>[s?.auth?.scope||'',!!s?.auth?.authorized,s?.enrollment.id,s?.settings.platform_url].join('|');
 function clearMerchantView(){
-  dataEpoch++;records=[];selectedAccountPool=null;poolModelEditor=null;
+  dataEpoch++;pageEpoch++;records=[];selectedAccountPool=null;poolModelEditor=null;
   resetRecordPage();
   revenueData=null;revenueError='';revenueLoadedAt=0;revenueQuery={start:'',end:'',pool:'',offset:'0'};
   const dialog=$('#dialog');dialog.close();dialog.innerHTML='';delete dialog.dataset.busy;
@@ -40,7 +40,7 @@ async function api(path,method="GET",body){
   }else{
     const headers={"Content-Type":"application/json","X-CSRF-Token":$('meta[name=csrf]').content};
     if(identity)headers['X-Merchant-ID']=identity;
-    const r=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
+    const r=await fetch(path,{method,headers,cache:'no-store',body:body===undefined?undefined:JSON.stringify(body)});
     value=await r.json();if(!r.ok)throw Error(value.error||"操作失败");
   }
   if(epoch!==dataEpoch)throw Error('账号状态已变化，请重新操作');
@@ -52,6 +52,25 @@ async function reload(){
   const next=await api('/api/state');
   if(!state&&!next.credentials?.saved)section='connection';
   acceptState(next);render();
+}
+async function enterSection(id){
+  section=id;
+  const navigation=++pageEpoch,epoch=dataEpoch;
+  resetRecordPage();
+  revenueRequest=null;
+  if(id==='revenue'){revenueData=null;revenueError='';revenueLoadedAt=0;}
+  history.replaceState(null,'',id==='connection'?'#connection':location.pathname);
+  render();
+  if(id==='connection')return loadConnectionAccount(true);
+  if(!state.auth?.authorized)return;
+  if(['usage','refusals','revenue'].includes(id))return refreshPlatformRecords(true);
+  // Embedded platform pages query on their own initial load.
+  if(['finance','receipts'].includes(id))return;
+  if(state.connected)await api('/api/merchant');
+  const next=await api('/api/state');
+  if(navigation!==pageEpoch||epoch!==dataEpoch)return;
+  acceptState(next);
+  if(!$('#dialog').open&&!(id==='accounts'&&poolModelEditor)&&!document.activeElement?.closest('form'))render();
 }
 function draft(){return AccountConfig.draft(remote());}
 async function save(value){const result=await api('/api/config','PUT',value);state.remote=result;state.settings.minimum_revision=result.settings.revision;render();return result;}
@@ -127,14 +146,14 @@ if(a==='merchant-switch'){
   if(id===state.auth?.account?.id&&state.auth?.authorized)return;
   await acceptConnectionAccount(await connectionApi('select','POST',{account_id:id}));toast('已切换账号');return;
 }
-if(a==='nav'&&!state.auth?.authorized){section=id;render();if(id==='connection')loadConnectionAccount().catch(error=>toast(error.message));return;}
-if(a==='close'){if($('#dialog').dataset.busy)return;$('#dialog').close();$('#dialog').innerHTML='';return;}if(a==='nav'){section=id;history.replaceState(null,'',section==='connection'?'#connection':location.pathname);render();if(id==='revenue')void refreshPlatformRecords(true);if(['usage','refusals'].includes(id)){resetRecordPage();render();void loadRecords();}if(id==='connection')loadConnectionAccount().catch(error=>toast(error.message));return;}if(a==='reload'){if(['usage','refusals','revenue'].includes(section))return refreshPlatformRecords(true);if(state.connected)await api('/api/merchant');return reload();}if(a==='pool')return poolForm();if(a==='edit-pool')return poolForm(id);if(a==='edit-pool-models')return poolModelsForm(id);if(a==='account')return accountForm();if(a==='sync-config'){await api('/api/config/sync','POST',{});await reload();toast(remote().local_sync?.state==='pending'?'本地资料已保留，同步尚未完成':'本地配置已同步至 Router');return;}if(a==='edit-account')return accountForm(id);if(a==='import-accounts')return batchAccountForm();if(a==='account-pool'){selectedAccountPool=id;return render();}if(a==='customer')return customerForm(id);if(a==='reset-refusals')return resetRefusals(id);if(a==='customer-defaults')return customerForm('');if(a==='revenue-detail')return revenueDetail(id);if(a==='revenue-page'){revenueQuery.offset=id;await loadRevenue();return render();}if(a==='revenue-reset'){revenueQuery={start:'',end:'',pool:'',offset:'0'};await loadRevenue();return render();}if(a==='refresh'){await api('/api/refresh','POST',{});return reload();}if(a==='toggle-account'){const d=draft(),a=d.pools.flatMap(p=>p.deployments).find(a=>a.id===id);a.enabled=!a.enabled;return save(d);}if(a==='delete-account')return form('删除账号',`<p>删除账号 ${esc(id)} 及其凭证，历史记录保留。</p>`,async()=>{const d=draft();for(const p of d.pools){const a=p.deployments.find(a=>a.id===id);if(a){p.deployments=p.deployments.filter(a=>a.id!==id);if(a.oauth_account)d.delete_accounts=[a.oauth_account];else d.delete_secrets=[a.api_key_ref];}}await save(d);});if(a==='records-page')return loadRecords(Number(id));if(a==='record'){const dialog=$('#dialog');dialog.innerHTML=`<h2>记录详情</h2><pre>${esc(JSON.stringify(records[Number(id)],null,2))}</pre>${btn('关闭','close')}`;dialog.showModal();}}
+if(a==='nav')return enterSection(id);
+if(a==='close'){if($('#dialog').dataset.busy)return;$('#dialog').close();$('#dialog').innerHTML='';return;}if(a==='reload'){if(['usage','refusals','revenue'].includes(section))return refreshPlatformRecords(true);if(state.connected)await api('/api/merchant');return reload();}if(a==='pool')return poolForm();if(a==='edit-pool')return poolForm(id);if(a==='edit-pool-models')return poolModelsForm(id);if(a==='account')return accountForm();if(a==='sync-config'){await api('/api/config/sync','POST',{});await reload();toast(remote().local_sync?.state==='pending'?'本地资料已保留，同步尚未完成':'本地配置已同步至 Router');return;}if(a==='edit-account')return accountForm(id);if(a==='import-accounts')return batchAccountForm();if(a==='account-pool'){selectedAccountPool=id;return render();}if(a==='customer')return customerForm(id);if(a==='reset-refusals')return resetRefusals(id);if(a==='customer-defaults')return customerForm('');if(a==='revenue-detail')return revenueDetail(id);if(a==='revenue-page'){revenueQuery.offset=id;if(await loadRevenue())render();return;}if(a==='revenue-reset'){revenueQuery={start:'',end:'',pool:'',offset:'0'};if(await loadRevenue())render();return;}if(a==='refresh'){await api('/api/refresh','POST',{});return reload();}if(a==='toggle-account'){const d=draft(),a=d.pools.flatMap(p=>p.deployments).find(a=>a.id===id);a.enabled=!a.enabled;return save(d);}if(a==='delete-account')return form('删除账号',`<p>删除账号 ${esc(id)} 及其凭证，历史记录保留。</p>`,async()=>{const d=draft();for(const p of d.pools){const a=p.deployments.find(a=>a.id===id);if(a){p.deployments=p.deployments.filter(a=>a.id!==id);if(a.oauth_account)d.delete_accounts=[a.oauth_account];else d.delete_secrets=[a.api_key_ref];}}await save(d);});if(a==='records-page')return loadRecords(Number(id));if(a==='record'){const dialog=$('#dialog');dialog.innerHTML=`<h2>记录详情</h2><pre>${esc(JSON.stringify(records[Number(id)],null,2))}</pre>${btn('关闭','close')}`;dialog.showModal();}}
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-action]');if(!b)return;e.preventDefault();b.disabled=true;try{await action(b.dataset.action,b.dataset.id);}catch(error){toast(error.message);}finally{b.disabled=false;}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='connection')return;e.preventDefault();try{await api('/api/settings','PUT',Object.fromEntries(new FormData(e.target)));await reload();void connectRouterAutomatically();toast('连接设置已保存');}catch(error){toast(error.message);}});
 document.addEventListener('submit',async e=>{if(e.target.id!=='platform-connection')return;e.preventDefault();try{await api('/api/platform','PUT',Object.fromEntries(new FormData(e.target)));resetConnectionAccount();await reload();loadConnectionAccount().catch(error=>toast(error.message));toast('管理平台地址已保存');}catch(error){toast(error.message);}});
 $('#dialog').addEventListener('cancel',e=>{if($('#dialog').dataset.busy)e.preventDefault();});
 $('#dialog').addEventListener('close',()=>{if(!$('#dialog').open)$('#dialog').innerHTML='';});
-reload().then(()=>{void connectRouterAutomatically();if(connectionMode==='register')return connectionAction('identity-register');return loadConnectionAccount();}).catch(e=>toast(e.message));
+reload().then(()=>{void connectRouterAutomatically();if(connectionMode==='register')return connectionAction('identity-register');return enterSection(section);}).catch(e=>toast(e.message));
 // Reflect background model-policy cleanup without discarding an active form.
 let catalogViewPolling=false;
 setInterval(async()=>{

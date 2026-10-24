@@ -1,6 +1,7 @@
 "use strict";
 let withdrawalData=null,withdrawalError='',withdrawalBusy=false,withdrawalAttempt=null;
 let withdrawalBefore='',withdrawalPages=[];
+let withdrawalRead=0;
 const withdrawalNames={pending:'待处理',processing:'打款处理中',paid:'已打款',rejected:'已拒绝',cancelled:'已撤销'};
 const withdrawalEventNames={apply:'提交申请',process:'开始处理',paid:'登记已打款',reject:'拒绝申请',cancel:'商户撤销'};
 const withdrawalAmount=n=>{const v=BigInt(n||0);return (v/1000000n)+'.'+(v%1000000n).toString().padStart(6,'0').replace(/0+$/,'').padEnd(2,'0');};
@@ -10,8 +11,9 @@ function withdrawalPolicyView(p){
   return `<p>最低提现 ${withdrawalAmount(p.minimum_microusd)} USDT · 按所在档位对整笔申请金额计费</p>${table(['申请金额 · USDT','手续费率'],p.tiers.map(t=>`<tr><td>≥ ${withdrawalAmount(t.from_microusd)}${t.to_microusd===null?'':` 且 < ${withdrawalAmount(t.to_microusd)}`}</td><td>${withdrawalRate(t.rate_bps)}</td></tr>`))}`;
 }
 async function loadWithdrawals(){
-  try{withdrawalData=await api('withdrawals'+(withdrawalBefore?'?before='+encodeURIComponent(withdrawalBefore):''));withdrawalError='';}
-  catch(e){withdrawalError=e.message;}
+  const attempt=++withdrawalRead;
+  try{const result=await api('withdrawals'+(withdrawalBefore?'?before='+encodeURIComponent(withdrawalBefore):''));if(attempt===withdrawalRead){withdrawalData=result;withdrawalError='';}}
+  catch(e){if(attempt===withdrawalRead)withdrawalError=e.message;}
 }
 function withdrawalsView(){
   const d=withdrawalData;

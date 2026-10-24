@@ -1,7 +1,7 @@
 "use strict";
 let recordPage={before:null,cursors:[],next:null,hasMore:false,error:'',loadedAt:0},recordRequest=null;
-let platformRecordsBusy=false,platformRecordsAttempt=0;
-function resetRecordPage(){records=[];recordPage={before:null,cursors:[],next:null,hasMore:false,error:'',loadedAt:0};recordRequest=null;platformRecordsAttempt=0;}
+let platformRecordsRequest=null,platformRecordsAttempt=0;
+function resetRecordPage(){records=[];recordPage={before:null,cursors:[],next:null,hasMore:false,error:'',loadedAt:0};recordRequest=null;platformRecordsRequest=null;platformRecordsAttempt=0;}
 function recordsView(){
   const p=recordPage;
   return heading(names[section],'管理平台记录')+(p.error?`<p class="error">${esc(p.error)}${p.loadedAt?' · 以下为上次查询结果':''}</p>`:'')+
@@ -19,16 +19,16 @@ async function loadRecords(move=0){
     if(epoch!==dataEpoch||section!==target||recordRequest!==attempt)return;
     const cursors=move===1?[...recordPage.cursors,recordPage.before]:move===-1?recordPage.cursors.slice(0,-1):recordPage.cursors;
     records=result.data;recordPage={before,cursors,next:result.next_before,hasMore:result.has_more,error:'',loadedAt:Date.now()};
-  }catch(error){if(epoch===dataEpoch&&section===target)recordPage.error=error.message;}
+  }catch(error){if(epoch===dataEpoch&&section===target&&recordRequest===attempt)recordPage.error=error.message;}
   finally{if(recordRequest===attempt){recordRequest=null;if(epoch===dataEpoch&&section===target&&!$('#dialog').open)render();}}
 }
 async function refreshPlatformRecords(force=false){
-  if(platformRecordsBusy||!state?.auth?.authorized||!['usage','refusals','revenue'].includes(section)||$('#dialog').open||document.activeElement?.closest('form'))return;
-  if(!force&&Date.now()-platformRecordsAttempt<60000)return;
-  platformRecordsBusy=true;platformRecordsAttempt=Date.now();
-  const target=section,epoch=dataEpoch;
+  if(platformRecordsRequest||!state?.auth?.authorized||!['usage','refusals','revenue'].includes(section)||$('#dialog').open)return;
+  if(!force&&(document.activeElement?.closest('form')||Date.now()-platformRecordsAttempt<60000))return;
+  const attempt={};platformRecordsRequest=attempt;platformRecordsAttempt=Date.now();
+  const target=section,epoch=dataEpoch,navigation=pageEpoch;
   try{
-    if(target==='revenue'){try{await loadRevenue();}catch{}if(epoch===dataEpoch&&section===target&&!$('#dialog').open)render();}
+    if(target==='revenue'){try{await loadRevenue();}catch{}if(epoch===dataEpoch&&navigation===pageEpoch&&section===target&&!$('#dialog').open)render();}
     else await loadRecords();
-  }finally{platformRecordsBusy=false;}
+  }finally{if(platformRecordsRequest===attempt)platformRecordsRequest=null;}
 }

@@ -102,6 +102,17 @@ class BrowserTests(unittest.TestCase):
         from test_platform_client import login_fixture
         token = self.auth.create()
         login_fixture(self.app, token)
+        # Page entry now revalidates identity. Fixture sessions must never be
+        # sent to the real management platform during isolated browser tests.
+        platform_request=self.app.platform_client.request
+        def request(client,method,url,headers,data=None):
+            if url=='https://teerouter.org/portal/api/me':
+                session=next((s for s in self.app.platform_client.sessions.values()
+                              if s.get('cookie')==headers.get('Cookie')),None)
+                if not session:return 401,{'error':'login_required'},{}
+                return 200,{**copy.deepcopy(session['view']),'csrf':session['csrf']},{}
+            return platform_request(client,method,url,headers,data)
+        self.app.platform_client.request=request
         self.page.context.add_cookies([{'name':'tm_session','value':token,'url':self.origin}])
         self.page.goto(self.origin)
         self.page.locator('aside [data-id=accounts]').click()
@@ -372,7 +383,7 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('#dialog')).not_to_be_visible()
         expect(self.page.locator('main')).not_to_contain_text('example-001')
         self.page.evaluate("releaseRevenue({ok:true,value:{data:[{pool:'PRIVATE_OLD_POOL'}]}})")
-        self.assertTrue(self.page.evaluate('lateRevenue'))
+        self.assertFalse(self.page.evaluate('lateRevenue'))
         self.assertIsNone(self.page.evaluate('revenueData'))
         self.page.reload()
         expect(self.page.locator('#merchant-auth')).to_be_visible()
@@ -997,13 +1008,87 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('aside [data-id=refusals]').click()
         expect(self.page.get_by_role('heading',name='拒答记录',exact=True)).to_be_visible()
         expect(self.page.locator('tbody')).to_contain_text('暂无记录')
+        self.page.wait_for_function('() => recordPage.loadedAt>0')
         rows.append({'seq':'17','event':{'model':'fixture-model','refusal_type':'provider_refusal'}})
-        self.page.evaluate('refreshPlatformRecords(true)')
+        # Re-entering inside the one-minute polling window still reads now.
+        self.page.locator('aside [data-id=connection]').click()
+        self.page.locator('aside [data-id=refusals]').click()
         expect(self.page.locator('tbody')).to_contain_text('fixture-model')
         self.assertEqual(self.platform_reads,['activity?kind=refusals&limit=50']*2)
         self.assertEqual(writes,[])
         self.page.locator('[data-action=record]').click()
         expect(self.page.locator('#dialog')).to_contain_text('provider_refusal')
+
+    def test_slow_previous_page_does_not_block_revenue_or_overwrite_reentry(self):
+        from revenue import RevenueIndex
+        release=threading.Event();started=threading.Event();reads=[]
+        def query(path):
+            reads.append(path)
+            if path.startswith('activity?'):
+                started.set();release.wait(15)
+                raise RuntimeError('old page unavailable')
+            report=RevenueIndex().report('')
+            report['summary']['charge_microusd']=str(1000000*sum(p.startswith('revenue') for p in reads))
+            return report
+        self.app.platform_data.fetch=query
+        try:
+            self.page.locator('aside [data-id=usage]').click()
+            self.assertTrue(started.wait(5))
+            self.page.locator('aside [data-id=revenue]').click()
+            expect(self.page.locator('.revenue-cards').first).to_contain_text('$1.000000')
+            self.page.locator('aside [data-id=connection]').click()
+            self.page.locator('aside [data-id=revenue]').click()
+            expect(self.page.locator('.revenue-cards').first).to_contain_text('$2.000000')
+        finally:release.set()
+        expect(self.page.locator('.content')).not_to_contain_text('old page unavailable')
+
+    def test_revenue_reentry_discards_late_old_response(self):
+        from revenue import RevenueIndex
+        release=threading.Event();started=threading.Event();reads=[]
+        def query(path):
+            reads.append(path);number=len(reads)
+            report=RevenueIndex().report('');report['summary']['charge_microusd']=str(number*1000000)
+            if number==1:started.set();release.wait(15)
+            return report
+        self.app.platform_data.fetch=query
+        try:
+            self.page.locator('aside [data-id=revenue]').click()
+            self.assertTrue(started.wait(5))
+            self.page.locator('aside [data-id=connection]').click()
+            self.page.locator('aside [data-id=revenue]').click()
+            expect(self.page.locator('.revenue-cards').first).to_contain_text('$2.000000')
+            with self.page.expect_response(lambda r:'/api/revenue?' in r.url):release.set()
+            # Allow the old response handler to run before inspecting its result.
+            self.page.wait_for_timeout(100)
+            expect(self.page.locator('.revenue-cards').first).to_contain_text('$2.000000')
+        finally:release.set()
+
+    def test_customer_navigation_reads_current_router_state(self):
+        self.router.remote['settings']['customers']=[{'user_id':'newly-used-customer','enabled':True,'models':[],
+            'max_concurrent':2,'rpm':0,'tpm':0,'refusal_count':0}]
+        self.page.locator('aside [data-id=customers]').click()
+        expect(self.page.locator('.content')).to_contain_text('newly-used-customer')
+
+    def test_embedded_page_navigation_queries_platform_on_every_entry(self):
+        from test_platform_data import withdrawals
+        reads=[];status='pending'
+        def query(path):
+            reads.append(path)
+            if path=='withdrawals':return withdrawals(status)
+            self.assertEqual(path,'receipts/mine')
+            return {'data':[],'has_more':False}
+        self.app.platform_data.fetch=query
+        self.page.locator('aside [data-id=finance]').click()
+        frame=self.page.frame_locator('.platform-frame')
+        expect(frame.locator('#withdrawal-form')).to_be_visible()
+        self.page.frames[-1].evaluate("location.hash='receipts'")
+        expect(frame.locator('.finance-records')).to_be_visible()
+        status='paid'
+        self.page.frames[-1].evaluate("location.hash='finance'")
+        expect(frame.locator('tbody').last).to_contain_text('已打款')
+        self.page.frames[-1].evaluate("location.hash='receipts'")
+        self.page.wait_for_function("() => document.querySelector('.platform-frame').contentWindow.document.querySelector('.finance-records')!==null")
+        self.assertEqual(reads,['withdrawals','receipts/mine','withdrawals','receipts/mine'])
 
     def test_remote_withdrawal_refresh_preserves_form_and_displays_platform_errors(self):
         from test_platform_data import withdrawals

@@ -1,5 +1,5 @@
 "use strict";
-let state=null,page=location.hash.slice(1)||'overview';
+let state=null,page=location.hash.slice(1)||'overview',workspaceRefresh=0;
 function applications(){
   const name=workspace.role==='user'?'用户开通':'商户入驻';
   return `<section class="panel"><h2>办理记录</h2>${table(['事项','状态','提交时间','审核说明'],state.applications.filter(a=>a.kind===workspace.role).map(a=>`<tr><td>${name}</td><td>${badge(a.status,a.kind==='merchant'&&a.status==='approved'?'审核通过':null)}${a.error?'<span class="sub">同步未完成，系统将自动重试</span>':''}</td><td>${date(a.created_at)}</td><td>${esc(a.note||'—')}</td></tr>`))}</section>`;
@@ -26,11 +26,15 @@ function render(){
   };
 }
 async function refresh(){
+  const target=page,attempt=++workspaceRefresh;
   const result=await api('me');
+  if(attempt!==workspaceRefresh||target!==page)return;
   if(result.account.role!==workspace.role){location.replace(workspacePath(result.account.role));return;}
   state=result;csrf=result.csrf;
-  if(workspace.load)await workspace.load(page);
+  const loading=workspace.load?.(target);
   render();
+  await loading;
+  if(attempt===workspaceRefresh&&target===page)render();
 }
 function modal(title,body,submit){
   const operationId=newOperationId(),dialog=$('#dialog');
@@ -56,7 +60,7 @@ document.addEventListener('click',async event=>{
   finally{control.disabled=false;}
 });
 $('#dialog').addEventListener('close',()=>$('#dialog').replaceChildren());
-window.addEventListener('hashchange',()=>{page=location.hash.slice(1)||'overview';render();});
+window.addEventListener('hashchange',()=>{page=location.hash.slice(1)||'overview';refresh().catch(error=>toast(error.message));});
 window.addEventListener('pageshow',event=>{if(event.persisted)refresh().catch(error=>toast(error.message));});
 refresh().catch(error=>{$('#workspace-content').innerHTML=`<div class="notice warn">${esc(error.message)}。将自动重试。</div>`;});
 setInterval(()=>{

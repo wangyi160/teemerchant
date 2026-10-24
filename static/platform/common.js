@@ -13,7 +13,7 @@ function toast(text){
   toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),5000);
 }
 async function api(path,method='GET',data,operationId=newOperationId()){
-  const response=await fetch('/account-api/'+path,{method,credentials:'same-origin',
+  const response=await fetch('/account-api/'+path,{method,credentials:'same-origin',cache:'no-store',
     headers:{'Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name=local-csrf]').content,'X-Account-Mode':document.body.dataset.mode||'account','X-Merchant-ID':document.querySelector('meta[name=merchant-id]').content,'Idempotency-Key':operationId},
     body:data===undefined?undefined:JSON.stringify(data)});
   const result=await response.json();

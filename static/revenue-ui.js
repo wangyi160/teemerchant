@@ -1,5 +1,5 @@
 "use strict";
-let revenueData = null, revenueError='', revenueLoadedAt=0;
+let revenueData = null, revenueError='', revenueLoadedAt=0,revenueRequest=null;
 let revenueQuery = {start:'', end:'', pool:'', offset:'0'};
 const money = value => {
   if (value === null || value === undefined) return '待核算';
@@ -16,8 +16,14 @@ const revenueReasons = {
 };
 
 async function loadRevenue() {
-  const epoch=dataEpoch;
-  try{revenueData=await api('/api/revenue?'+new URLSearchParams(revenueQuery));revenueError='';revenueLoadedAt=Date.now();}catch(error){if(epoch===dataEpoch)revenueError=error.message;throw error;}
+  const epoch=dataEpoch,navigation=pageEpoch,attempt={};revenueRequest=attempt;
+  const current=()=>epoch===dataEpoch&&navigation===pageEpoch&&revenueRequest===attempt;
+  try{
+    const result=await api('/api/revenue?'+new URLSearchParams(revenueQuery));
+    if(!current())return;
+    revenueData=result;revenueError='';revenueLoadedAt=Date.now();return true;
+  }catch(error){if(current()){revenueError=error.message;throw error;}}
+  finally{if(revenueRequest===attempt)revenueRequest=null;}
 }
 
 function revenueView() {
@@ -60,7 +66,7 @@ function bindRevenueFilters() {
     e.preventDefault();const data=new FormData(form),previous={...revenueQuery};
     revenueQuery={start:data.get('start'),end:data.get('end'),pool:data.get('pool'),offset:'0'};
     const button=form.querySelector('[type=submit]');button.disabled=true;
-    try{await loadRevenue();render();}catch(error){revenueQuery=previous;toast(error.message);}
+    try{if(await loadRevenue())render();}catch(error){revenueQuery=previous;toast(error.message);}
     finally{button.disabled=false;}
   };
 }
