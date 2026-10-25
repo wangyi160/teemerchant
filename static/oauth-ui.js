@@ -8,6 +8,7 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
   const provider=()=>available.find(p=>p.name===(poolName || setup.elements.pool.value))?.provider;
   const updatePool=()=>{
     setup.querySelector('#account-oauth-actions').hidden=!oauthProviderNames[provider()];
+    authorize.textContent=provider()==='openai'?'设备码授权':'OAuth 授权';
     setup.elements.save_refresh.checked=account?previousRefresh:true;
     if(!active){progress.hidden=true;progress.innerHTML='';lastView='';}
   };
@@ -15,7 +16,10 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
   const call=async(action,body)=>{
     const epoch=dataEpoch;
     const result=await window.teemerchant.oauth(action,body,identity);
-    if(epoch!==dataEpoch||closed)throw Error('账号状态已变化，请重新操作');
+    if(epoch!==dataEpoch||closed){
+      if(action==='start'&&result.ok&&result.value?.id)await window.teemerchant.oauth('cancel',{id:result.value.id},identity).catch(()=>{});
+      throw Error('账号状态已变化，请重新操作');
+    }
     if(result.status===401)hideMerchantView();
     if(!result.ok)throw Error(result.error);return result.value;
   };
@@ -24,21 +28,26 @@ function attachOAuthForm({dialog,setup,progress,identity,available,account=null,
   }
   function paint(){
     if(closed||!current)return;
-    const signature=JSON.stringify([current.status,current.error,current.notice]);if(signature===lastView)return;lastView=signature;
+    const signature=JSON.stringify([current.status,current.error,current.notice,current.user_code,current.auth_url]);if(signature===lastView)return;lastView=signature;
     progress.hidden=false;
     const labels={waiting:'等待授权',exchanging:'获取凭证中',delivered:'已授权',failed:'授权失败',cancelled:'已取消',expired:'授权已超时'};
     const waiting=current.status==='waiting';
+    const device=current.method==='device_code';
     progress.innerHTML=`<div class="panelhead"><span role="status">${esc(labels[current.status]||'授权中')}</span>${active?'<button type="button" id="oauth-cancel">取消授权</button>':''}</div>
-      ${waiting?`<div class="actions"><button type="button" id="oauth-open">打开授权页面</button><button type="button" id="oauth-copy">复制授权链接</button></div>
-      ${current.manual_code||current.manual_callback?'':'<details><summary>手动回调</summary>'}<label>${current.manual_code?'授权码':'回调地址'}<input name="code" autocomplete="off" spellcheck="false" maxlength="8192"></label><button type="button" id="oauth-submit">${current.manual_code?'提交授权码':'提交回调'}</button>${current.manual_code||current.manual_callback?'':'</details>'}`:''}`;
+      ${waiting?`${device?`<label>设备码<input id="oauth-device-code" value="${esc(current.user_code)}" readonly autocomplete="off" spellcheck="false"></label>`:''}
+      <div class="actions"><button type="button" id="oauth-open">打开授权页面</button><button type="button" id="oauth-copy">${device?'复制设备码':'复制授权链接'}</button></div>
+      ${device?`<label>授权网址<input value="${esc(current.auth_url)}" readonly></label>`:
+        `${current.manual_code||current.manual_callback?'':'<details><summary>手动回调</summary>'}<label>${current.manual_code?'授权码':'回调地址'}<input name="code" autocomplete="off" spellcheck="false" maxlength="8192"></label><button type="button" id="oauth-submit">${current.manual_code?'提交授权码':'提交回调'}</button>${current.manual_code||current.manual_callback?'':'</details>'}`}`:''}`;
     const cancel=progress.querySelector('#oauth-cancel');if(cancel)cancel.onclick=()=>operation('cancel');
     if(waiting){
       progress.querySelector('#oauth-open').onclick=()=>operation('open');
-      progress.querySelector('#oauth-copy').onclick=()=>copyMerchantValue(current.auth_url).catch(e=>error(e.message));
-      const input=setup.elements.code;
-      const submit=()=>{const code=input.value;input.value='';void operation('submit',{code});};
-      progress.querySelector('#oauth-submit').onclick=submit;
-      input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();submit();}};
+      progress.querySelector('#oauth-copy').onclick=()=>copyMerchantValue(device?current.user_code:current.auth_url).catch(e=>error(e.message));
+      if(!device){
+        const input=setup.elements.code;
+        const submit=()=>{const code=input.value;input.value='';void operation('submit',{code});};
+        progress.querySelector('#oauth-submit').onclick=submit;
+        input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();submit();}};
+      }
     }
     if(current.error||current.notice)error(current.error||current.notice);
   }

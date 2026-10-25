@@ -676,6 +676,9 @@ class BrowserTests(unittest.TestCase):
         pool['deployments'].append({**pool['deployments'][0], 'id': 'example-002'})
         self.router.remote['catalog']['data'] = [{'pool': 'openai', 'deployment': d['id'],
             'official_models': {f'model-{i:02}': {} for i in range(20)}} for d in pool['deployments']]
+        # Both fixture accounts already exist upstream. Staging a new local
+        # account without credentials correctly quarantines it before upload.
+        self.app.accept(copy.deepcopy(self.router.remote))
         from local_accounts import config_from
         self.app.api('PUT', '/api/config', config_from(self.router.remote))
         self.router.writes.clear()
@@ -947,6 +950,48 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('[name=max_concurrent]')).to_have_value('12')
         self.page.locator('[data-action=close]').click()
         expect(self.page.locator('#dialog')).not_to_be_visible()
+
+    def test_openai_device_code_fills_draft_then_requires_test_and_save(self):
+        from unittest.mock import patch
+        from test_device_oauth import DEVICE, APPROVED, TOKEN
+        from oauth_network import OAuthError
+        approved=threading.Event()
+        def network(provider,url,proxy,**kwargs):
+            self.assertEqual(proxy,'http://proxy.example:8080')
+            if url.endswith('/usercode'):return DEVICE
+            if url.endswith('/deviceauth/token'):
+                if not approved.is_set():raise OAuthError('pending',status=403)
+                return APPROVED
+            return TOKEN
+        with patch('oauth_service.request',side_effect=network):
+            self.page.locator('[data-action=account]').click()
+            self.page.locator('#account-oauth-tab').click()
+            self.page.locator('[name=id]').fill('device-account')
+            self.page.locator('[name=proxy]').fill('http://proxy.example:8080')
+            self.page.get_by_role('button',name='设备码授权',exact=True).click()
+            expect(self.page.locator('#oauth-device-code')).to_have_value('ABCD-EFGH')
+            expect(self.page.get_by_role('button',name='复制设备码')).to_be_visible()
+            expect(self.page.get_by_label('授权网址',exact=True)).to_have_value('https://auth.openai.com/codex/device')
+            self.assertEqual(self.page.locator('#oauth-submit').count(),0)
+            self.assertEqual(self.page.locator('[name=code]').count(),0)
+            expect(self.page.get_by_role('button',name='保存并同步')).to_be_disabled()
+            self.assertEqual(self.router.writes,[])
+            approved.set()
+            with self.app.state_lock:
+                for flow in self.app.oauth.flows.values():flow['next_poll']=0
+            expect(self.page.locator('#oauth-result')).to_be_visible(timeout=10000)
+            value=json.loads(self.page.locator('[name=oauth_credential]').input_value())
+            self.assertEqual(value['credential']['access_token'],'PRIVATE_ACCESS')
+            self.assertEqual(value['credential']['refresh_token'],'PRIVATE_REFRESH')
+            self.assertFalse(self.app.oauth.flows)
+            self.assertEqual(self.router.writes,[])
+            expect(self.page.get_by_role('button',name='保存并同步')).to_be_disabled()
+            self.pass_probe()
+            self.page.get_by_role('button',name='保存并同步').click()
+            expect(self.page.locator('#dialog')).not_to_be_visible()
+            self.assertEqual(len(self.router.writes),1)
+            self.assertNotIn('PRIVATE_REFRESH',json.dumps(self.router.writes))
+            self.assertEqual(self.errors,[])
 
     def test_add_oauth_then_rotate_credentials_without_replacing_proxy(self):
         self.page.locator('[data-action=account]').click()

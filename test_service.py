@@ -171,7 +171,7 @@ class HTTPTests(unittest.TestCase):
         headers=self.open_page();identity=self.store.enrollment()['id']
         from test_platform_client import login_fixture
         login_fixture(self.app,self.client.cookies['tm_session'])
-        self.app.remote={'pools':[{'name':'gpt','provider':'openai'}]}
+        self.app.remote={'pools':[{'name':'gpt','provider':'anthropic'}]}
         start={'entry':{'pool':'gpt','proxy':'http://127.0.0.1:1'},'credentials_only':True,'save_refresh':True}
         result=self.client.post('/api/oauth/start',headers=headers,json=start).json()
         flow=self.app.oauth.flows[result['id']]

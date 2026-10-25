@@ -1,16 +1,19 @@
-"""Merchant-side PKCE authorization and credential renewal; no Electron dependency."""
+"""Merchant-side device-code / PKCE authorization and credential renewal."""
 import base64
 import copy
 import hashlib
 import secrets
+import threading
 import time
 from urllib.parse import urlencode, urlsplit, parse_qs
 from credential_protocol import claims, normalized
 from oauth_network import request, official, OAuthError
 
 PROVIDERS = {
-    'openai': {'client_id':'app_EMoamEEZ73f0CkXaXp7hrann', 'authorize':'https://auth.openai.com/oauth/authorize',
-        'token':'https://auth.openai.com/oauth/token','redirect':'http://localhost:1455/auth/callback',
+    'openai': {'client_id':'app_EMoamEEZ73f0CkXaXp7hrann', 'authorize':'https://auth.openai.com/codex/device',
+        'device_code':'https://auth.openai.com/api/accounts/deviceauth/usercode',
+        'device_poll':'https://auth.openai.com/api/accounts/deviceauth/token',
+        'token':'https://auth.openai.com/oauth/token','redirect':'https://auth.openai.com/deviceauth/callback',
         'scope':'openid profile email offline_access'},
     'anthropic': {'client_id':'9d1c250a-e61b-44d9-88ed-5944d1962f5e','authorize':'https://claude.ai/oauth/authorize',
         'token':'https://api.anthropic.com/v1/oauth/token','redirect':'https://platform.claude.com/oauth/code/callback',
@@ -62,20 +65,31 @@ def refresh(provider, credential, proxy):
 class OAuthService:
     def __init__(self, application):
         self.application, self.flows = application, {}
+        self.device_jobs = set()
+
+    @staticmethod
+    def finish(flow, status, error=''):
+        flow.update(status=status, error=error)
+        for key in ('device_auth_id','user_code','verifier','state','url','proxy'):
+            flow.pop(key, None)
+        if status != 'ready': flow.pop('credential', None)
 
     def prune(self):
-        self.flows = {key:flow for key,flow in self.flows.items() if flow['deadline']>time.time()}
+        for key, flow in list(self.flows.items()):
+            if time.monotonic() >= flow['expiry']:
+                self.finish(flow, 'expired')
+                if time.monotonic() >= flow['expiry'] + 60: del self.flows[key]
 
     def dispatch(self, action, body, identity, session):
         if not isinstance(body,dict) or identity != self.application.store.enrollment()['id']:
             raise ValueError('商户身份已变化，请刷新页面')
-        now = time.time()
         self.prune()
         if action == 'start': return self.start(body, identity, session)
         flow = self.flows.get(body.get('id'))
         if not flow or flow['identity'] != identity or flow['session'] != session:
             raise ValueError('授权会话不存在或已过期')
         if action == 'cancel':
+            self.finish(flow, 'cancelled')
             del self.flows[flow['id']];return {'cancelled':True}
         if action == 'submit': return self.submit(flow, body.get('code'))
         if action == 'result':
@@ -83,15 +97,22 @@ class OAuthService:
             state = self.application.remote
             if (self.application.store.settings['router'] != flow['router'] or not state
                     or not any(p['name']==flow['pool'] and p['provider']==flow['provider'] for p in state['pools'])):
+                self.finish(flow, 'cancelled')
                 del self.flows[flow['id']];raise ValueError('账号池或 Router 已变化，请重新授权')
             value = {'provider':flow['provider'],'credential':flow['credential']}
+            self.finish(flow, 'delivered')
             del self.flows[flow['id']]
             return value
-        if action in ('status','open'): return self.status(flow)
+        if action in ('status','open'):
+            if action == 'status' and flow.get('method') == 'device_code': self.poll_device(flow)
+            return self.status(flow)
         raise ValueError('OAuth 操作不存在')
 
     def start(self, body, identity, session):
-        if len(self.flows)>=16: raise ValueError('授权会话过多，请完成或取消已有授权')
+        for key, flow in list(self.flows.items()):
+            if flow['session']==session and flow['status'] in ('failed','expired','cancelled'):
+                self.finish(flow, 'cancelled');del self.flows[key]
+        if len(self.flows)>=16 or len(self.device_jobs)>=16: raise ValueError('授权会话过多，请完成或取消已有授权')
         if any(f['session']==session for f in self.flows.values()): raise ValueError('请先完成或取消已有授权')
         entry = body.get('entry', {})
         state = self.application.remote
@@ -103,6 +124,27 @@ class OAuthService:
         # Validate even a non-discovery provider before presenting authorization.
         with proxy_url(proxy): pass
         provider = pool['provider'];config = copy.deepcopy(PROVIDERS[provider])
+        flow = {'id':secrets.token_urlsafe(24),'session':session,'identity':identity,
+            'deadline':time.time()+600,'expiry':time.monotonic()+600,
+            'provider':provider,'pool':pool['name'],'proxy':proxy,'config':config,
+            'save_refresh':body['save_refresh'],'status':'waiting','router':self.application.store.settings['router']}
+        if provider == 'openai':
+            try:
+                code = request(provider, config['device_code'], proxy, json_body={'client_id':config['client_id']})
+            except OAuthError as error:
+                if error.status == 404: raise OAuthError('官方暂未提供设备码登录，请在 ChatGPT 安全设置中检查设备码登录权限') from None
+                raise
+            device_id = self.device_string(code.get('device_auth_id'), 4096)
+            user_code = self.device_string(code.get('user_code') or code.get('usercode'), 128)
+            interval = code.get('interval', '5')
+            if not ((type(interval) is int and interval >= 0) or
+                    (isinstance(interval, str) and interval.strip().isascii() and interval.strip().isdigit() and len(interval)<10)):
+                raise OAuthError('官方返回的设备码轮询间隔无效')
+            flow.update(method='device_code', device_auth_id=device_id, user_code=user_code,
+                interval=max(5, int(interval)), next_poll=time.monotonic(),
+                deadline=time.time()+900, expiry=time.monotonic()+900, url=config['authorize'])
+            self.flows[flow['id']] = flow
+            return self.status(flow)
         if provider == 'xai':
             discovered = request(provider, config['discovery'], proxy)
             if discovered.get('issuer') != 'https://auth.x.ai': raise ValueError('xAI 授权服务身份不匹配')
@@ -113,23 +155,88 @@ class OAuthService:
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b'=').decode()
         params = {'response_type':'code','client_id':config['client_id'],'redirect_uri':config['redirect'],
             'scope':config['scope'],'code_challenge':challenge,'code_challenge_method':'S256','state':state_token}
-        if provider=='openai': params.update(id_token_add_organizations='true',codex_cli_simplified_flow='true',originator='codex_cli_rs',prompt='login')
         if provider=='anthropic': params.update(code='true',prompt='login')
         if provider=='xai': params['nonce']=secrets.token_urlsafe(24)
-        flow = {'id':secrets.token_urlsafe(24),'session':session,'identity':identity,'deadline':time.time()+600,
-            'provider':provider,'pool':pool['name'],'proxy':proxy,'config':config,'verifier':verifier,'state':state_token,
-            'save_refresh':body['save_refresh'],'status':'waiting','router':self.application.store.settings['router'],
-            'url':config['authorize']+'?'+urlencode(params)}
+        flow.update(method='pkce', verifier=verifier, state=state_token, url=config['authorize']+'?'+urlencode(params))
         self.flows[flow['id']] = flow
         return self.status(flow)
 
     @staticmethod
     def status(flow):
         return {'id':flow['id'],'provider':flow['provider'],'status':flow['status'],'expires_at':int(flow['deadline']),
-            'auth_url':flow['url'] if flow['status']=='waiting' else '', 'manual_code':flow['provider']=='anthropic',
-            'manual_callback':True, 'error':flow.get('error','')}
+            'method':flow['method'], 'user_code':flow.get('user_code','') if flow['status']=='waiting' else '',
+            'auth_url':flow.get('url','') if flow['status']=='waiting' else '', 'manual_code':flow['provider']=='anthropic',
+            'manual_callback':flow['method']=='pkce', 'error':flow.get('error','')}
+
+    @staticmethod
+    def device_string(value, limit):
+        if not isinstance(value,str) or not value or len(value)>limit or any(ord(c)<=32 for c in value):
+            raise OAuthError('官方设备码授权响应无效')
+        return value
+
+    def device_active(self, flow):
+        """Called under the application and platform locks, including after network I/O."""
+        if self.flows.get(flow['id']) is not flow: return False
+        if time.monotonic() >= flow['expiry']:
+            self.finish(flow, 'expired');return False
+        app = self.application
+        if (app.store.enrollment()['id'] != flow['identity'] or app.store.settings['router'] != flow['router']
+                or not app.platform_client.authorized(flow['session'], flow['identity'])
+                or not any(p['name']==flow['pool'] and p['provider']==flow['provider'] for p in (app.remote or {}).get('pools',[]))):
+            self.finish(flow, 'failed', '商户会话、账号池或 Router 已变化，请重新授权');return False
+        return flow['status'] in ('waiting','exchanging')
+
+    def poll_device(self, flow):
+        # UI polling never holds the service locks while waiting for OpenAI.
+        if flow['status']!='waiting' or flow['id'] in self.device_jobs or time.monotonic()<flow['next_poll']:
+            return
+        if not self.device_active(flow): return
+        self.device_jobs.add(flow['id'])
+        threading.Thread(target=self.complete_device, args=(flow,), daemon=True).start()
+
+    def complete_device(self, flow):
+        app = self.application
+        try:
+            with app.state_lock, app.platform_client.lock:
+                if not self.device_active(flow): return
+                config, proxy = flow['config'], flow['proxy']
+                body = {'device_auth_id':flow['device_auth_id'],'user_code':flow['user_code']}
+            try:
+                payload = request('openai', config['device_poll'], proxy, json_body=body)
+            except OAuthError as error:
+                # Codex's device endpoint uses 403/404 for authorization pending.
+                # This exception is deliberately limited to this poll endpoint.
+                if error.status not in (403,404): raise
+                with app.state_lock, app.platform_client.lock:
+                    if self.device_active(flow): flow['next_poll'] = time.monotonic()+flow['interval']
+                return
+            with app.state_lock, app.platform_client.lock:
+                if not self.device_active(flow): return
+                code = self.device_string(payload.get('authorization_code'), 4096)
+                verifier = self.device_string(payload.get('code_verifier'), 4096)
+                self.device_string(payload.get('code_challenge'), 4096)
+                flow['status'] = 'exchanging'
+            # An exchange is attempted exactly once. An uncertain response must
+            # not be replayed, and cancellation can never publish its result.
+            payload = request('openai', config['token'], proxy, data={
+                'grant_type':'authorization_code','client_id':config['client_id'],
+                'code':code,'redirect_uri':config['redirect'],'code_verifier':verifier})
+            credential = tokens('openai', payload, save_refresh=flow['save_refresh'])
+            with app.state_lock, app.platform_client.lock:
+                if self.device_active(flow):
+                    flow['credential'] = credential
+                    self.finish(flow, 'ready')
+        except (ValueError,RuntimeError) as error:
+            with app.state_lock, app.platform_client.lock:
+                if self.device_active(flow): self.finish(flow, 'failed', str(error))
+        except Exception:
+            with app.state_lock, app.platform_client.lock:
+                if self.device_active(flow): self.finish(flow, 'failed', '设备码授权失败，请重新授权')
+        finally:
+            with app.state_lock: self.device_jobs.discard(flow['id'])
 
     def submit(self, flow, text):
+        if flow['method']=='device_code': raise ValueError('请在官方页面输入设备码完成授权')
         if flow['status']!='waiting' or not isinstance(text,str) or len(text)>8192: raise ValueError('授权回调无效')
         code=text.strip();state=''
         if code.startswith(('http://','https://')):

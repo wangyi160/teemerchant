@@ -16,9 +16,10 @@ import httpx
 HOSTS = {'openai': {'auth.openai.com'}, 'anthropic': {'claude.ai', 'api.anthropic.com', 'platform.claude.com'}, 'xai': {'auth.x.ai'}}
 
 class OAuthError(RuntimeError):
-    def __init__(self, message, *, uncertain=False, permanent=False):
+    def __init__(self, message, *, uncertain=False, permanent=False, status=None):
         super().__init__(message)
         self.uncertain, self.permanent = uncertain, permanent
+        self.status = status
 
 def official(provider, url):
     u = urlsplit(url)
@@ -115,7 +116,7 @@ def request(provider, url, proxy, *, data=None, json_body=None):
                         data=data, json=json_body, headers={'Accept':'application/json'}) as response:
                     if response.status_code != 200:
                         status = response.status_code
-                        raise OAuthError(f'官方授权服务返回 HTTP {status}', permanent=status in (400,401,403), uncertain=status >= 500)
+                        raise OAuthError(f'官方授权服务返回 HTTP {status}', permanent=status in (400,401,403), uncertain=status >= 500, status=status)
                     raw = bytearray()
                     for chunk in response.iter_bytes():
                         raw.extend(chunk)
