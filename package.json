@@ -1,6 +1,6 @@
 {
   "name": "teemerchant",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "description": "Merchant-owned HTTP service for TEE Router on Windows and Linux",
   "license": "MIT",
   "repository": {

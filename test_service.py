@@ -87,7 +87,8 @@ class ProtocolTests(unittest.TestCase):
 
     def test_probe_does_not_send_refresh_token(self):
         seen=[]
-        self.app.transport=type('T',(),{'call':lambda _,method,path,body:seen.append(body)})()
+        self.app.transport=type('T',(),{'call':lambda _,method,path,body=None:
+            {'pools':[]} if method=='GET' else seen.append(body)})()
         self.app.connected=True
         self.app.api('POST','/api/accounts/test',{'pool':'openai','proxy':'http://proxy.example:80','credential':{'access_token':'A','refresh_token':'NEVER_SEND'}})
         self.assertNotIn('NEVER_SEND',json.dumps(seen))

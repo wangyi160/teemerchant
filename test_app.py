@@ -8,10 +8,14 @@ from store import Store
 class Transport:
     def __init__(self):
         self.acks=[]
+        self.pools=[]
+        self.calls=[]
         self.row={'seq':1,'event':{'user_id':'alice','model':'model','secret_marker':'REFUSAL_ARCHIVE_TEXT'}}
     def close(self): pass
     def call(self,method,path,body=None):
+        self.calls.append((method,path,body))
         if method=='GET':
+            if path=='/merchant/state':return {'pools':self.pools}
             if path.startswith('/merchant/usage'):
                 return {'instance_id':'instance','data':[] if self.acks else [self.row]}
             return {'instance_id':'instance','data':[]}
@@ -50,6 +54,8 @@ class MerchantTests(unittest.TestCase):
         with self.assertRaises(ValueError):app._api('POST','/api/accounts/test',body)
         self.assertEqual(t.acks,[])
         app.connected=True
+        t.pools=[{'name':'official','provider':'openai','deployments':[{'id':'a'}]}]
+        app.remote={'pools':t.pools}
         before=self.store.path.read_bytes()
         app._api('POST','/api/accounts/test',body)
         self.assertEqual(t.acks,[body])
@@ -58,4 +64,41 @@ class MerchantTests(unittest.TestCase):
                         {**body,'api_key':'PRIVATE_KEY'}]:
             with self.assertRaises(ValueError):app._api('POST','/api/accounts/test',invalid)
         self.assertEqual(len(t.acks),1)
+
+    def test_probe_uses_published_pools_not_local_account_count(self):
+        for local_count,published in [(1,False),(0,False),(1,True),(0,True)]:
+            with self.subTest(local_count=local_count,published=published):
+                t=Transport();app=Application(self.store,t);app.connected=True
+                pool={'name':'openai','provider':'openai','allowed_models':['model-a'],
+                      'deployments':[{'id':'paused-account','enabled':False}]*local_count}
+                app.remote={'pools':[pool]}
+                if published:t.pools=[{'name':'openai','deployments':[{'id':'remote-account'}]}]
+                body={'pool':'openai','proxy':'https://proxy.example','model':'model-a',
+                      'credential':{'access_token':'FRESH_TOKEN','refresh_token':'LOCAL_ONLY'}}
+                before=self.store.path.read_bytes()
+                app._api('POST','/api/accounts/test',body)
+                self.assertEqual([(m,p) for m,p,_ in t.calls],
+                                 [('GET','/merchant/state'),('POST','/merchant/accounts/test')])
+                sent=t.acks[0]
+                self.assertEqual(sent['credential'],{'access_token':'FRESH_TOKEN'})
+                self.assertEqual(sent['proxy'],body['proxy'])
+                self.assertEqual(sent['model'],'model-a')
+                if published:self.assertNotIn('draft_pool',sent)
+                else:self.assertEqual(sent['draft_pool'],{'provider':'openai','allowed_models':['model-a']})
+                self.assertEqual(self.store.path.read_bytes(),before)
+                self.assertFalse(self.store.accounts.path.exists())
+                self.assertIn('refresh_token',body['credential'])
+
+    def test_probe_does_not_send_credentials_if_pool_state_cannot_be_read(self):
+        from unittest.mock import Mock
+        t=Transport();app=Application(self.store,t);app.connected=True
+        app.remote={'pools':[{'name':'openai','provider':'openai','deployments':[]}]}
+        body={'pool':'openai','proxy':'https://proxy.example','credential':{'access_token':'PRIVATE'}}
+        for result in (None,{'data':[]}):
+            t.call=Mock(return_value=result)
+            with self.assertRaises(RuntimeError):app._api('POST','/api/accounts/test',body)
+            t.call.assert_called_once_with('GET','/merchant/state')
+        t.call=Mock(side_effect=RuntimeError('unavailable'))
+        with self.assertRaises(RuntimeError):app._api('POST','/api/accounts/test',body)
+        t.call.assert_called_once_with('GET','/merchant/state')
 if __name__=='__main__':unittest.main()

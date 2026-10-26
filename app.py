@@ -343,7 +343,15 @@ class Application:
             if 'credential' in body and 'api_key' not in body['credential']:
                 body = {**body, 'credential': access_only(body['credential'])}
             pool = next((p for p in (self.remote or {}).get('pools', []) if p['name'] == body['pool']), None)
-            if pool and not pool['deployments']:
+            if pool is None:
+                raise ValueError('账号池不存在，请重新打开账号')
+            # Local accounts can all be paused or invalid, so a nonempty local
+            # pool may be absent from Router's published projection. Read the
+            # live pool names without reconciling or saving the editor's draft.
+            published = self.transport.call('GET', '/merchant/state')
+            if not isinstance(published, dict) or not isinstance(published.get('pools'), list):
+                raise RuntimeError('Router 账号池状态无效')
+            if not any(p['name'] == pool['name'] for p in published['pools']):
                 body = {**body, 'draft_pool': {'provider': pool['provider'], 'allowed_models': pool.get('allowed_models')}}
             return self.transport.call('POST', '/merchant/accounts/test', body)
         if method == 'GET' and path.startswith('/api/accounts/'):
