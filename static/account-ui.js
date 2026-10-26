@@ -26,11 +26,18 @@ function poolForm(editName = '') {
       `<option value="${p}" ${p === existing?.provider?'selected':''}>${p}</option>`).join('')}</select></label></div>`+
     field('实际倍率','multiplier',rate?String(rate.multiplier_millionths/1e6):existing?'':'1','text','required inputmode="decimal"'), async f => {
       const name = f.get('name').trim();
-      await save(AccountConfig.pool(snapshot,{name,provider:existing?.provider || f.get('provider'),
-        multiplier_millionths:amount(f.get('multiplier').trim())},editName || null));
+      const multiplier = amount(f.get('multiplier').trim());
+      if (existing) {
+        const result = await api('/api/pool-pricing', 'PUT', {pool:name, multiplier_millionths:multiplier,
+          expected_revision:snapshot.settings.revision, _local_revision:snapshot.local_revision});
+        state.remote = result;
+        state.settings.minimum_revision = result.settings.revision;
+      } else {
+        await save(AccountConfig.pool(snapshot,{name,provider:f.get('provider'),multiplier_millionths:multiplier}));
+      }
       selectedAccountPool = name;
       render();
-    },{submit:'保存并同步'});
+    },{submit:'保存并同步', ...(existing ? {success:'倍率已更新',rawErrors:true} : {})});
 }
 
 function accountEnabled(deployment) {

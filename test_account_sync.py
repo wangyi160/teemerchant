@@ -92,6 +92,7 @@ class AccountSyncTests(unittest.TestCase):
     def installed(self):
         self.book.stage(self.url, self.config)
         self.router.remote['pools'] = copy.deepcopy(self.config['pools'])
+        self.router.remote['settings']['pool_pricing'] = copy.deepcopy(self.config['pool_pricing'])
         self.router.remote['accounts']['data'] = [{'name': n, 'enabled': True,
             'access_sha256': fingerprint({'access_token': 'OLD_' + n}), 'health': {'state': 'active'}}
             for n in ('bad', 'good')]

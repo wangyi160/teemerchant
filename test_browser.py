@@ -327,8 +327,9 @@ class BrowserTests(unittest.TestCase):
         update = config_from(self.app.remote)
         update['pools'][0]['deployments'][0]['enabled'] = False
         update['pools'][0]['allowed_models'] = ['current-model']
-        update['pool_pricing'][0]['multiplier_millionths'] = 400000
         self.app.api('PUT', '/api/config', update)
+        self.app.api('PUT', '/api/pool-pricing', {'pool': 'openai', 'multiplier_millionths': 400000,
+            'expected_revision': self.app.remote['settings']['revision'], '_local_revision': self.app.remote['local_revision']})
         raced = []
         def race(route):
             if route.request.method == 'PUT' and not raced:
@@ -346,7 +347,7 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result['pool_pricing'][0]['multiplier_millionths'], 400000)
         self.assertEqual(result['pools'][0]['deployments'][0]['rpm'], 27)
         self.assertEqual(result['accounts']['new-account']['credential']['access_token'], 'PRIVATE_NEW_TOKEN')
-        self.assertEqual(len(self.router.writes), 3)
+        self.assertEqual(len(self.router.writes), 4)
         self.assertEqual(len(self.router.probes), 1)
 
     def test_account_conflict_keeps_editor_tokens_and_never_overwrites_same_account(self):
@@ -796,6 +797,24 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('已过期', exact=True)).to_be_visible()
         expect(self.page.get_by_text('需重新授权', exact=True)).to_have_count(0)
         self.assertEqual(self.router.writes, [])
+
+    def test_pool_rate_failure_keeps_dialog_and_confirmed_price_then_retry_succeeds(self):
+        self.page.locator('[data-action=edit-pool][data-id=openai]').click()
+        self.page.locator('[name=multiplier]').fill('0.05')
+        self.router.reject = True
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog .error')).to_contain_text('倍率保存失败')
+        expect(self.page.locator('#dialog')).to_be_visible()
+        expect(self.page.locator('[name=multiplier]')).to_have_value('0.05')
+        self.assertEqual(self.page.evaluate("state.remote.settings.pool_pricing[0].multiplier_millionths"), 200000)
+        self.assertIsNone(self.store.accounts.pending(self.store.settings['router']))
+        self.assertEqual(self.router.writes, [])
+        self.router.reject = False
+        self.page.get_by_role('button', name='保存并同步').click()
+        expect(self.page.locator('#dialog')).not_to_be_visible()
+        expect(self.page.get_by_text('倍率已更新', exact=True)).to_be_visible()
+        self.assertEqual(self.page.evaluate("state.remote.settings.pool_pricing[0].multiplier_millionths"), 50000)
+        self.assertIsNone(self.store.accounts.pending(self.store.settings['router']))
 
     def test_pool_lifecycle_empty_pool_edit_rate_then_add_account(self):
         self.page.locator('[data-action=pool]').click()

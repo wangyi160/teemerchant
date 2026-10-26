@@ -84,7 +84,7 @@ function form(title,html,action,options={}){
     const data=new FormData(e.target),controls=Array.from(e.target.elements),disabled=controls.map(c=>c.disabled);
     dialog.dataset.busy='true';controls.forEach(c=>c.disabled=true);
     try{await action(data);dialog.close();dialog.innerHTML='';toast(options.success||(state.remote?.local_sync?.state==='pending'?'已保存到本地，等待同步 Router':'已保存到本地并同步至 Router'));}
-    catch(error){dialog.querySelector('.error').textContent=error.message.includes('local_revision_conflict')?'本地配置已变化，当前输入已保留。请重试保存。':error.message.includes('revision_conflict')?'Router 配置版本已变化，当前输入已保留。请重试保存。':error.message;}
+    catch(error){dialog.querySelector('.error').textContent=options.rawErrors?error.message:error.message.includes('local_revision_conflict')?'本地配置已变化，当前输入已保留。请重试保存。':error.message.includes('revision_conflict')?'Router 配置版本已变化，当前输入已保留。请重试保存。':error.message;}
     finally{delete dialog.dataset.busy;controls.forEach((c,i)=>c.disabled=disabled[i]);}
   };dialog.showModal();
 }

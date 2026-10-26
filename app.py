@@ -14,7 +14,7 @@ from store import Store
 from transport import Transport
 from credential_protocol import PROTOCOL, access_only, fingerprint
 from account_auth import AccountError, sync_error, verify as verify_account
-from local_accounts import redact
+from local_accounts import config_from, redact
 
 ROOT = Path(__file__).parent
 
@@ -228,6 +228,67 @@ class Application:
         self.remote = self.store.accounts.view(router)
         return self.remote
 
+    def save_pool_price(self, body):
+        """Send an isolated price edit and commit locally only after confirmation."""
+        if (not isinstance(body, dict) or set(body) != {'pool', 'multiplier_millionths', 'expected_revision', '_local_revision'}
+                or not isinstance(body['pool'], str)
+                or type(body['multiplier_millionths']) is not int or not 0 <= body['multiplier_millionths'] <= 10**15
+                or type(body['expected_revision']) is not int or type(body['_local_revision']) is not int):
+            raise ValueError('倍率参数无效，未修改倍率')
+        router, book = self.store.settings['router'], self.store.accounts
+        view = book.view(router)
+        if not view or not self.connected:
+            raise ValueError('Router 未连接，倍率未修改')
+        if body['_local_revision'] != view['local_revision']:
+            raise ValueError('配置已变化，倍率未修改；请重新打开编辑窗口')
+        pool = next((p for p in view['pools'] if p['name'] == body['pool']), None)
+        if pool is None:
+            raise ValueError('账号池不存在，倍率未修改')
+        try:
+            current = self.transport.call('GET', '/merchant/state')
+            self.accept(current, clean_catalog=False)
+        except Exception as error:
+            raise RuntimeError('未能连接 Router，倍率未修改：' + sync_error(error)[1]) from None
+        if current['settings']['revision'] != body['expected_revision']:
+            raise ValueError('Router 配置已变化，未提交倍率修改；请重新打开编辑窗口')
+        published = any(p['name'] == pool['name'] for p in current['pools'])
+        if not published and pool['deployments']:
+            raise ValueError('账号池尚未发布，倍率未修改；请先完成账号同步')
+        update = config_from(current)
+        if published:
+            update['pool_pricing'] = [p for p in update['pool_pricing'] if p['pool'] != pool['name']]
+            update['pool_pricing'].append({'pool': pool['name'], 'multiplier_millionths': body['multiplier_millionths']})
+        # An empty pool is an unpublished draft. Its initial rate is retained
+        # only after the same successful Router round trip, without publishing it.
+        def confirmed(result):
+            return (result['merchant']['id'] == current['merchant']['id']
+                    and result['merchant'].get('runtime_id') == current['merchant'].get('runtime_id')
+                    and result['settings']['revision'] > current['settings']['revision']
+                    and (not published or any(p['name'] == pool['name'] for p in result['pools']) and any(p['pool'] == pool['name']
+                         and p['multiplier_millionths'] == body['multiplier_millionths']
+                         for p in result['settings'].get('pool_pricing', []))))
+        try:
+            result = self.transport.call('PUT', '/merchant/config', update)
+            if not confirmed(result):
+                raise RuntimeError('Router 未确认倍率更新')
+        except Exception as error:
+            # A lost acknowledgement is not proof of rejection. Read once to
+            # confirm the current price; never automatically replay the write.
+            try:
+                result = self.transport.call('GET', '/merchant/state')
+                self.accept(result, clean_catalog=False)
+            except Exception:
+                raise RuntimeError('未能确认倍率修改结果，仍显示上次确认的倍率；请恢复连接后刷新。' + sync_error(error)[1]) from None
+            if not published or not confirmed(result):
+                raise RuntimeError('倍率保存失败，请稍后重试：' + sync_error(error)[1]) from None
+        try:
+            self.accept(result, clean_catalog=False)
+            book.confirm_price(router, result, pool['name'], body['multiplier_millionths'], current['settings']['revision'])
+        except Exception:
+            raise RuntimeError('Router 已确认倍率更新，但本机状态保存失败；请刷新确认') from None
+        self.remote = book.view(router)
+        return self.remote
+
     def api(self, method, path, body, identity=None):
         # Status remains responsive while a remote archive operation is waiting.
         if (method, path) == ('GET', '/api/state'):
@@ -302,11 +363,14 @@ class Application:
         if (method, path) == ('GET', '/api/merchant'):
             return self.accept(self.transport.call('GET', '/merchant/state'))
         if (method, path) == ('PUT', '/api/config'):
+            self.store.accounts.guard_pricing(self.store.settings['router'], body)
             self.store.accounts.stage(self.store.settings['router'], body)
             self.remote = self.store.accounts.view(self.store.settings['router'])
             # Offline changes are still saved and editable. Explicitly retry once
             # through /api/config/sync when the user requests synchronization.
             return self.push_config() if self.connected else self.remote
+        if (method, path) == ('PUT', '/api/pool-pricing'):
+            return self.save_pool_price(body)
         if (method, path) == ('POST', '/api/config/sync'):
             router = self.store.settings['router']
             for identifier, account in self.store.accounts.sync_accounts(router).items():

@@ -102,6 +102,48 @@ class AccountBook:
             book['remote'] = copy.deepcopy(remote)
             if book['config'] is None:
                 book['config'] = config_from(remote)
+            elif not remote['merchant'].get('configuration_required'):
+                # Published prices are authoritative. A failed edit must never
+                # survive as a local override or be replayed with account changes.
+                published = {p['name'] for p in remote.get('pools', [])}
+                prices = remote['settings'].get('pool_pricing', [])
+                for config in (book['config'], book['pending']):
+                    if config is not None:
+                        previous_prices = config.get('pool_pricing', [])
+                        retained = {p['name'] for p in config['pools']}
+                        confirmed = [copy.deepcopy(p) for p in prices if p['pool'] in retained]
+                        confirmed.extend(copy.deepcopy(p) for p in previous_prices if p['pool'] not in published)
+                        if confirmed != previous_prices:
+                            config['pool_pricing'] = confirmed
+                            book['local_revision'] += 1
+            self._write(data)
+
+    def guard_pricing(self, router, body):
+        """Account writes cannot smuggle an unconfirmed published price change."""
+        with self.lock:
+            book = self.data['routers'].get(router, {})
+            published = {p['name'] for p in (book.get('remote') or {}).get('pools', [])}
+            retained = {p['name'] for p in body.get('pools', []) if p.get('deployments')}
+            previous = {p['pool']: p for p in (book.get('remote') or {}).get('settings', {}).get('pool_pricing', [])}
+            proposed = {p['pool']: p for p in body.get('pool_pricing', [])}
+            if any(previous.get(name) != proposed.get(name) for name in published & retained):
+                raise ValueError('倍率未修改，请在编辑账号池中单独保存倍率')
+
+    def confirm_price(self, router, remote, pool, multiplier, previous_revision):
+        """Commit only this confirmed edit; leave account drafts and secrets alone."""
+        with self.lock:
+            data = copy.deepcopy(self.data)
+            book = self._book(data, router)
+            for config in (book['config'], book['pending']):
+                if config is not None:
+                    config['pool_pricing'] = [p for p in config.get('pool_pricing', []) if p['pool'] != pool]
+                    config['pool_pricing'].append({'pool': pool, 'multiplier_millionths': multiplier})
+                    if (config is book['config'] or config['expected_revision'] == previous_revision
+                            and remote['settings']['revision'] == previous_revision + 1):
+                        config['expected_revision'] = remote['settings']['revision']
+            book['local_revision'] += 1
+            if not book['pending']:
+                book['sync_state'], book['sync_error'] = 'synced', ''
             self._write(data)
 
     def stage(self, router, body):
