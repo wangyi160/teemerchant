@@ -13,6 +13,8 @@ function toast(text){
   toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),5000);
 }
 async function api(path,method='GET',data,operationId=newOperationId()){
+  const finish=method==='GET'?MerchantLoading.begin():()=>{};
+  try{
   const response=await fetch('/account-api/'+path,{method,credentials:'same-origin',cache:'no-store',
     headers:{'Content-Type':'application/json','X-CSRF-Token':document.querySelector('meta[name=local-csrf]').content,'X-Account-Mode':document.body.dataset.mode||'account','X-Merchant-ID':document.querySelector('meta[name=merchant-id]').content,'Idempotency-Key':operationId},
     body:data===undefined?undefined:JSON.stringify(data)});
@@ -29,6 +31,7 @@ async function api(path,method='GET',data,operationId=newOperationId()){
     if(changed||path==='login'||path==='register')parent.postMessage({type:'merchant-bound'},location.origin);
   }
   return result;
+  }finally{finish();}
 }
 function table(heads,rows,empty='暂无记录'){
   return `<div class="scroll"><table><thead><tr>${heads.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.join(''):`<tr><td colspan="${heads.length}" class="empty">${empty}</td></tr>`}</tbody></table></div>`;

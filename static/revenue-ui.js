@@ -27,7 +27,7 @@ async function loadRevenue() {
 }
 
 function revenueSummary() {
-  if(!revenueData)return `<p>${esc(revenueError||'正在读取收入…')}</p>`;
+  if(!revenueData)return revenueError?`<p class="error">${esc(revenueError)}</p>`:MerchantLoading.placeholder();
   const s=revenueData.summary;
   const card=(label,value,note)=>`<div class="card"><small>${label}</small><strong>${value}</strong><small>${note}</small></div>`;
   return (revenueError?`<p class="error">${esc(revenueError)} · 以下为上次查询结果</p>`:'')+

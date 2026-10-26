@@ -31,6 +31,8 @@ const remote=()=>state.remote, settings=()=>remote()?.settings, pools=()=>remote
 const usd=n=>(n/1e6).toLocaleString("en-US",{maximumFractionDigits:6});
 function amount(v){if(!/^\d+(\.\d{1,6})?$/.test(v))throw Error("倍率最多保留 6 位小数");const [a,b=""]=v.split('.');const n=Number(a)*1e6+Number(b.padEnd(6,'0'));if(!Number.isSafeInteger(n)||n>1e15)throw Error("倍率超出范围");return n;}
 async function api(path,method="GET",body){
+  const finish=method==='GET'||['/api/refresh','/api/connect'].includes(path)?MerchantLoading.begin():()=>{};
+  try{
   const epoch=dataEpoch;
   const identity=path==='/api/state'?undefined:state?.enrollment.id;
   let value;
@@ -46,6 +48,7 @@ async function api(path,method="GET",body){
   if(epoch!==dataEpoch)throw Error('账号状态已变化，请重新操作');
   if(identity&&state?.enrollment.id!==identity)throw Error('商户已切换，请重新操作');
   return value;
+  }finally{finish();}
 }
 function toast(text){$('#toast').textContent=text;$('#toast').classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),6000);}
 async function reload(){

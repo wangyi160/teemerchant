@@ -99,6 +99,8 @@ function renderConnectionAccount(){
   if(section==='connection'&&panel)panel.innerHTML=connectionAccountView();
 }
 async function connectionApi(path,method='GET',data){
+  const finish=method==='GET'?MerchantLoading.begin():()=>{};
+  try{
   const identity=state.enrollment.id;
   const response=await fetch('/account-api/'+path,{method,credentials:'same-origin',cache:'no-store',
     headers:{'Content-Type':'application/json','X-CSRF-Token':$('meta[name=csrf]').content,
@@ -108,6 +110,7 @@ async function connectionApi(path,method='GET',data){
   if(!response.ok){const error=Error(result.detail||result.error||'操作失败');error.status=response.status;throw error;}
   if(state.enrollment.id!==identity&&state.enrollment.id!==result.local_merchant_id)throw Error('账号已切换，请重试');
   return result;
+  }finally{finish();}
 }
 async function acceptConnectionAccount(result){
   const next=await api('/api/state'),changed=acceptState(next);

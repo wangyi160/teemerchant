@@ -101,11 +101,14 @@ def handler(application, origins, auth=None):
                 name=path[len('/account-assets/'):]
                 allowed={'common.css','local.css','browser-utils.js','common.js','withdrawals.js','finance.js','workspace-receipts.js','merchant.js','workspace.js','local.js','auth.js'}
                 if name not in allowed:return self.respond(404,{'error':'not_found'})
-                return self.respond(200,(ROOT/'static/platform'/name).read_bytes(),'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8')
+                data=(ROOT/'static/platform'/name).read_bytes()
+                if name=='common.js':data=(ROOT/'static/loading.js').read_bytes()+b'\n'+data
+                if name=='common.css':data+=b'\n'+(ROOT/'static/loading.css').read_bytes()
+                return self.respond(200,data,'text/css; charset=utf-8' if name.endswith('.css') else 'text/javascript; charset=utf-8')
             if self.command=='GET' and path=='/app.css':
-                return self.respond(200,(ROOT/'static/app.css').read_bytes(),'text/css; charset=utf-8')
+                return self.respond(200,(ROOT/'static/app.css').read_bytes()+b'\n'+(ROOT/'static/loading.css').read_bytes(),'text/css; charset=utf-8')
             if self.command=='GET' and path=='/app.js':
-                data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['web-bridge.js','account-config.js','app.js','connection-ui.js','account-ui.js','revenue-ui.js','records-ui.js','oauth-ui.js'])
+                data=b'\n'.join((ROOT/'static'/name).read_bytes() for name in ['loading.js','web-bridge.js','account-config.js','app.js','connection-ui.js','account-ui.js','revenue-ui.js','records-ui.js','oauth-ui.js'])
                 return self.respond(200,data,'text/javascript; charset=utf-8')
             if not secrets.compare_digest(self.headers.get('X-CSRF-Token',''),session['csrf']): return self.respond(403,{'error':'页面会话无效，请刷新'})
             try:

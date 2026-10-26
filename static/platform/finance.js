@@ -52,7 +52,7 @@ function financeView(){
   const user=workspace.role==='user',d=financeData;
   let html=`<div class="heading"><div><h1>${user?'余额与充值':'收入'}</h1><p>${user?'查看可用余额、充值流水与模型消费。':'查看调用收入与账号池收入明细。'}</p></div></div>`;
   if(financeError)html+=`<div class="notice warn">账务信息暂时无法更新：${esc(financeError)}。请点击右上角刷新重试。</div>`;
-  if(!d)return html+(financeError?'':'<p class="loading">正在读取账务记录…</p>');
+  if(!d)return html+(financeError?'':MerchantLoading.placeholder());
   html+=financeCards(workspace.role);
   if(d.sync_error)html+='<div class="notice warn">Router 同步暂未完成，以下展示已保存的账务记录，最新调用可能尚未计入。</div>';
   if(user){

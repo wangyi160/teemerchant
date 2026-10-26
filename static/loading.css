@@ -1,0 +1,8 @@
+.data-spinner{display:inline-block;flex:none;width:19px;height:19px;border:2px solid #dce6f5;border-top-color:#2464de;border-radius:50%;animation:merchant-data-spin .75s linear infinite}
+@keyframes merchant-data-spin{to{transform:rotate(360deg)}}
+#data-loading{position:fixed;top:88px;right:38px;z-index:1000;display:flex;align-items:center;gap:9px;padding:10px 14px;border:1px solid #dce5f0;border-radius:9px;background:#fff;color:#526278;box-shadow:0 4px 18px #17233212;font-size:13px;pointer-events:none}
+#data-loading[hidden]{display:none}
+.data-loading-placeholder{min-height:120px;display:flex;align-items:center;justify-content:center}
+.data-loading-placeholder .data-spinner{width:28px;height:28px;border-width:3px}
+@media(prefers-reduced-motion:reduce){.data-spinner{animation-duration:2s}}
+@media(max-width:700px){#data-loading{right:16px}}

@@ -19,7 +19,7 @@ function withdrawalsView(){
   const d=withdrawalData;
   let html='<section class="panel"><div class="heading"><div><h2>收入提现</h2><p>人工审核打款 · 1 USD = 1 USDT</p></div></div>';
   if(withdrawalError)html+=`<div class="notice warn">${esc(withdrawalError)}</div>`;
-  if(!d)return html+'<p class="muted">正在读取提现记录…</p></section>';
+  if(!d)return html+(withdrawalError?'':MerchantLoading.placeholder())+'</section>';
   const available=BigInt(d.balance.available_microusd),canApply=d.can_apply&&available>=BigInt(d.fee_policy.minimum_microusd);
   html+=`<div class="cards withdrawal-cards">${[['可提现收入',d.balance.available_microusd],['申请中金额',d.balance.reserved_microusd],['累计已提现（含手续费）',d.balance.paid_microusd]].map(([label,n],i)=>`<div class="card"><small>${label} · USD</small><strong>${financeMoney(n)}</strong>${i===2?`<span class="sub">实际到账 ${withdrawalAmount(d.balance.paid_payout_microusd)} USDT · 手续费 ${withdrawalAmount(d.balance.paid_fee_microusd)} USDT</span>`:''}</div>`).join('')}</div>`;
   if(!d.can_apply)html+='<p class="muted">商户审核通过后可申请提现。</p>';
