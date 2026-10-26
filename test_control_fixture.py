@@ -8,14 +8,17 @@ def install(app, router):
     router.remote['merchant']['control_protocol'] = 'platform-config-v1'
     original = router.call
     router._apply = original
-    prepared = {}
     def tee(method, path, body=None):
-        if path == '/merchant/accounts/prepare':
-            assert body['public_digest']
-            ticket = str(len(prepared)+1)
-            prepared[ticket] = copy.deepcopy(body)
-            return {'ticket':ticket, 'runtime_id':body['runtime_id']}
-        assert path not in ('/merchant/state','/merchant/config','/merchant/models/refresh'), path
+        if path == '/merchant/accounts/sync':
+            from local_accounts import config_from
+            update = config_from(router.remote)
+            existing = {p['name']:p for p in router.remote['pools']}
+            update['pools'] = [{**copy.deepcopy(existing.get(p['name'],p)), 'deployments':copy.deepcopy(p['deployments'])} for p in body['pools']]
+            names = {p['name'] for p in body['pools'] if p['deployments']}
+            update['pool_pricing'] = [p for p in update['pool_pricing'] if p['pool'] in names] + copy.deepcopy(body['new_pool_pricing'])
+            for k in ('expected_revision','accounts','secrets','delete_accounts','delete_secrets'):update[k]=copy.deepcopy(body[k])
+            return original('PUT','/fixture/config',update)
+        assert path not in ('/merchant/state','/merchant/config','/merchant/models/refresh','/merchant/accounts/prepare'), path
         return original(method, path, body)
     router.call = tee
     def fetch(path):
@@ -24,17 +27,6 @@ def install(app, router):
     def configure(body):
         public = copy.deepcopy(body['config'])
         assert 'accounts' not in public and 'secrets' not in public
-        if body.get('ticket'):
-            stage = prepared[body['ticket']]
-            assert stage['public_digest'] == public_digest(public)
-            material = stage['material']
-            for key in ('accounts','secrets'):
-                if material[key]: public[key] = copy.deepcopy(material[key])
-            for pool in public['pools']:
-                for d in pool['deployments']:
-                    if d['id'] in material['proxies']:d['proxy']=material['proxies'][d['id']]
-        for name, control in public.pop('account_controls', {}).items():
-            public.setdefault('accounts', {}).setdefault(name, {}).update(control)
         pending = app.store.accounts.pending(app.store.settings['router'])
         if pending and body['config'].get('delete_accounts') is not None:
             for name in ('accounts','secrets'):
@@ -48,6 +40,7 @@ def install(app, router):
             if result['settings']['revision'] > public['expected_revision']:
                 return result
             raise
+    app.platform_data.notify_synced = lambda value: {'accepted':True}
     app.platform_data.fetch = fetch
     app.platform_data.configure = configure
     return app

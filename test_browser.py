@@ -349,7 +349,7 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result['pool_pricing'][0]['multiplier_millionths'], 400000)
         self.assertEqual(result['pools'][0]['deployments'][0]['rpm'], 27)
         self.assertEqual(result['accounts']['new-account']['credential']['access_token'], 'PRIVATE_NEW_TOKEN')
-        self.assertEqual(len(self.router.writes), 4)
+        self.assertEqual(len(self.router.writes), 5)
         self.assertEqual(len(self.router.probes), 1)
 
     def test_account_conflict_keeps_editor_tokens_and_never_overwrites_same_account(self):

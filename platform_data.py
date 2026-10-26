@@ -8,6 +8,12 @@ import httpx
 from platform_archive import platform_url
 
 
+class PlatformError(RuntimeError):
+    def __init__(self, message, code='platform_unavailable'):
+        self.public_code = code
+        super().__init__(message)
+
+
 class PlatformData:
     def __init__(self, store):
         self.store = store
@@ -24,19 +30,22 @@ class PlatformData:
     def fetch(self, path):
         return self.request('GET', path)
 
+    def notify_synced(self, value):
+        return self.request('POST', 'synced', value)
+
     def request(self, method, path, payload=None, operation=None):
         context = self.context()
         if not context[2]:
             raise ValueError('请先填写管理平台地址')
         try:
-            with httpx.Client(trust_env=False, follow_redirects=False, timeout=90 if method != 'GET' else 15) as client:
+            with httpx.Client(trust_env=False, follow_redirects=False, timeout=5 if path == 'synced' else 90 if method != 'GET' else 15) as client:
                 headers = {'Authorization': 'Bearer ' + context[3]}
                 if operation:
                     headers['Idempotency-Key'] = operation
                 with client.stream(method, context[2] + '/merchant-api/v1/' + path,
                                    headers=headers, **({'json': payload} if payload is not None else {})) as response:
-                    if response.status_code != 200:
-                        raise RuntimeError('管理平台查询失败：HTTP ' + str(response.status_code))
+                    if response.status_code not in (200, 202):
+                        raise PlatformError('管理平台请求失败：HTTP ' + str(response.status_code), 'platform_http_' + str(response.status_code))
                     chunks, size, started = [], 0, time.monotonic()
                     for chunk in response.iter_bytes():
                         size += len(chunk)
@@ -47,7 +56,7 @@ class PlatformData:
                     if not isinstance(value, dict):
                         raise ValueError()
         except (httpx.HTTPError, ValueError):
-            raise RuntimeError('暂时无法读取管理平台数据，将自动重试') from None
+            raise PlatformError('暂时无法连接管理平台') from None
         if context != self.context():
             raise ValueError('商户或管理平台已切换，本次查询已取消')
         return value
@@ -60,9 +69,9 @@ class PlatformData:
             try:
                 reply = self.fetch('commands/' + operation)
             except Exception:
-                raise RuntimeError('管理平台未确认配置结果，保留上次确认值；请刷新后重试') from error
+                raise PlatformError('管理平台未确认配置结果，保留上次确认值；请刷新后重试', getattr(error, 'public_code', 'platform_unavailable')) from error
         if reply.get('status') != 'applied' or reply.get('operation_id') != operation:
-            raise RuntimeError('配置未获 Router 确认，保留上次确认值：' + str(reply.get('error', reply.get('status', 'invalid_response'))))
+            raise PlatformError('配置未获 Router 确认，保留上次确认值：' + str(reply.get('error', reply.get('status', 'invalid_response'))), 'platform_config_unconfirmed')
         return reply['state']
 
     def read(self, path):

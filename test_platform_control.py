@@ -40,27 +40,28 @@ class PlatformControlTests(unittest.TestCase):
         self.assertEqual(result[0]['merchant']['id'],self.store.enrollment()['id'])
         self.app.transport.call.assert_not_called()
 
-    def test_new_tokens_and_proxy_passwords_only_use_attested_prepare(self):
+    def test_accounts_activate_directly_even_if_platform_is_offline(self):
         update=config_from(self.state)
         update['accounts']={'credential-ref':{'provider':'openai','enabled':False,'proxy':'https://user:PRIVATE_PROXY@proxy.example',
             'credential':{'access_token':'PRIVATE_ACCESS','refresh_token':'PRIVATE_REFRESH','account_id':'PRIVATE_WORKSPACE'}}}
-        prepared=[];sent=[]
+        calls=[]
         def tee(method,path,body):
-            self.assertEqual((method,path),('PUT','/merchant/accounts/prepare'))
+            self.assertEqual((method,path),('PUT','/merchant/accounts/sync'))
             self.assertNotIn('PRIVATE_REFRESH',json.dumps(body))
             self.assertIn('PRIVATE_ACCESS',json.dumps(body));self.assertIn('PRIVATE_PROXY',json.dumps(body))
-            self.assertNotIn('enabled',body['material']['accounts']['credential-ref'])
-            prepared.append(body)
-            return {'ticket':'a'*64,'runtime_id':'test-runtime'}
+            self.assertFalse(body['accounts']['credential-ref']['enabled'])
+            self.assertNotIn('ticket',body)
+            calls.append(body)
+            return copy.deepcopy(self.state)
         self.app.transport.call=tee
-        def platform(request):
-            payload=json.loads(request.content);sent.append(payload)
-            self.assertNotIn('PRIVATE',request.content.decode())
-            self.assertEqual(prepared[0]['public_digest'],public_digest(payload['config']))
-            self.assertEqual(payload['config']['account_controls'],{'credential-ref':{'enabled':False}})
-            return httpx.Response(200,json={'status':'applied','operation_id':request.headers['Idempotency-Key'],'applied_revision':8,'state':self.state})
-        with self.http(platform):self.app.commit_config(update)
-        self.assertEqual(len(sent),1)
+        with self.http(lambda _: (_ for _ in ()).throw(AssertionError('account save contacted platform'))):
+            self.assertEqual(self.app.commit_accounts(update),self.state)
+        self.app.platform_data.notify_synced=Mock(side_effect=RuntimeError('platform offline'))
+        self.app.notify_snapshot()
+        self.assertIsNotNone(self.app.snapshot_notice)
+        self.assertTrue(self.app.connected)
+        self.assertEqual(len(calls),1)
+        self.assertNotIn('PRIVATE',json.dumps(self.app.snapshot_notice[1]))
 
     def test_price_only_uses_platform_and_rejection_keeps_confirmed_value(self):
         self.app.transport.call=Mock(side_effect=AssertionError('price used TEE channel'))

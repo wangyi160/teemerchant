@@ -88,7 +88,7 @@ class Transport:
     def call(self, method, path, body=None):
         if method != 'VERIFY' and (method, path) not in (
                 ('POST', '/merchant/bind'), ('POST', '/merchant/unlock'), ('POST', '/merchant/accounts/test'),
-                ('PUT', '/merchant/accounts/access'), ('PUT', '/merchant/accounts/prepare')):
+                ('PUT', '/merchant/accounts/access'), ('PUT', '/merchant/accounts/sync')):
             raise ValueError('查询和公开配置请通过管理平台')
         def check(value):
             if isinstance(value, dict):

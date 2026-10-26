@@ -118,6 +118,16 @@ class AccountSyncTests(unittest.TestCase):
             self.assertEqual(reloaded.accounts.account(self.url, 'bad')['credential_present'], True)
         finally: reloaded.db.close()
 
+    def test_account_save_succeeds_with_platform_completely_unavailable(self):
+        with patch.object(self.app.platform_data, 'configure', side_effect=AssertionError('account save reached platform')) as configure:
+            result = self.app.api('PUT', '/api/config', self.config)
+        configure.assert_not_called()
+        self.assertEqual(result['local_sync']['state'], 'synced')
+        self.assertTrue(all(v['state']=='synced' for v in result['account_sync'].values()))
+        with patch.object(self.app.platform_data, 'notify_synced', side_effect=RuntimeError('offline')):
+            self.app.notify_snapshot()
+        self.assertTrue(all(v['state']=='synced' for v in self.app.remote['account_sync'].values()))
+
     def test_access_upload_errors_pause_one_account_without_blocking_others(self):
         self.installed()
         self.router.rejected.add('bad')
@@ -143,7 +153,7 @@ class AccountSyncTests(unittest.TestCase):
         self.router.remote['accounts']['data'] = []
         self.app.connected = False
         self.app.connect()
-        self.assertNotIn('bad', self.router.writes[-1]['accounts'])
+        self.assertNotIn('bad', next(w for w in reversed(self.router.writes) if 'accounts' in w)['accounts'])
         self.assertEqual(self.check.call_count, 2)
         self.assertEqual(len(self.app.remote['pools'][0]['deployments']), 2)
 
@@ -183,7 +193,7 @@ class AccountSyncTests(unittest.TestCase):
         for _ in range(3): self.app.sync_credentials()
         self.assertEqual(self.router.writes, [])
         self.app.api('POST', '/api/accounts/retry', {'id': 'good'})
-        self.assertEqual(list(self.router.writes[-1]['accounts']), ['good'])
+        self.assertEqual(list(next(w for w in reversed(self.router.writes) if 'accounts' in w)['accounts']), ['good'])
 
     def test_crash_marker_and_expired_token_are_not_waiting_for_catalog(self):
         self.installed()
@@ -230,7 +240,7 @@ class AccountSyncTests(unittest.TestCase):
         self.router.remote['accounts']['data'] = []
         self.app.connected = False
         self.app.connect()
-        self.assertEqual(list(self.router.writes[-1]['accounts']), ['good'])
+        self.assertEqual(list(next(w for w in reversed(self.router.writes) if 'accounts' in w)['accounts']), ['good'])
         self.assertEqual(self.app.remote['account_sync']['bad']['code'], 'invalid_credential')
         self.assertEqual(len(self.app.remote['pools'][0]['deployments']), 2)
 

@@ -22,7 +22,7 @@ class Router:
         if method == 'PUT':
             # The durable account file must exist before the transport sees any key.
             assert self.store.accounts.path.exists()
-            assert router_update(self.store.accounts.pending('https://fixture.example')) == body
+            # Account and policy writes are separate; each uses the current CAS revision.
             assert all(pool['deployments'] for pool in body['pools'])
             assert all(price['pool'] in {pool['name'] for pool in body['pools']} for price in body['pool_pricing'])
             if self.failure:
@@ -241,8 +241,8 @@ class LocalAccountTests(unittest.TestCase):
         self.assertEqual(len(self.router.writes), 1)
         update = self.router.writes[0]
         self.assertEqual(update['pools'][0]['allowed_models'], ['kept'])
-        self.assertEqual(update['accounts'], {})
-        self.assertEqual(update['secrets'], {})
+        self.assertNotIn('accounts', update)
+        self.assertNotIn('secrets', update)
         self.assertEqual(self.app.api('GET', '/api/accounts/alias-1', {})['credential_text'], 'PRIVATE_TEST_KEY')
         with self.assertRaisesRegex(ValueError, 'local_revision_conflict'):
             self.app.api('PUT', '/api/config', stale_form)
@@ -406,7 +406,7 @@ class LocalAccountTests(unittest.TestCase):
         self.assertIsNotNone(self.store.accounts.pending(self.store.settings['router']))
         self.app.api('POST', '/api/config/sync', {})
         self.assertEqual(len(self.router.writes), 1)
-        self.assertIn('revision_conflict', self.app.remote['local_sync']['error'])
+        self.assertEqual(self.app.remote['local_sync']['state'], 'synced')
 
     def test_remote_failure_retains_local_material_pending_state_and_never_auto_replays(self):
         self.router.failure = True

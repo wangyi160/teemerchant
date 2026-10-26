@@ -103,7 +103,7 @@ async fn secrets_use_only_the_original_attested_tls_connection() {
     let mut merchant = Merchant::fixture(server.endpoint.clone(), true);
     for (method, path) in [
         ("POST", "/merchant/unlock"),
-        ("PUT", "/merchant/accounts/prepare"),
+        ("PUT", "/merchant/accounts/sync"),
         ("POST", "/merchant/accounts/test"),
     ] {
         assert_eq!(merchant.request(request(method, path)).await["status"], 200);

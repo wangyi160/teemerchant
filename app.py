@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
 from transport import Transport
-from credential_protocol import PROTOCOL, access_only, fingerprint, split_update, public_digest
+from credential_protocol import PROTOCOL, access_only, fingerprint, split_update, router_update
 from account_auth import AccountError, sync_error, verify as verify_account
 from local_accounts import config_from, redact
 
@@ -29,6 +29,7 @@ class Application:
         self.sync_lock = threading.Lock()
         self.state_lock = threading.RLock()
         self.last_catalog_check = time.monotonic()
+        self.snapshot_notice = None
         from platform_client import PlatformClient
         from platform_data import PlatformData
         self.platform_client = PlatformClient(self)
@@ -84,14 +85,42 @@ class Application:
         public, material = split_update(update)
         runtime_id = self.remote['merchant']['runtime_id']
         command = {'runtime_id': runtime_id, 'config': public}
-        if any(material.values()):
-            receipt = self.transport.call('PUT', '/merchant/accounts/prepare', {
-                'runtime_id': runtime_id, 'expected_revision': public['expected_revision'],
-                'public_digest': public_digest(public), 'material': material})
-            if receipt.get('runtime_id') != runtime_id or not receipt.get('ticket'):
-                raise RuntimeError('Router 未确认凭据暂存')
-            command['ticket'] = receipt['ticket']
+        for key in ('account_controls', 'delete_accounts', 'delete_secrets'):
+            public.pop(key, None)
         return self.platform_data.configure(command)
+
+    def account_snapshot(self):
+        return copy.deepcopy(self.store.accounts.data['routers'][self.store.settings['router']]['remote'])
+
+    def commit_accounts(self, update):
+        value = router_update(update)
+        previous = self.account_snapshot()
+        existing = {p['name'] for p in previous['pools']}
+        body = {key: value.get(key, {} if key in ('accounts','secrets') else [])
+                for key in ('pools','accounts','secrets','delete_accounts','delete_secrets')}
+        body.update(runtime_id=previous['merchant']['runtime_id'], expected_revision=value['expected_revision'],
+                    operation_id=secrets.token_hex(16), new_pool_pricing=[p for p in value['pool_pricing'] if p['pool'] not in existing])
+        result = self.transport.call('PUT', '/merchant/accounts/sync', body)
+        self.queue_snapshot_notice(result)
+        return result
+
+    def queue_snapshot_notice(self, result):
+        self.snapshot_notice = (self.platform_data.context(), {'runtime_id': result['merchant']['runtime_id'],
+                                'revision': result['settings']['revision']})
+
+    def notify_snapshot(self):
+        notice = self.snapshot_notice
+        if not notice:
+            return
+        if notice[0] != self.platform_data.context():
+            self.snapshot_notice = None
+            return
+        try:
+            self.platform_data.notify_synced(notice[1])
+        except Exception:
+            return  # Router acknowledgement remains final; scheduled snapshots also recover this.
+        if self.snapshot_notice is notice:
+            self.snapshot_notice = None
 
     def connect(self):
         owner = self.store.control_token().split('.', 1)[1]
@@ -115,13 +144,7 @@ class Application:
                 self.accept(result, clean_catalog=False)
         else:
             self.accept(result, clean_catalog=False)
-        # Publish the initial metadata snapshot through the configuration channel.
-        # This is an acknowledged command, never a page-triggered Router query.
-        if not self.store.accounts.pending(self.store.settings['router']):
-            try:
-                self.platform_state()
-            except RuntimeError:
-                self.accept(self.commit_config(config_from(result)), clean_catalog=False)
+        self.queue_snapshot_notice(self.account_snapshot())
         self.sync_credentials()
         if self.store.accounts.withdraw_empty_pools(self.store.settings['router']):
             return self.push_config()
@@ -190,6 +213,7 @@ class Application:
                         result = self.transport.call('PUT', '/merchant/accounts/access', body)
                         self.accept(result, clean_catalog=False)
                         book.confirm_token_upload(router, body['accounts'], result)
+                        self.queue_snapshot_notice(result)
                     except Exception as error:
                         code, message = sync_error(error)
                         for identifier, account in rows.items():
@@ -230,8 +254,9 @@ class Application:
             return self.remote
         sending = {}
         previous = self.store.accounts.published_deployments(router)
+        states = self.store.accounts.sync_accounts(router)
         affected = {d['id'] for p in pending['pools'] for d in p['deployments']
-                    if d.get('oauth_account') in pending.get('accounts', {}) or d.get('api_key_ref') in pending.get('secrets', {})
+                    if states.get(d['id'], {}).get('sync', {}).get('state') != 'synced'
                     or redact(d) != redact(previous.get(d['id']))}
         try:
             if not self.connected:
@@ -245,16 +270,24 @@ class Application:
             projected = self.store.accounts.projected_update(router, pending)
             published = {d['id']: d for p in projected['pools'] for d in p['deployments']}
             previous = self.store.accounts.published_deployments(router)
+            statuses = {a['name']: a for a in self.account_snapshot().get('accounts', {}).get('data', [])}
+            changed_tokens = {name for name, a in projected.get('accounts', {}).items()
+                              if a.get('credential', {}).get('access_token') and
+                              fingerprint(a['credential']) != statuses.get(name, {}).get('access_sha256')}
             sending = {i: a for i, a in self.store.accounts.sync_accounts(router).items() if i in published
-                       and (a['oauth_account'] in projected.get('accounts', {}) or
-                            not a['oauth_account'] and a['sync'].get('state') == 'verified' or
+                       and (a['oauth_account'] in changed_tokens or a['sync'].get('state') != 'synced' or
                             redact(published[i]) != redact(previous.get(i)))}
             for identifier, account in sending.items():
                 self.store.accounts.account_sync_result(router, identifier, account['basis'], 'sending')
-            result = self.commit_config(projected)
-            self.accept(result, clean_catalog=False)
-            self.store.accounts.confirm_token_upload(router, projected.get('accounts', {}), result)
-            self.store.accounts.acknowledge(router, result)
+            current = self.account_snapshot()
+            topology = lambda v: [(p['name'], redact(p['deployments'])) for p in v['pools'] if p['deployments']]
+            accounts_changed = bool(sending or projected.get('delete_accounts') or projected.get('delete_secrets')
+                                    or topology(projected) != topology(current)
+                                    or current['merchant'].get('configuration_required'))
+            result = self.commit_accounts(projected) if accounts_changed else current
+            if accounts_changed:
+                self.accept(result, clean_catalog=False)
+                self.store.accounts.confirm_token_upload(router, projected.get('accounts', {}), result)
             for identifier, account in self.store.accounts.sync_accounts(router).items():
                 if account['sync'].get('state') in ('verified', 'sending'):
                     self.store.accounts.account_sync_result(router, identifier, account['basis'], 'synced')
@@ -266,6 +299,30 @@ class Application:
             for identifier, account in self.store.accounts.sync_accounts(router).items():
                 if (identifier in affected or identifier in sending) and account['sync'].get('state') != 'paused':
                     self.store.accounts.account_sync_result(router, identifier, account['basis'], 'paused', code, detail)
+        else:
+            # Account activation is complete. A separate policy write must never
+            # relabel confirmed credentials as failed or pause their renewal.
+            try:
+                public, _ = split_update(projected)
+                for key in ('account_controls','delete_accounts','delete_secrets'):
+                    public.pop(key, None)
+                public['expected_revision'] = result['settings']['revision']
+                desired = copy.deepcopy(public)
+                baseline = config_from(result)
+                for p in baseline['pools']:
+                    for d in p['deployments']:
+                        for k in ('oauth_file','api_base','gemini_project'):d.pop(k,None)
+                policies = {p['name']:p for p in baseline['pools']}
+                pool_changed = any(any(v != policies.get(p['name'], {}).get(k)
+                                       for k,v in p.items() if k != 'deployments') for p in desired['pools'])
+                changed = any(v is not None and v != baseline.get(k) for k,v in desired.items()
+                              if k not in ('expected_revision','pools'))
+                if pool_changed or changed or result['merchant'].get('configuration_required'):
+                    result = self.commit_config(public)
+                    self.accept(result, clean_catalog=False)
+                self.store.accounts.acknowledge(router, result)
+            except Exception as error:
+                self.store.accounts.sync_failed(router, '账号已同步；公开配置未确认：' + sync_error(error)[1])
         self.remote = self.store.accounts.view(router)
         return self.remote
 
@@ -471,6 +528,7 @@ class Application:
 
     def background(self, stop):
         while not stop.wait(10):
+            self.notify_snapshot()
             with self.state_lock:
                 self.oauth.prune()
                 try:

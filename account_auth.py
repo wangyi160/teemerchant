@@ -35,6 +35,12 @@ def sync_error(error):
     """Never store exception URLs, proxy passwords, tokens or upstream bodies."""
     if isinstance(error, AccountError):
         return error.code, str(error)
+    from platform_data import PlatformError
+    if isinstance(error, PlatformError):
+        code = error.public_code
+        if re.fullmatch(r'platform_http_[1-5][0-9]{2}', code):
+            return 'sync_failed', '管理平台请求失败（HTTP ' + code[-3:] + '）'
+        return 'sync_failed', '管理平台暂不可用' if code == 'platform_unavailable' else '管理平台未确认公开配置'
     text = str(error)
     known = ('revision_conflict', 'account_credential_changed', 'merchant_runtime_changed',
              'merchant_locked', 'merchant_forbidden', 'access_token_only', 'invalid_account',

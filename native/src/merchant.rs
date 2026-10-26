@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 pub fn allowed(method: &str, path: &str) -> bool {
     matches!((method, path),
         ("POST", "/merchant/unlock" | "/merchant/bind" | "/merchant/accounts/test")
-        | ("PUT", "/merchant/accounts/prepare" | "/merchant/accounts/access"))
+        | ("PUT", "/merchant/accounts/sync" | "/merchant/accounts/access"))
 }
 
 #[derive(Deserialize)]

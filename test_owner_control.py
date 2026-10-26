@@ -61,13 +61,13 @@ class OwnerControlTests(unittest.TestCase):
             return result
         router.call = request
         app.connect()
-        self.assertEqual(len(router.writes), 2)
-        self.assertEqual(router.writes[-1]['secrets']['api-1'], 'PRIVATE_TEST_KEY')
+        self.assertEqual(len(router.writes), 3)
+        self.assertEqual(next(w for w in reversed(router.writes) if 'secrets' in w)['secrets']['api-1'], 'PRIVATE_TEST_KEY')
         self.assertEqual(len(app.remote['pools']), 1)
         router.remote['merchant']['owner_hash'] = 'b' * 64
         with self.assertRaises(RuntimeError):
             app.connect()
-        self.assertEqual(len(router.writes), 2)
+        self.assertEqual(len(router.writes), 3)
 
     def test_offline_edits_preserve_private_protocol_configuration_for_restart(self):
         router = Router(self.store)
