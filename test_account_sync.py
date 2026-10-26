@@ -128,6 +128,15 @@ class AccountSyncTests(unittest.TestCase):
             self.app.notify_snapshot()
         self.assertTrue(all(v['state']=='synced' for v in self.app.remote['account_sync'].values()))
 
+    def test_manual_retry_does_not_require_platform_queries(self):
+        self.installed()
+        account = self.book.sync_accounts(self.url)['bad']
+        self.book.account_sync_result(self.url, 'bad', account['basis'], 'paused', 'sync_failed', 'old failure')
+        with patch.object(self.app, 'platform_state', side_effect=RuntimeError('platform offline')) as query:
+            result = self.app.api('POST', '/api/accounts/retry', {'id': 'bad'})
+        query.assert_not_called()
+        self.assertEqual(result['account_sync']['bad']['state'], 'synced')
+
     def test_access_upload_errors_pause_one_account_without_blocking_others(self):
         self.installed()
         self.router.rejected.add('bad')

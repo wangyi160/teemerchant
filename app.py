@@ -487,7 +487,6 @@ class Application:
                 if not self.connected:
                     self.connect()
                 else:
-                    self.accept(self.platform_state(), clean_catalog=False)
                     if self.store.accounts.pending(router):
                         self.push_config()
                     self.sync_credentials()
