@@ -38,10 +38,26 @@ def sync_error(error):
     text = str(error)
     known = ('revision_conflict', 'account_credential_changed', 'merchant_runtime_changed',
              'merchant_locked', 'merchant_forbidden', 'access_token_only', 'invalid_account',
-             'merchant_request_failed')
+             'merchant_request_failed', 'merchant_request_timeout', 'router_attestation_failed',
+             'invalid_session', 'invalid_request', 'native_internal_error',
+             'merchant_endpoint_forbidden')
     code = next((code for code in known if code in text), '')
     status = re.search(r'Router 返回 (\d{3})', text)
     detail = ', '.join(x for x in (f'HTTP {status[1]}' if status else '', code) if x)
+    if not detail:
+        # A category and our own source location are useful when a local error
+        # prevents transmission. Never include exception messages or locals.
+        category = type(error).__name__
+        if not re.fullmatch(r'[A-Za-z_]{1,64}', category):
+            category = 'Exception'
+        frame = error.__traceback__
+        location = ''
+        while frame:
+            filename = frame.tb_frame.f_code.co_filename.replace('\\', '/').split('/')[-1]
+            if filename in ('app.py', 'local_accounts.py', 'transport.py', 'credential_protocol.py'):
+                location = f'{filename}:{frame.tb_lineno}'
+            frame = frame.tb_next
+        detail = '内部错误 ' + category + (f' @ {location}' if location else '')
     return 'sync_failed', str(AccountError('sync_failed', detail))
 
 

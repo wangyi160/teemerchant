@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 import httpx
 from app import Application
-from account_auth import AccountError, verify
+from account_auth import AccountError, verify, sync_error
 from credential_protocol import PROTOCOL, fingerprint
 from store import Store
 from test_local_accounts import Router
@@ -50,6 +50,17 @@ class SyncRouter(Router):
 
 
 class AccountSyncTests(unittest.TestCase):
+    def test_sync_diagnostics_preserve_categories_without_secrets(self):
+        for code in ('merchant_request_timeout','router_attestation_failed','invalid_session'):
+            kind,message=sync_error(RuntimeError(code+' https://proxy:PRIVATE_TOKEN@example.test'))
+            self.assertEqual(kind,'sync_failed')
+            self.assertIn(code,message)
+            self.assertNotIn('PRIVATE_TOKEN',message)
+            self.assertNotIn('example.test',message)
+        kind,message=sync_error(KeyError('PRIVATE_TOKEN'))
+        self.assertIn('KeyError',message)
+        self.assertNotIn('PRIVATE_TOKEN',message)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(self.tmp.name)
