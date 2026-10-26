@@ -102,8 +102,8 @@ async fn secrets_use_only_the_original_attested_tls_connection() {
     let server = server("ok").await;
     let mut merchant = Merchant::fixture(server.endpoint.clone(), true);
     for (method, path) in [
-        ("GET", "/merchant/state"),
-        ("GET", "/merchant/usage?limit=2"),
+        ("POST", "/merchant/unlock"),
+        ("PUT", "/merchant/accounts/prepare"),
         ("POST", "/merchant/accounts/test"),
     ] {
         assert_eq!(merchant.request(request(method, path)).await["status"], 200);
@@ -162,7 +162,7 @@ async fn failed_write_is_not_replayed_and_drops_the_session() {
     let server = server("lost-ack").await;
     let mut merchant = Merchant::fixture(server.endpoint.clone(), true);
     assert_eq!(
-        merchant.request(request("PUT", "/merchant/config")).await["error"],
+        merchant.request(request("PUT", "/merchant/accounts/access")).await["error"],
         "merchant_request_failed"
     );
     assert_eq!(server.calls.lock().unwrap().len(), 1);

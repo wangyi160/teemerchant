@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from app import Application
+from test_control_fixture import install
 from local_accounts import config_from
 from store import Store
 from test_browser import FakeRouter
@@ -16,7 +17,7 @@ class PoolPricingTests(unittest.TestCase):
         self.store = Store(self.tmp.name)
         self.store.settings['router'] = 'https://fixture.example'
         self.router = FakeRouter(self.store)
-        self.app = Application(self.store, self.router)
+        self.app = install(Application(self.store, self.router), self.router)
         self.app.accept(copy.deepcopy(self.router.remote), clean_catalog=False)
         self.book = self.store.accounts
         self.url = self.store.settings['router']
@@ -38,7 +39,7 @@ class PoolPricingTests(unittest.TestCase):
 
     def test_success_only_changes_price_and_never_stages_before_acknowledgement(self):
         previous = config_from(self.router.remote)
-        call = self.router.call
+        call = self.router._apply
         def inspect(method, path, body=None):
             if method == 'PUT':
                 self.assertEqual(self.rate(), 200000)
@@ -52,7 +53,7 @@ class PoolPricingTests(unittest.TestCase):
                 self.assertNotIn('accounts', body)
                 self.assertNotIn('secrets', body)
             return call(method, path, body)
-        self.router.call = inspect
+        self.router._apply = inspect
         with patch.object(self.app, 'renew_credentials', side_effect=AssertionError('must not renew')):
             result = self.save()
         self.assertEqual(self.rate(result), 50000)
@@ -62,7 +63,7 @@ class PoolPricingTests(unittest.TestCase):
 
     def test_router_rejection_keeps_old_price_on_disk_and_no_pending_write(self):
         self.router.reject = True
-        with self.assertRaisesRegex(RuntimeError, '倍率保存失败'):
+        with self.assertRaisesRegex(RuntimeError, '倍率未获 Router 确认'):
             self.save()
         self.assertEqual(self.rate(), 200000)
         self.assertEqual(self.rate(self.router.remote), 200000)
@@ -77,7 +78,7 @@ class PoolPricingTests(unittest.TestCase):
         self.assertEqual(self.router.writes, [])
 
     def test_connection_failure_does_not_stage_anything(self):
-        with patch.object(self.router, 'call', side_effect=TimeoutError()):
+        with patch.object(self.app.platform_data, 'fetch', side_effect=TimeoutError()):
             with self.assertRaisesRegex(RuntimeError, '倍率未修改'):
                 self.save()
         self.assertEqual(self.rate(), 200000)
@@ -91,19 +92,19 @@ class PoolPricingTests(unittest.TestCase):
         self.assertIsNone(self.book.pending(self.url))
 
     def test_lost_acknowledgement_is_confirmed_by_read_without_replay(self):
-        call = self.router.call
+        call = self.router._apply
         def lost(method, path, body=None):
             result = call(method, path, body)
             if method == 'PUT':
                 raise TimeoutError()
             return result
-        self.router.call = lost
+        self.router._apply = lost
         self.assertEqual(self.rate(self.save()), 50000)
         self.assertEqual(len(self.router.writes), 1)
         self.assertIsNone(self.book.pending(self.url))
 
     def test_unknown_outcome_keeps_last_confirmed_price_then_reconciles_read_only(self):
-        call = self.router.call
+        call = self.router._apply
         def lost(method, path, body=None):
             if self.router.writes:
                 raise TimeoutError()
@@ -111,12 +112,12 @@ class PoolPricingTests(unittest.TestCase):
             if method == 'PUT':
                 raise TimeoutError()
             return result
-        self.router.call = lost
-        with self.assertRaisesRegex(RuntimeError, '未能确认倍率修改结果'):
+        self.router._apply = lost
+        with self.assertRaisesRegex(RuntimeError, '倍率未获 Router 确认'):
             self.save()
         self.assertEqual(self.rate(), 200000)
         self.assertIsNone(self.book.pending(self.url))
-        self.app.accept(call('GET', '/merchant/state'), clean_catalog=False)
+        self.app.accept(call('GET', '/fixture/state'), clean_catalog=False)
         self.assertEqual(self.rate(), 50000)
         self.assertEqual(len(self.router.writes), 1)
 

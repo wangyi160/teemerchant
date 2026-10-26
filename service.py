@@ -127,13 +127,14 @@ def handler(application, origins, auth=None):
                     # Before login, the endpoint is a browser preference only.
                     # Never redirect a saved merchant's background credentials.
                     result=application.platform_client.set_base(session['id'],body)
-                elif self.command=='GET' and path in ('/api/revenue','/api/revenue/record','/api/records/usage','/api/records/refusals'):
-                    with application.state_lock, application.platform_client.lock:
+                elif self.command=='GET' and path in ('/api/merchant','/api/revenue','/api/revenue/record','/api/records/usage','/api/records/refusals') or self.command=='POST' and path=='/api/refresh':
+                    with application.platform_client.lock, application.store.lock:
                         application.platform_client.require(session['id'],self.headers.get('X-Merchant-ID'))
                     result=application.api(self.command,self.path,body,self.headers.get('X-Merchant-ID'))
                 else:
-                    with application.state_lock, application.platform_client.lock:
-                        application.platform_client.require(session['id'],self.headers.get('X-Merchant-ID'))
+                    with application.state_lock:
+                        with application.platform_client.lock:
+                            application.platform_client.require(session['id'],self.headers.get('X-Merchant-ID'))
                         if path in ('/api/credentials','/api/merchant-profile'):
                             return self.respond(403,{'error':'请通过账号登录或切换账号'})
                         if path.startswith('/api/oauth/') and self.command=='POST':

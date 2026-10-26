@@ -5,6 +5,7 @@ import time
 import unittest
 from unittest.mock import patch
 from app import Application
+from test_control_fixture import install
 from store import Store
 from credential_protocol import router_update
 
@@ -52,7 +53,7 @@ class LocalAccountTests(unittest.TestCase):
         self.store.settings['router'] = 'https://fixture.example'
         self.store.save()
         self.router = Router(self.store)
-        self.app = Application(self.store, self.router)
+        self.app = install(Application(self.store, self.router), self.router)
         self.app.accept(self.router.remote)
 
     def tearDown(self):
@@ -261,7 +262,8 @@ class LocalAccountTests(unittest.TestCase):
                        {'scope': 'account'}, {'models': 2}, {'source_deployment': 'unknown'}):
             with self.subTest(status=status):
                 self.catalog(['kept'], **status)
-                result = self.app.api('GET', '/api/merchant', {})
+                self.app.api('GET', '/api/merchant', {})
+                result = self.app.reconcile_catalog()
                 self.assertEqual(result['pools'][0]['allowed_models'], ['removed', 'kept'])
         self.router.remote['catalog']['data'] = []
         self.app.api('GET', '/api/merchant', {})
@@ -270,7 +272,8 @@ class LocalAccountTests(unittest.TestCase):
     def test_provider_catalog_can_prune_without_exposing_source_account(self):
         self.selected_models()
         self.catalog(['kept'], scope='provider', provider='openai', source_deployment=None)
-        result = self.app.api('GET', '/api/merchant', {})
+        self.app.api('GET', '/api/merchant', {})
+        result = self.app.reconcile_catalog()
         self.assertEqual(result['pools'][0]['allowed_models'], ['kept'])
 
     def test_unavailable_or_foreign_provider_catalog_preserves_selection(self):
@@ -280,14 +283,16 @@ class LocalAccountTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.catalog([], **{'scope': 'provider', 'provider': 'openai',
                                    'source_deployment': None, **status})
-                result = self.app.api('GET', '/api/merchant', {})
+                self.app.api('GET', '/api/merchant', {})
+                result = self.app.reconcile_catalog()
                 self.assertEqual(result['pools'][0]['allowed_models'], ['removed', 'kept'])
         self.assertEqual(self.router.writes, [])
 
     def test_successful_empty_catalog_keeps_explicit_deny_all(self):
         self.selected_models()
         self.catalog([])
-        result = self.app.api('GET', '/api/merchant', {})
+        self.app.api('GET', '/api/merchant', {})
+        result = self.app.reconcile_catalog()
         self.assertEqual(result['pools'][0]['allowed_models'], [])
         self.catalog(['new'])
         self.app.api('GET', '/api/merchant', {})
@@ -313,7 +318,8 @@ class LocalAccountTests(unittest.TestCase):
         self.app.api('GET', '/api/merchant', {})
         self.assertEqual(self.router.writes, [])
         row['official_models'] = {'kept': {}}
-        result = self.app.api('GET', '/api/merchant', {})
+        self.app.api('GET', '/api/merchant', {})
+        result = self.app.reconcile_catalog()
         self.assertEqual(result['pools'][0]['allowed_models'], ['kept'])
         self.assertEqual(result['pools'][1]['allowed_models'], ['removed'])
 
@@ -321,20 +327,17 @@ class LocalAccountTests(unittest.TestCase):
         self.app.api('PUT', '/api/config', self.config())
         self.router.writes.clear()
         self.catalog(['kept'])
-        result = self.app.api('GET', '/api/merchant', {})
+        self.app.api('GET', '/api/merchant', {})
+        result = self.app.reconcile_catalog()
         self.assertNotIn('allowed_models', result['pools'][0])
         self.assertEqual(self.router.writes, [])
 
     def test_cached_removal_is_confirmed_and_failed_fetch_does_not_clear_policy(self):
         self.selected_models()
         self.catalog([])
-        original_call = self.router.call
-        def failed_refresh(method, path, body=None):
-            if path == '/merchant/models/refresh':
-                self.catalog([], last_error='authentication_failed')
-            return original_call(method, path, body)
-        with patch.object(self.router, 'call', side_effect=failed_refresh):
-            result = self.app.api('GET', '/api/merchant', {})
+        self.catalog([], last_error='authentication_failed')
+        self.app.api('GET', '/api/merchant', {})
+        result = self.app.reconcile_catalog()
         self.assertEqual(result['pools'][0]['allowed_models'], ['removed', 'kept'])
         self.assertEqual(self.router.writes, [])
 
@@ -356,7 +359,8 @@ class LocalAccountTests(unittest.TestCase):
         self.router.remote['settings']['revision'] += 1
         self.router.remote['pools'][0]['deployments'][0]['max_concurrent'] = 1
         self.catalog(['kept'])
-        result = self.app.api('GET', '/api/merchant', {})
+        self.app.api('GET', '/api/merchant', {})
+        result = self.app.reconcile_catalog()
         self.assertEqual(result['local_sync']['state'], 'remote_changed')
         self.assertEqual(result['pools'][0]['allowed_models'], ['removed', 'kept'])
         self.assertEqual(self.router.writes, [])
@@ -365,7 +369,8 @@ class LocalAccountTests(unittest.TestCase):
         self.selected_models()
         self.catalog(['kept'])
         self.router.failure = True
-        result = self.app.api('GET', '/api/merchant', {})
+        self.app.api('GET', '/api/merchant', {})
+        result = self.app.reconcile_catalog()
         self.assertEqual(result['local_sync']['state'], 'pending')
         self.assertEqual(result['pools'][0]['allowed_models'], ['kept'])
         self.assertEqual(self.router.remote['pools'][0]['allowed_models'], ['removed', 'kept'])
@@ -381,9 +386,9 @@ class LocalAccountTests(unittest.TestCase):
         self.app.last_catalog_check -= 61
         stop = unittest.mock.Mock()
         stop.wait.side_effect = [False, False, True]
-        with patch.object(self.router, 'call', wraps=self.router.call) as call:
+        with patch.object(self.app.platform_data, 'fetch', wraps=self.app.platform_data.fetch) as call:
             self.app.background(stop)
-        self.assertEqual(sum(c.args[:2] == ('GET', '/merchant/state') for c in call.call_args_list), 1)
+        self.assertEqual(sum(c.args == ('state',) for c in call.call_args_list), 1)
         self.assertEqual(self.app.remote['pools'][0]['allowed_models'], ['kept'])
 
     def test_disk_failure_prevents_router_write(self):

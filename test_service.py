@@ -87,6 +87,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_probe_does_not_send_refresh_token(self):
         seen=[]
+        self.app.platform_state=lambda: {'pools':[]}
         self.app.transport=type('T',(),{'call':lambda _,method,path,body=None:
             {'pools':[]} if method=='GET' else seen.append(body)})()
         self.app.connected=True

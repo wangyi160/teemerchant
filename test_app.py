@@ -49,7 +49,7 @@ class MerchantTests(unittest.TestCase):
         app=Application(self.store,Transport())
         with self.assertRaises(ValueError):app.api('PUT','/api/settings',{'token':'overwrite'})
     def test_probe_forwards_only_after_connection_and_does_not_save_accounts(self):
-        t=Transport();app=Application(self.store,t)
+        t=Transport();app=Application(self.store,t);app.platform_state=lambda: {'pools':t.pools}
         body={'pool':'official','proxy':'https://proxy.example','credential':{'access_token':'PRIVATE_PROBE'}}
         with self.assertRaises(ValueError):app._api('POST','/api/accounts/test',body)
         self.assertEqual(t.acks,[])
@@ -68,7 +68,7 @@ class MerchantTests(unittest.TestCase):
     def test_probe_uses_published_pools_not_local_account_count(self):
         for local_count,published in [(1,False),(0,False),(1,True),(0,True)]:
             with self.subTest(local_count=local_count,published=published):
-                t=Transport();app=Application(self.store,t);app.connected=True
+                t=Transport();app=Application(self.store,t);app.platform_state=lambda: {'pools':t.pools};app.connected=True
                 pool={'name':'openai','provider':'openai','allowed_models':['model-a'],
                       'deployments':[{'id':'paused-account','enabled':False}]*local_count}
                 app.remote={'pools':[pool]}
@@ -78,7 +78,7 @@ class MerchantTests(unittest.TestCase):
                 before=self.store.path.read_bytes()
                 app._api('POST','/api/accounts/test',body)
                 self.assertEqual([(m,p) for m,p,_ in t.calls],
-                                 [('GET','/merchant/state'),('POST','/merchant/accounts/test')])
+                                 [('POST','/merchant/accounts/test')])
                 sent=t.acks[0]
                 self.assertEqual(sent['credential'],{'access_token':'FRESH_TOKEN'})
                 self.assertEqual(sent['proxy'],body['proxy'])
@@ -91,14 +91,14 @@ class MerchantTests(unittest.TestCase):
 
     def test_probe_does_not_send_credentials_if_pool_state_cannot_be_read(self):
         from unittest.mock import Mock
-        t=Transport();app=Application(self.store,t);app.connected=True
+        t=Transport();app=Application(self.store,t);app.platform_state=lambda: {'pools':t.pools};app.connected=True
         app.remote={'pools':[{'name':'openai','provider':'openai','deployments':[]}]}
         body={'pool':'openai','proxy':'https://proxy.example','credential':{'access_token':'PRIVATE'}}
         for result in (None,{'data':[]}):
-            t.call=Mock(return_value=result)
+            app.platform_state=Mock(return_value=result);t.call=Mock()
             with self.assertRaises(RuntimeError):app._api('POST','/api/accounts/test',body)
-            t.call.assert_called_once_with('GET','/merchant/state')
-        t.call=Mock(side_effect=RuntimeError('unavailable'))
+            t.call.assert_not_called();app.platform_state.assert_called_once_with()
+        app.platform_state=Mock(side_effect=RuntimeError('unavailable'));t.call=Mock()
         with self.assertRaises(RuntimeError):app._api('POST','/api/accounts/test',body)
-        t.call.assert_called_once_with('GET','/merchant/state')
+        t.call.assert_not_called();app.platform_state.assert_called_once_with()
 if __name__=='__main__':unittest.main()

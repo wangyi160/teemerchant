@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 import httpx
 from app import Application
+from test_control_fixture import install
 from account_auth import AccountError, verify, sync_error
 from credential_protocol import PROTOCOL, fingerprint
 from store import Store
@@ -68,7 +69,7 @@ class AccountSyncTests(unittest.TestCase):
         self.store.settings['router'] = self.url
         self.store.save()
         self.router = SyncRouter(self.store)
-        self.app = Application(self.store, self.router)
+        self.app = install(Application(self.store, self.router), self.router)
         self.app.accept(self.router.remote)
         self.book = self.store.accounts
         self.verifier = patch('app.verify_account')

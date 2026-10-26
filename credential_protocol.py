@@ -66,3 +66,33 @@ def router_update(update):
         for operation in ('oauth_refresh', 'oauth_discovery'):
             profile.get('requests', {}).pop(operation, None)
     return result
+
+
+def split_update(update):
+    """Public control never receives tokens, proxy URLs or provider headers."""
+    public = router_update(update)
+    material = {'accounts': public.pop('accounts', {}), 'secrets': public.pop('secrets', {}), 'proxies': {}}
+    controls = {}
+    for name, account in list(material['accounts'].items()):
+        if 'enabled' in account:
+            controls[name] = {'enabled': account.pop('enabled')}
+        if not account:
+            del material['accounts'][name]
+    if controls:
+        public['account_controls'] = controls
+    # Official protocols have no merchant-defined headers or request overrides.
+    if public.get('compatibility'):
+        raise ValueError('公开配置不支持自定义协议或请求头')
+    for pool in public.get('pools', []):
+        for d in pool['deployments']:
+            if d.get('proxy') and d['proxy'] != '[redacted]':
+                material['proxies'][d['id']] = d['proxy']
+                d['proxy'] = '[redacted]' if d['proxy'] else None
+            for key in ('oauth_file', 'api_base', 'gemini_project'):
+                if d.pop(key, None):
+                    raise ValueError('公开配置不支持私有端点或文件路径')
+    return public, material
+
+
+def public_digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()

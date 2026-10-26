@@ -1,5 +1,6 @@
 """Local merchant console; the merchant owns its identity, TEE policy and credentials."""
 import argparse
+import copy
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -12,7 +13,7 @@ from urllib.parse import urlsplit, unquote, parse_qs
 import webbrowser
 from store import Store
 from transport import Transport
-from credential_protocol import PROTOCOL, access_only, fingerprint
+from credential_protocol import PROTOCOL, access_only, fingerprint, split_update, public_digest
 from account_auth import AccountError, sync_error, verify as verify_account
 from local_accounts import config_from, redact
 
@@ -48,16 +49,49 @@ class Application:
         self.remote, self.connected = self.store.accounts.view(self.store.settings['router']), True
         self.last_catalog_check = time.monotonic()
         router = self.store.settings['router']
-        if clean_catalog and self.store.accounts.withdraw_empty_pools(router):
-            return self.push_config()
-        if clean_catalog and self.store.accounts.prune_catalog(router, check_only=True):
-            if not catalog_refreshed:
-                # Confirm removals against a new fetch, including an empty catalog.
-                # Cached evidence can become invalid after a credential rotation.
-                return self.accept(self.transport.call('POST', '/merchant/models/refresh'), catalog_refreshed=True)
-            if self.store.accounts.prune_catalog(router):
-                return self.push_config()
+        if clean_catalog:
+            return self.reconcile_catalog()
         return self.remote
+
+    def reconcile_catalog(self):
+        """Scheduled housekeeping uses the platform's official catalog snapshot."""
+        router = self.store.settings['router']
+        if self.connected and (self.store.accounts.withdraw_empty_pools(router)
+                or self.store.accounts.prune_catalog(router)):
+            return self.push_config()
+        return self.remote
+
+    def platform_state(self):
+        context = self.platform_data.context()
+        result = self.platform_data.fetch('state')
+        with self.store.lock:
+            if context != self.platform_data.context():
+                raise ValueError('商户已切换，本次查询已取消')
+            if result.get('platform_snapshot', {}).get('router_locked', False):
+                self.connected = False
+            previous = self.store.accounts.data.get('routers', {}).get(self.store.settings['router'], {}).get('remote')
+            if previous and previous['merchant'].get('runtime_id') == result['merchant'].get('runtime_id'):
+                if result['settings']['revision'] < previous['settings']['revision']:
+                    return copy.deepcopy(previous)
+                if result.get('accounts', {}).get('revision', 0) < previous.get('accounts', {}).get('revision', 0):
+                    result['accounts'] = copy.deepcopy(previous['accounts'])
+            connected = self.connected
+            self.accept(result, clean_catalog=False)
+            self.connected = connected and not result.get('platform_snapshot', {}).get('router_locked', False)
+            return result
+
+    def commit_config(self, update):
+        public, material = split_update(update)
+        runtime_id = self.remote['merchant']['runtime_id']
+        command = {'runtime_id': runtime_id, 'config': public}
+        if any(material.values()):
+            receipt = self.transport.call('PUT', '/merchant/accounts/prepare', {
+                'runtime_id': runtime_id, 'expected_revision': public['expected_revision'],
+                'public_digest': public_digest(public), 'material': material})
+            if receipt.get('runtime_id') != runtime_id or not receipt.get('ticket'):
+                raise RuntimeError('Router 未确认凭据暂存')
+            command['ticket'] = receipt['ticket']
+        return self.platform_data.configure(command)
 
     def connect(self):
         owner = self.store.control_token().split('.', 1)[1]
@@ -81,6 +115,13 @@ class Application:
                 self.accept(result, clean_catalog=False)
         else:
             self.accept(result, clean_catalog=False)
+        # Publish the initial metadata snapshot through the configuration channel.
+        # This is an acknowledged command, never a page-triggered Router query.
+        if not self.store.accounts.pending(self.store.settings['router']):
+            try:
+                self.platform_state()
+            except RuntimeError:
+                self.accept(self.commit_config(config_from(result)), clean_catalog=False)
         self.sync_credentials()
         if self.store.accounts.withdraw_empty_pools(self.store.settings['router']):
             return self.push_config()
@@ -210,7 +251,7 @@ class Application:
                             redact(published[i]) != redact(previous.get(i)))}
             for identifier, account in sending.items():
                 self.store.accounts.account_sync_result(router, identifier, account['basis'], 'sending')
-            result = self.transport.call('PUT', '/merchant/config', projected)
+            result = self.commit_config(projected)
             self.accept(result, clean_catalog=False)
             self.store.accounts.confirm_token_upload(router, projected.get('accounts', {}), result)
             self.store.accounts.acknowledge(router, result)
@@ -245,10 +286,10 @@ class Application:
         if pool is None:
             raise ValueError('账号池不存在，倍率未修改')
         try:
-            current = self.transport.call('GET', '/merchant/state')
+            current = self.platform_state()
             self.accept(current, clean_catalog=False)
         except Exception as error:
-            raise RuntimeError('未能连接 Router，倍率未修改：' + sync_error(error)[1]) from None
+            raise RuntimeError('未能读取管理平台，倍率未修改：' + sync_error(error)[1]) from None
         if current['settings']['revision'] != body['expected_revision']:
             raise ValueError('Router 配置已变化，未提交倍率修改；请重新打开编辑窗口')
         published = any(p['name'] == pool['name'] for p in current['pools'])
@@ -268,19 +309,11 @@ class Application:
                          and p['multiplier_millionths'] == body['multiplier_millionths']
                          for p in result['settings'].get('pool_pricing', []))))
         try:
-            result = self.transport.call('PUT', '/merchant/config', update)
+            result = self.commit_config(update)
             if not confirmed(result):
                 raise RuntimeError('Router 未确认倍率更新')
         except Exception as error:
-            # A lost acknowledgement is not proof of rejection. Read once to
-            # confirm the current price; never automatically replay the write.
-            try:
-                result = self.transport.call('GET', '/merchant/state')
-                self.accept(result, clean_catalog=False)
-            except Exception:
-                raise RuntimeError('未能确认倍率修改结果，仍显示上次确认的倍率；请恢复连接后刷新。' + sync_error(error)[1]) from None
-            if not published or not confirmed(result):
-                raise RuntimeError('倍率保存失败，请稍后重试：' + sync_error(error)[1]) from None
+            raise RuntimeError('倍率未获 Router 确认，保留上次确认值：' + sync_error(error)[1]) from None
         try:
             self.accept(result, clean_catalog=False)
             book.confirm_price(router, result, pool['name'], body['multiplier_millionths'], current['settings']['revision'])
@@ -294,6 +327,17 @@ class Application:
         if (method, path) == ('GET', '/api/state'):
             with self.store.lock:
                 return self._api(method, path, body)
+        if (method, path) in (('GET', '/api/merchant'), ('POST', '/api/refresh')):
+            self.platform_state()
+            if method == 'POST':
+                with self.state_lock:
+                    if identity is not None and identity != self.store.enrollment()['id']:
+                        raise ValueError('商户已切换，请重新打开页面')
+                    return self.reconcile_catalog()
+            with self.store.lock:
+                if identity is not None and identity != self.store.enrollment()['id']:
+                    raise ValueError('商户已切换，请重新打开页面')
+                return copy.deepcopy(self.remote)
         if method == 'GET' and urlsplit(path).path in ('/api/revenue', '/api/revenue/record', '/api/records/usage', '/api/records/refusals'):
             with self.store.lock:
                 if identity is not None and identity != self.store.enrollment()['id']:
@@ -361,7 +405,7 @@ class Application:
                 raise ValueError('请先登录已通过审核的商户账号')
             return self.connect()
         if (method, path) == ('GET', '/api/merchant'):
-            return self.accept(self.transport.call('GET', '/merchant/state'))
+            return self.accept(self.platform_state())
         if (method, path) == ('PUT', '/api/config'):
             self.store.accounts.guard_pricing(self.store.settings['router'], body)
             self.store.accounts.stage(self.store.settings['router'], body)
@@ -386,7 +430,7 @@ class Application:
                 if not self.connected:
                     self.connect()
                 else:
-                    self.accept(self.transport.call('GET', '/merchant/state'), clean_catalog=False)
+                    self.accept(self.platform_state(), clean_catalog=False)
                     if self.store.accounts.pending(router):
                         self.push_config()
                     self.sync_credentials()
@@ -412,7 +456,7 @@ class Application:
             # Local accounts can all be paused or invalid, so a nonempty local
             # pool may be absent from Router's published projection. Read the
             # live pool names without reconciling or saving the editor's draft.
-            published = self.transport.call('GET', '/merchant/state')
+            published = self.platform_state()
             if not isinstance(published, dict) or not isinstance(published.get('pools'), list):
                 raise RuntimeError('Router 账号池状态无效')
             if not any(p['name'] == pool['name'] for p in published['pools']):
@@ -421,7 +465,8 @@ class Application:
         if method == 'GET' and path.startswith('/api/accounts/'):
             return self.store.accounts.account(self.store.settings['router'], unquote(path[len('/api/accounts/'):]))
         if (method, path) == ('POST', '/api/refresh'):
-            return self.accept(self.transport.call('POST', '/merchant/models/refresh'), catalog_refreshed=True)
+            self.platform_state()
+            return self.remote
         raise ValueError('接口不存在')
 
     def background(self, stop):
@@ -438,7 +483,11 @@ class Application:
                     try:
                         self.sync_credentials()
                         if time.monotonic() - self.last_catalog_check >= 60:
-                            self.accept(self.transport.call('GET', '/merchant/state'))
+                            self.platform_state()
+                            if not self.connected:
+                                self.connect()
+                            else:
+                                self.reconcile_catalog()
                             self.sync_credentials()
                         self.last_error = ''
                     except Exception as error:

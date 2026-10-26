@@ -193,12 +193,16 @@ class PlatformClient:
         if not allowed:
             raise ValueError('不支持的账户操作')
         app = self.application
-        if mode == 'merchant' and method == 'GET' and name != 'me':
-            with app.state_lock, self.lock:
+        if mode == 'merchant' and method == 'GET':
+            with self.lock, app.store.lock:
                 self.require(session_id, identity)
                 session = self.current(session_id)
+                if name == 'me':
+                    value = {**session.get('view', {}), 'account': session['account'], 'keys': [],
+                             'applications': session.get('view', {}).get('applications', [])}
+                    return Reply(200, json.dumps(value, ensure_ascii=False).encode())
             value = app.platform_data.fetch(path)
-            with app.state_lock, self.lock:
+            with self.lock, app.store.lock:
                 self.require(session_id, identity)
                 if self.current(session_id) is not session:
                     raise PermissionError('登录状态已变化，请重新打开页面')

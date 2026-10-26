@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from app import Application
+from test_control_fixture import install
 from store import Store
 from test_local_accounts import LocalAccountTests, Router
 
@@ -43,7 +44,7 @@ class OwnerControlTests(unittest.TestCase):
 
     def test_restart_restores_local_accounts_and_requires_owner_confirmation(self):
         router = Router(self.store)
-        app = Application(self.store, router)
+        app = install(Application(self.store, router), router)
         app.accept(router.remote)
         fixture = type('Fixture', (), {'app': app, 'router': router})()
         config = LocalAccountTests.config(fixture)
@@ -57,9 +58,6 @@ class OwnerControlTests(unittest.TestCase):
                 return {'merchant_id': self.store.enrollment()['id'], 'owner_hash': router.remote['merchant']['owner_hash'],
                         'merchant_control_version': 1}
             result = original(method, path, body)
-            if method == 'PUT':
-                router.remote['merchant']['configuration_required'] = False
-                result['merchant']['configuration_required'] = False
             return result
         router.call = request
         app.connect()
@@ -73,7 +71,7 @@ class OwnerControlTests(unittest.TestCase):
 
     def test_offline_edits_preserve_private_protocol_configuration_for_restart(self):
         router = Router(self.store)
-        app = Application(self.store, router)
+        app = install(Application(self.store, router), router)
         app.accept(router.remote)
         fixture = type('Fixture', (), {'app': app, 'router': router})()
         app.api('PUT', '/api/config', LocalAccountTests.config(fixture))

@@ -12,6 +12,7 @@ import time
 import threading
 import unittest
 from app import Application
+from test_control_fixture import install
 from service import LocalSessions, handler
 from store import Store
 from credential_protocol import access_only, PROTOCOL
@@ -85,11 +86,12 @@ class BrowserTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(self.tmp.name)
         self.router = FakeRouter(self.store)
-        self.app = Application(self.store, self.router)
+        self.app = install(Application(self.store, self.router), self.router)
         self.app.accept(copy.deepcopy(self.router.remote))
         self.platform_reads = []
         def platform_read(path):
             self.platform_reads.append(path)
+            if path=='state':return copy.deepcopy(self.router.remote)
             if path=='withdrawals':
                 from test_platform_data import withdrawals
                 return withdrawals()
@@ -803,7 +805,7 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('[name=multiplier]').fill('0.05')
         self.router.reject = True
         self.page.get_by_role('button', name='保存并同步').click()
-        expect(self.page.locator('#dialog .error')).to_contain_text('倍率保存失败')
+        expect(self.page.locator('#dialog .error')).to_contain_text('倍率未获 Router 确认')
         expect(self.page.locator('#dialog')).to_be_visible()
         expect(self.page.locator('[name=multiplier]')).to_have_value('0.05')
         self.assertEqual(self.page.evaluate("state.remote.settings.pool_pricing[0].multiplier_millionths"), 200000)
@@ -1131,6 +1133,7 @@ class BrowserTests(unittest.TestCase):
         rows=[];writes=[]
         def query(path):
             self.platform_reads.append(path)
+            if path=='state':return copy.deepcopy(self.router.remote)
             return {'data':copy.deepcopy(rows),'has_more':False,'next_before':None}
         self.app.platform_data.fetch=query
         self.store.db.set_trace_callback(lambda sql:writes.append(sql) if sql.split()[0] in ('INSERT','UPDATE','DELETE') else None)

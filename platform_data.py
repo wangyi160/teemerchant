@@ -1,6 +1,7 @@
 """On-demand platform queries. No ledger mirror, cursor or background downloader."""
 import json
 import time
+import secrets
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -21,13 +22,19 @@ class PlatformData:
                     platform_url(self.store.settings.get('platform_url', '')), self.store.settings['token'])
 
     def fetch(self, path):
+        return self.request('GET', path)
+
+    def request(self, method, path, payload=None, operation=None):
         context = self.context()
         if not context[2]:
             raise ValueError('请先填写管理平台地址')
         try:
-            with httpx.Client(trust_env=False, follow_redirects=False, timeout=15) as client:
-                with client.stream('GET', context[2] + '/merchant-api/v1/' + path,
-                                   headers={'Authorization': 'Bearer ' + context[3]}) as response:
+            with httpx.Client(trust_env=False, follow_redirects=False, timeout=90 if method != 'GET' else 15) as client:
+                headers = {'Authorization': 'Bearer ' + context[3]}
+                if operation:
+                    headers['Idempotency-Key'] = operation
+                with client.stream(method, context[2] + '/merchant-api/v1/' + path,
+                                   headers=headers, **({'json': payload} if payload is not None else {})) as response:
                     if response.status_code != 200:
                         raise RuntimeError('管理平台查询失败：HTTP ' + str(response.status_code))
                     chunks, size, started = [], 0, time.monotonic()
@@ -44,6 +51,19 @@ class PlatformData:
         if context != self.context():
             raise ValueError('商户或管理平台已切换，本次查询已取消')
         return value
+
+    def configure(self, body):
+        operation = secrets.token_hex(16)
+        try:
+            reply = self.request('PUT', 'config', body, operation)
+        except RuntimeError as error:
+            try:
+                reply = self.fetch('commands/' + operation)
+            except Exception:
+                raise RuntimeError('管理平台未确认配置结果，保留上次确认值；请刷新后重试') from error
+        if reply.get('status') != 'applied' or reply.get('operation_id') != operation:
+            raise RuntimeError('配置未获 Router 确认，保留上次确认值：' + str(reply.get('error', reply.get('status', 'invalid_response'))))
+        return reply['state']
 
     def read(self, path):
         url = urlsplit(path)

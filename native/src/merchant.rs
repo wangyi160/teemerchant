@@ -7,21 +7,9 @@ use std::{path::Path, time::Duration};
 use zeroize::Zeroizing;
 
 pub fn allowed(method: &str, path: &str) -> bool {
-    matches!(
-        (method, path),
-        (
-            "GET",
-            "/merchant/state" | "/merchant/usage" | "/merchant/refusals"
-        ) | (
-            "POST",
-            "/merchant/unlock"
-                | "/merchant/bind"
-                | "/merchant/models/refresh"
-                | "/merchant/usage/ack"
-                | "/merchant/accounts/test"
-        ) | ("PUT", "/merchant/config" | "/merchant/accounts/access")
-            | ("DELETE", "/merchant/refusals")
-    )
+    matches!((method, path),
+        ("POST", "/merchant/unlock" | "/merchant/bind" | "/merchant/accounts/test")
+        | ("PUT", "/merchant/accounts/prepare" | "/merchant/accounts/access"))
 }
 
 #[derive(Deserialize)]
