@@ -158,10 +158,7 @@ class PlatformClient:
             self.sessions[(browser, self.base(browser))] = previous
             self.persist()
             return Reply(200, json.dumps(previous['view'], ensure_ascii=False).encode())
-        result = self.key_login(browser, 'login', local['identity_id'])
-        if result.status == 404 and json.loads(result.data).get('error') == 'identity_not_registered':
-            return self.key_login(browser, 'register', local['identity_id'])
-        return result
+        return self.key_login(browser, 'login' if local.get('account_id') else 'register', local['identity_id'])
 
     def key_login(self, browser, purpose, identity_id=None, previous=None):
         retained = previous or self.current(browser)
