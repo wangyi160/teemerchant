@@ -10,16 +10,21 @@ from store import Store
 
 
 def login_fixture(app, browser, username='seller'):
-    """Exercise the real login grant path using an isolated platform response."""
     identity = app.store.enrollment()['id']
     app.store.settings['credentials_saved'] = True
-    account = {'id': 'p_' + username, 'role': 'merchant', 'username': username, 'name': username}
-    view = {'account': account, 'merchant_credentials_available': True,
-            'applications': [{'kind': 'merchant', 'status': 'approved', 'subject': identity}]}
-    response = (200, dict(view, csrf='fixture-csrf'), {'set-cookie': 'teerouter_portal=' + 'A' * 43})
-    with patch.object(app.platform_client, 'request', return_value=response):
-        result = app.platform_client.call(browser, 'account', 'POST', 'login', {}, '', identity)
-    assert result.status == 200 and json.loads(result.data)['local_connected']
+    local=app.platform_client.identities.for_account(app.platform_client.base(browser),'p_'+username)
+    account={'id':'p_'+username,'role':'merchant','username':username,'name':username,
+             'identity_id':local['identity_id'],'public_key':local['public_key']}
+    view={'account':account,'merchant_credentials_available':True,
+          'applications':[{'kind':'merchant','status':'approved','subject':identity}]}
+    def request(client,method,url,headers,data=None):
+        if url.endswith('/identity/challenge'):
+            return 200,{'challenge':{'id':'ic_fixture','nonce':'fixture','expires':int(time.time())+300,
+                'origin':app.platform_client.base(browser),'purpose':data['purpose'],'role':'merchant','public_key':local['public_key']}},{}
+        return 200,dict(view,csrf='fixture-csrf'),{'set-cookie':'teerouter_portal='+'A'*43}
+    with patch.object(app.platform_client,'request',side_effect=request):
+        result=app.platform_client.call(browser,'account','POST','login',{'account_id':local['identity_id']},'',identity)
+    assert result.status==200 and json.loads(result.data)['local_connected']
     return app.platform_client.current(browser)
 
 
@@ -37,10 +42,34 @@ class ClientTests(unittest.TestCase):
         self.store.db.close();self.temp.cleanup()
 
     def call(self,mode,method,path,data=None,operation='test-operation'):
-        return self.app.platform_client.call('browser',mode,method,path,data or {},operation,self.identity)
+        data=data or {}
+        if mode=='account' and path=='login' and 'account_id' not in data:
+            local=self.app.platform_client.identities.for_account(self.app.platform_client.base('browser'),'p_seller')
+            data={'account_id':local['identity_id']}
+        return self.app.platform_client.call('browser',mode,method,path,data,operation,self.identity)
 
     def mock(self,handler):
-        return patch('platform_client.httpx.Client',side_effect=lambda **kw:self.client(**kw,transport=httpx.MockTransport(handler)))
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        import hashlib
+        challenge=None
+        def signed(request):
+            nonlocal challenge
+            if request.url.path.endswith('/identity/challenge'):
+                body=json.loads(request.content)
+                challenge={**body,'id':'ic_fixture','nonce':'fixture','expires':int(time.time())+300,'origin':'https://platform.example'}
+                return httpx.Response(200,json={'challenge':challenge})
+            if request.url.path.endswith(('/login','/register','/identity/bind')):
+                body=json.loads(request.content)
+                message=json.dumps(['teerouter-identity-v1',challenge['origin'],challenge['purpose'],'merchant',challenge['public_key'],challenge['id'],challenge['nonce'],challenge['expires']],separators=(',',':')).encode()
+                Ed25519PublicKey.from_public_bytes(bytes.fromhex(challenge['public_key'])).verify(bytes.fromhex(body['signature']),message)
+                self.assertNotIn('seed',body);self.assertNotIn('password',body)
+            response=handler(request)
+            value=response.json()
+            if challenge and isinstance(value.get('account'),dict):
+                value['account'].update(public_key=challenge['public_key'],identity_id='m_sig_'+hashlib.sha256(bytes.fromhex(challenge['public_key'])).hexdigest())
+                return httpx.Response(response.status_code,json=value,headers=response.headers)
+            return response
+        return patch('platform_client.httpx.Client',side_effect=lambda **kw:self.client(**kw,transport=httpx.MockTransport(signed)))
 
     def test_merchant_secret_only_scope_and_idempotency(self):
         login_fixture(self.app, 'browser')
@@ -58,7 +87,7 @@ class ClientTests(unittest.TestCase):
 
     def test_logged_out_account_operations_do_not_contact_platform(self):
         with self.mock(lambda _: self.fail('No platform session should be rejected locally')):
-            for method, path in [('GET', 'me'), ('POST', 'password'), ('POST', 'logout'), ('POST', 'bind')]:
+            for method, path in [('GET', 'me'), ('POST', 'logout'), ('POST', 'bind')]:
                 self.assertEqual(self.call('account', method, path).status, 401)
 
     def test_account_session_stays_local_and_is_separate_from_merchant_control(self):
@@ -84,7 +113,7 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.platform_client.call('browser','merchant','POST','withdrawals',{},'operation','different')
         with self.mock(lambda _:httpx.Response(200,json={'csrf':'secret','account':{'role':'user'}})):
-            self.assertEqual(self.call('account','POST','login').status,403)
+            with self.assertRaisesRegex(RuntimeError,'身份'):self.call('account','POST','login')
         self.assertFalse(self.app.platform_client.sessions)
         login_fixture(self.app, 'browser')
         with self.mock(lambda _:httpx.Response(302,headers={'location':'https://evil.test'},json={'error':'redirect'})):
@@ -127,7 +156,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(requests.count('/portal/api/merchant/credentials/reveal'), 1)
         reopened = Store(self.temp.name)
         try:
-            self.assertEqual(reopened.platform_identity()['username'], 'seller')
+            self.assertTrue(reopened.platform_identity()['identity_id'].startswith('m_sig_'))
             self.assertEqual(reopened.credentials()['merchant_id'], self.identity)
             self.assertNotIn('not-saved', json.dumps(reopened.settings))
         finally:

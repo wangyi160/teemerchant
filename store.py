@@ -123,10 +123,11 @@ class Store:
                     or not isinstance(account, dict) or account.get('role') != 'merchant'
                     or not isinstance(account.get('id'), str)
                     or not isinstance(account.get('name'), str)
-                    or (not legacy and not re.fullmatch(r'[a-zA-Z0-9_.-]{3,64}', account.get('username', '')))):
+                    or (not legacy and not re.fullmatch(r'[a-zA-Z0-9_.-]{3,128}', account.get('username', '')))):
                 raise ValueError('平台返回的商户身份不匹配')
             identity = {'platform_url': base, 'account_id': account['id'],
-                        'username': '' if legacy else account['username'],
+                        'username': '' if legacy else account.get('identity_id') or account['username'],
+                        'identity_id': account.get('identity_id'),
                         'name': account['name'], 'legacy': bool(legacy)}
             if self.settings.get('platform_identity') == identity:
                 return
@@ -190,7 +191,7 @@ class Store:
         return {'id': 'm_' + digest[:32], 'credential_hash': digest}
 
     def public(self):
-        return {k: v for k, v in self.settings.items() if k not in ('token', 'owner_secret', 'default_multiplier_millionths')}
+        return {k: v for k, v in self.settings.items() if k not in ('token', 'owner_secret', 'router_access', 'default_multiplier_millionths')}
 
     def control_token(self):
         """Persist an independent owner key before the first attested binding."""

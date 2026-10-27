@@ -60,6 +60,9 @@ def current_pool_models(remote, pool, now):
     return snapshots[0] if all(ids == snapshots[0] for ids in snapshots) else None
 
 
+RETRY_DELAYS = (30, 60, 120, 300)
+
+
 class AccountBook:
     def __init__(self, directory, identity, protect):
         self.path = directory / 'accounts.dpapi'
@@ -234,6 +237,7 @@ class AccountBook:
             book['config'] = {k: copy.deepcopy(v) for k, v in update.items()
                               if k not in ('accounts', 'secrets', 'delete_accounts', 'delete_secrets')}
             book['account_sync'] = {k: v for k, v in book.get('account_sync', {}).items() if k in ids}
+            book['sync_errors'] = {k: v for k, v in book.get('sync_errors', {}).items() if k in ids}
             book['pending'] = update
             book['local_revision'] += 1
             book['sync_state'], book['sync_error'] = 'pending', ''
@@ -278,8 +282,53 @@ class AccountBook:
             account = self._sync_accounts(book).get(identifier)
             if not account or account['basis'] != basis:
                 raise RuntimeError('账号已变更，请重新检查')
-            book.setdefault('account_sync', {})[identifier] = {
+            recovery = {k: v for k, v in account['sync'].items()
+                        if k in ('renewal_cycle', 'failures', 'step')} if state != 'synced' else {}
+            if recovery.get('renewal_cycle'):
+                recovery['step'] = {'checking': 'check', 'verified': 'upload', 'sending': 'upload'}.get(state, recovery.get('step'))
+            book.setdefault('account_sync', {})[identifier] = {**recovery,
                 'basis': basis, 'state': state, 'code': code, 'error': message, 'updated_at': int(time.time())}
+            if state == 'paused' and message:
+                self._record_error(book, identifier, book['account_sync'][identifier], recovery.get('step', 'check'), 0)
+            self._write(data)
+
+    @staticmethod
+    def _record_error(book, identifier, state, step, attempt):
+        row = {'at': state['updated_at'], 'step': step, 'attempt': attempt,
+               'code': state['code'], 'error': state['error'], 'state': state['state'],
+               'retry_at': state.get('retry_at')}
+        history = book.setdefault('sync_errors', {}).setdefault(identifier, [])
+        history.append(row)
+        book['sync_errors'][identifier] = history[-50:]
+
+    @staticmethod
+    def _sync_failure(book, identifier, account, step, code, message):
+        previous = account['sync']
+        failures = previous.get('failures', 0) + 1
+        recover = previous.get('renewal_cycle', False)
+        scheduled = recover and failures <= len(RETRY_DELAYS)
+        now = int(time.time())
+        state = {'basis': account['basis'], 'state': 'retry' if scheduled else 'paused', 'step': step,
+                 'code': code, 'error': message, 'updated_at': now}
+        if recover:
+            state.update(renewal_cycle=True, step=step, failures=failures)
+        if scheduled:
+            state['retry_at'] = now + RETRY_DELAYS[failures - 1]
+        if recover and step == 'refresh':
+            renewal = book.get('renewals', {}).get(account['oauth_account'], {})
+            renewal.update(state=state['state'], retry_at=state.get('retry_at', 0))
+        book.setdefault('account_sync', {})[identifier] = state
+        AccountBook._record_error(book, identifier, state, step, previous.get('failures', 0))
+
+    def account_sync_failure(self, router, identifier, basis, step, code, message):
+        """Four retries for one renewal cycle; progress never resets its budget."""
+        with self.lock:
+            data = copy.deepcopy(self.data)
+            book = self._book(data, router)
+            account = self._sync_accounts(book).get(identifier)
+            if not account or account['basis'] != basis:
+                raise RuntimeError('账号已变更，请重新检查')
+            self._sync_failure(book, identifier, account, step, code, message)
             self._write(data)
 
     def confirm_token_upload(self, router, sent, remote):
@@ -305,17 +354,47 @@ class AccountBook:
                 self._book(data, router).setdefault('token_sync', {}).update(confirmed)
                 self._write(data)
 
-    def retry_account(self, router, identifier):
+    @staticmethod
+    def can_refresh(account):
+        try:
+            return bool(account['oauth_account'] and account['provider'] != 'workbuddy'
+                        and normalized(account['credential']).get('refresh_token'))
+        except (ValueError, TypeError, AttributeError):
+            return False
+
+    def retry_account(self, router, identifier, *, refresh=False):
         with self.lock:
             data = copy.deepcopy(self.data)
             book = self._book(data, router)
             if identifier not in self._sync_accounts(book):
                 raise ValueError('本地账号不存在')
-            book.setdefault('account_sync', {}).pop(identifier, None)
+            account = self._sync_accounts(book)[identifier]
+            state = account['sync']
+            if state.get('error') and not book.get('sync_errors', {}).get(identifier):
+                self._record_error(book, identifier, state, state.get('step', 'check'), max(0, state.get('failures', 1)-1))
+            renewal = book.get('renewals', {}).get(account['oauth_account'], {})
+            if refresh and not account['enabled']:
+                raise ValueError('账号已停用，请先启用账号')
+            if not state.get('renewal_cycle') and refresh:
+                if state.get('state') in ('paused', 'retry'):
+                    step = state.get('step') or ('upload' if state.get('code') in ('sync_failed','sync_uncertain') else 'check')
+                    if state.get('code') == 'access_token_expired' and self.can_refresh(account):
+                        step = 'refresh'
+                    state = {**state, 'renewal_cycle': True, 'step': step}
+                elif self.can_refresh(account):
+                    state = {'basis': account['basis'], 'renewal_cycle': True, 'step': 'refresh'}
+                else:
+                    raise ValueError('未保存 Refresh Token，无法刷新 Token')
+            if state.get('renewal_cycle'):
+                # Resume the failed step, including after an exhausted budget.
+                book.setdefault('account_sync', {})[identifier] = {**state, 'state': 'retry',
+                    'failures': 0, 'retry_at': 0, 'code': '', 'error': ''}
+            else:
+                book.setdefault('account_sync', {}).pop(identifier, None)
             ref = self._sync_accounts(book)[identifier]['oauth_account']
             renewal = book.get('renewals', {}).get(ref, {})
-            if renewal.get('state') == 'retry':
-                renewal['retry_at'] = 0
+            if renewal.get('state') == 'retry' or state.get('renewal_cycle') and state.get('step') == 'refresh':
+                renewal.update(state='retry', retry_at=0)
             self._write(data)
 
     def projected_update(self, router, update):
@@ -323,17 +402,23 @@ class AccountBook:
         from credential_protocol import router_update
         with self.lock:
             result = copy.deepcopy(update)
-            paused = {name for name, account in self.sync_accounts(router).items()
+            states = self.sync_accounts(router)
+            paused = {name for name, account in states.items()
                       if account['sync'].get('state') in ('paused', 'checking', 'sending')}
+            retrying = {name for name, account in states.items() if account['sync'].get('state') in ('retry', 'renewing')}
+            previous = self.published_deployments(router)
             for pool in result.get('pools', []):
-                pool['deployments'] = [d for d in pool['deployments'] if d['id'] not in paused]
+                pool['deployments'] = [copy.deepcopy(previous[d['id']]) if d['id'] in retrying else d
+                                       for d in pool['deployments'] if d['id'] not in paused
+                                       and (d['id'] not in retrying or d['id'] in previous)]
             refs = {d.get('oauth_account') for d in deployments(result)}
             keys = {d.get('api_key_ref') for d in deployments(result)}
-            result['accounts'] = {k: v for k, v in result.get('accounts', {}).items() if k in refs}
+            held_refs = {states[name]['oauth_account'] for name in retrying}
+            result['accounts'] = {k: v for k, v in result.get('accounts', {}).items() if k in refs and k not in held_refs}
             result['secrets'] = {k: v for k, v in result.get('secrets', {}).items() if k in keys}
             book = self.data['routers'].get(router, {})
             known = {a['name'] for a in (book.get('remote') or {}).get('accounts', {}).get('data', [])}
-            for ref in refs - known - {None}:
+            for ref in refs - known - held_refs - {None}:
                 if ref in book.get('accounts', {}):
                     result['accounts'][ref] = copy.deepcopy(book['accounts'][ref])
             return router_update(result)
@@ -357,13 +442,18 @@ class AccountBook:
             return True
 
     def renewal_candidates(self, router, now=None):
-        """A durable 'refreshing' marker is never blindly retried after a crash."""
+        """Resume refresh only when its persisted retry deadline is due."""
         now = time.time() if now is None else now
         with self.lock:
             book = self.data['routers'].get(router, {})
             refs = {d.get('oauth_account') for d in deployments(book.get('config')) if d.get('enabled', True)}
-            paused = {a['oauth_account'] for a in self._sync_accounts(book).values()
-                      if a['sync'].get('state') in ('paused', 'checking', 'sending')}
+            states = self._sync_accounts(book)
+            requested = {a['oauth_account'] for a in states.values()
+                         if a['sync'].get('renewal_cycle') and a['sync'].get('step') == 'refresh'}
+            paused = {a['oauth_account'] for a in states.values()
+                      if a['sync'].get('state') in ('paused', 'checking', 'sending', 'renewing')
+                      or a['sync'].get('renewal_cycle') and (a['sync'].get('step') != 'refresh'
+                          or a['sync'].get('retry_at', 0) > now)}
             result = []
             for name in refs:
                 account = book.get('accounts', {}).get(name)
@@ -374,10 +464,10 @@ class AccountBook:
                     expiry = access_only(credential).get('expires_at')
                 except (ValueError, TypeError, AttributeError):
                     continue  # The per-account authentication check reports this.
-                if expiry is None or expiry > now + 300: continue
+                if name not in requested and (expiry is None or expiry > now + 300): continue
                 basis = hashlib.sha256(json.dumps(account['credential'], sort_keys=True).encode()).hexdigest()
                 status = book.get('renewals', {}).get(name, {})
-                if status.get('basis') == basis and (status.get('state') in ('refreshing','reauthorization_required','uncertain') or status.get('retry_at',0)>now): continue
+                if status.get('basis') == basis and (status.get('state') in ('refreshing','paused','reauthorization_required','uncertain') or status.get('retry_at',0)>now): continue
                 result.append((name, copy.deepcopy(account), basis))
             return result
 
@@ -385,6 +475,12 @@ class AccountBook:
         with self.lock:
             data = copy.deepcopy(self.data);book=self._book(data,router)
             book.setdefault('renewals',{})[name]={'basis':basis,'state':'refreshing'}
+            for identifier, account in self._sync_accounts(book).items():
+                if account['oauth_account'] == name and account['enabled']:
+                    book.setdefault('account_sync', {})[identifier] = {
+                        'basis': account['basis'], 'state': 'renewing', 'step': 'refresh',
+                        'renewal_cycle': True, 'failures': account['sync'].get('failures', 0),
+                        'code': '', 'error': '', 'updated_at': int(time.time())}
             self._write(data)
 
     def renewal_finished(self, router, name, basis, credential=None, error=None):
@@ -394,6 +490,7 @@ class AccountBook:
             if not account or hashlib.sha256(json.dumps(account['credential'],sort_keys=True).encode()).hexdigest()!=basis:
                 raise RuntimeError('续期期间账号凭证发生变化')
             if credential is not None:
+                previous_states = self._sync_accounts(book)
                 account['credential']=copy.deepcopy(credential)
                 # Any already-staged configuration must carry the newest locally
                 # persisted credentials too; never overwrite a rotated token.
@@ -401,9 +498,21 @@ class AccountBook:
                     book['pending']['accounts'][name]['credential']=copy.deepcopy(credential)
                 book.setdefault('renewals',{})[name]={'state':'active','renewed_at':int(time.time()),'access_sha256':fingerprint(credential)}
                 book['local_revision']+=1;book['saved_at']=int(time.time())
+                for identifier, current in self._sync_accounts(book).items():
+                    old = previous_states[identifier]['sync']
+                    if current['oauth_account'] == name and old.get('renewal_cycle'):
+                        book.setdefault('account_sync', {})[identifier] = {
+                            'basis': current['basis'], 'state': 'pending', 'step': 'check',
+                            'renewal_cycle': True, 'failures': old.get('failures', 0),
+                            'code': '', 'error': '', 'updated_at': int(time.time())}
             else:
-                status='uncertain' if getattr(error,'uncertain',False) else 'reauthorization_required' if getattr(error,'permanent',False) else 'retry'
-                book.setdefault('renewals',{})[name]={'basis':basis,'state':status,'error':str(error),'retry_at':int(time.time())+60}
+                from account_auth import renewal_error
+                code, message = renewal_error(error)
+                book.setdefault('renewals',{})[name]={'basis':basis,'state':'retry','error':message,
+                    'code':code,'uncertain':bool(getattr(error,'uncertain',False)),'retry_at':int(time.time())+30}
+                for identifier, current in self._sync_accounts(book).items():
+                    if current['oauth_account'] == name and current['sync'].get('renewal_cycle'):
+                        self._sync_failure(book, identifier, current, 'refresh', code, message)
             self._write(data)
 
     def access_updates(self, router, remote):
@@ -412,8 +521,12 @@ class AccountBook:
             pending=book.get('pending') or {}
             enabled_refs={d.get('oauth_account') for d in deployments(book.get('config')) if d.get('enabled',True)}
             statuses={a['name']:a for a in remote.get('accounts',{}).get('data',[])}
-            paused={a['oauth_account'] for a in self._sync_accounts(book).values()
-                    if a['sync'].get('state') in ('paused','checking','sending')}
+            local_accounts = self._sync_accounts(book)
+            recovering = {a['oauth_account'] for a in local_accounts.values() if a['sync'].get('renewal_cycle')}
+            paused={a['oauth_account'] for a in local_accounts.values()
+                    if a['sync'].get('state') in ('paused','checking','sending','renewing')
+                    or a['sync'].get('state') == 'retry' and
+                       (a['sync'].get('step') != 'upload' or a['sync'].get('retry_at', 0) > time.time())}
             updates={}
             for name,account in book.get('accounts',{}).items():
                 status=statuses.get(name)
@@ -428,7 +541,7 @@ class AccountBook:
                     # configuration save, rather than being partially applied.
                     if 'credential' in patch and book.get('renewals',{}).get(name,{}).get('access_sha256')!=fingerprint(credential): continue
                 receipt = book.get('token_sync', {}).get(name, {})
-                if (status.get('access_sha256') == fingerprint(credential)
+                if (name not in recovering and status.get('access_sha256') == fingerprint(credential)
                         and receipt.get('access_sha256') == fingerprint(credential)
                         and receipt.get('runtime_id') == remote['merchant'].get('runtime_id')):
                     continue
@@ -526,7 +639,7 @@ class AccountBook:
             pools = {pool['name']: pool for pool in config['pools']}
             empty = set()
             paused = {name for name, account in self._sync_accounts(book).items()
-                      if account['sync'].get('state') in ('paused', 'checking', 'sending')}
+                      if account['sync'].get('state') in ('paused', 'checking', 'sending', 'retry', 'renewing')}
             for pool in book['config']['pools']:
                 held = [d for d in pool['deployments'] if d['id'] in paused]
                 if (not pool['deployments'] or held) and pool['name'] not in pools:
@@ -568,6 +681,8 @@ class AccountBook:
             view['account_sync'] = {name: {k: v for k, v in account['sync'].items() if k != 'basis'}
                                     for name, account in self._sync_accounts(book).items() if account['sync']}
             view['account_enabled'] = {name: account['enabled'] for name, account in self._sync_accounts(book).items()}
+            view['account_can_refresh'] = {name: self.can_refresh(account) for name, account in self._sync_accounts(book).items()}
+            view['account_errors'] = copy.deepcopy(book.get('sync_errors', {}))
             view['access_token_sync'] = {}
             statuses = {a['name']: a for a in book['remote'].get('accounts', {}).get('data', [])}
             for name, account in self._sync_accounts(book).items():

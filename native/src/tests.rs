@@ -58,6 +58,7 @@ async fn server(mode: &'static str) -> Server {
                                 let (parts,body)=request.into_parts();let raw=to_bytes(Body::new(body),1024*1024).await.unwrap();
                                 if parts.uri.path()==ATTESTATION_PATH {
                                     assert!(!parts.headers.contains_key("authorization"));
+                                    assert_eq!(parts.headers["x-router-access"],"fixture-admission-only");
                                     assert!(!String::from_utf8_lossy(&raw).contains("fixture-secret"));
                                     let challenge:Challenge=serde_json::from_slice(&raw).unwrap();
                                     let mut evidence=json!({"protocol_version":1,"evidence_type":"teemerchant-unit-test","nonce":challenge.nonce,

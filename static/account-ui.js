@@ -5,6 +5,7 @@ let accountsRendered = '';
 function accountViewKey() {
   const snapshot = remote();
   return JSON.stringify([snapshot?.pools, snapshot?.accounts, snapshot?.renewals, snapshot?.catalog, snapshot?.account_sync, snapshot?.account_enabled, snapshot?.access_token_sync,
+    snapshot?.account_can_refresh, snapshot?.account_errors,
     snapshot?.settings.revision, snapshot?.settings.pool_pricing, snapshot?.local_sync]);
 }
 
@@ -51,10 +52,13 @@ function accountState(pool, deployment) {
   if (sync?.state === 'paused') return [sync.code === 'authentication_failed' ? '账号认证失败' :
     sync.code === 'access_token_expired' ? '令牌已过期' : '自动同步已暂停', 'error'];
   if (!accountEnabled(deployment)) return ['停用', 'muted'];
+  if (sync?.state === 'retry') return ['等待自动重试', 'muted'];
+  if (sync?.state === 'renewing') return ['正在续期', 'muted'];
   if (sync?.state === 'checking') return ['正在校验账号', 'muted'];
   if (sync?.state === 'sending') return ['正在同步账号', 'muted'];
   const renewal = remote().renewals?.[deployment.oauth_account];
-  if (['uncertain','reauthorization_required'].includes(renewal?.state)) return ['需重新授权', 'error'];
+  if (renewal?.state === 'uncertain') return ['续期结果未确认', 'error'];
+  if (renewal?.state === 'reauthorization_required') return ['续期认证失败', 'error'];
   if (renewal?.state === 'refreshing') return ['续期结果待确认', 'error'];
   if (renewal?.state === 'retry') return ['续期暂不可用', 'error'];
   if (account?.health?.state === 'expired') return ['已过期', 'error'];
@@ -80,6 +84,41 @@ function tokenSyncTime(deployment) {
     (sync.current ? '' : '<small class="muted">当前 Token 尚未同步</small>');
 }
 
+function accountRecoveryDetail(sync) {
+  if (sync?.state === 'retry') {
+    const step = {refresh:'Token 续期',check:'认证检查',upload:'Token 同步'}[sync.step] || '账号同步';
+    const at = new Date(sync.retry_at * 1000).toLocaleString('zh-CN', {hour12:false});
+    return `<small class="muted">${esc(sync.error)} · ${step}第 ${Math.max(1,sync.failures || 0)}/4 次重试：${esc(at)}</small>`;
+  }
+  if (sync?.state === 'paused') {
+    const exhausted = sync.renewal_cycle && sync.failures >= 5 ? ' · 4 次重试均失败' : '';
+    return `<small class="error">${esc(sync.error)}${exhausted} · 自动同步已暂停</small>`;
+  }
+  return '';
+}
+
+function accountErrorRows(id) {
+  const history = remote().account_errors?.[id] || [];
+  if (history.length) return history;
+  const sync = remote().account_sync?.[id];
+  return sync?.error ? [{at:sync.updated_at,step:sync.step || 'check',code:sync.code,error:sync.error,
+    attempt:Math.max(0,(sync.failures || 1)-1),state:sync.state,retry_at:sync.retry_at}] : [];
+}
+
+function accountErrors(id) {
+  const dialog = $('#dialog');
+  const rows = [...accountErrorRows(id)].reverse().map(row => {
+    const at = row.at ? new Date(row.at * 1000).toLocaleString('zh-CN',{hour12:false}) : '—';
+    const step = {refresh:'Token 续期',check:'认证检查',upload:'Token 同步'}[row.step] || '账号同步';
+    const result = row.state === 'retry' ? '已安排重试' : '已暂停';
+    const next = row.retry_at ? `<small>${esc(new Date(row.retry_at * 1000).toLocaleString('zh-CN',{hour12:false}))}</small>` : '';
+    return `<tr><td>${esc(at)}</td><td>${step}</td><td>${row.attempt?`重试 ${esc(row.attempt)}/4`:'首次尝试'}</td>`+
+      `<td>${esc(row.error)}<small><code>${esc(row.code)}</code></small></td><td>${result}${next}</td></tr>`;
+  });
+  dialog.innerHTML = `<h2>${esc(id)} · 错误记录</h2>`+table(['时间','步骤','尝试','错误','处理'],rows)+btn('关闭','close');
+  dialog.showModal();
+}
+
 function accountsView() {
   accountsRendered = accountViewKey();
   if (selectedAccountPool === null || selectedAccountPool && !pools().some(p => p.name === selectedAccountPool))
@@ -89,12 +128,12 @@ function accountsView() {
   const rows = chosen.flatMap(p => p.deployments.map(d => {
     const [status, cls] = accountState(p, d);
     const sync = remote().account_sync?.[d.id];
-    const paused = sync?.state === 'paused';
+    const canRefresh = accountEnabled(d) && (remote().account_can_refresh?.[d.id] || ['paused','retry'].includes(sync?.state));
     return `<tr><td><strong>${esc(d.id)}</strong><small>${esc(p.name)}</small></td>
       <td>${esc(d.provider)}<small>${d.oauth_account && d.provider !== 'workbuddy' ? 'OAuth' : 'API key'}</small></td>
-      <td><span class="${cls}">${status}</span>${paused?`<small class="error">${esc(sync.error)} · 自动同步已暂停</small>`:''}</td>
+      <td><span class="${cls}">${status}</span>${accountRecoveryDetail(sync)}</td>
       <td data-token-sync="${esc(d.id)}">${tokenSyncTime(d)}</td><td>${d.max_concurrent} / ${d.rpm || '不限'}</td>
-      <td class="row-actions">${paused?btn('重试同步','retry-account',d.id):''} ${btn('编辑','edit-account',d.id)} ${window.teemerchant?.oauth && d.oauth_account && ['openai','anthropic','xai'].includes(d.provider)?btn('重新授权','oauth-renew',d.id):''} ${btn(accountEnabled(d)?'停用':'启用','toggle-account',d.id)} ${btn('删除','delete-account',d.id)}</td></tr>`;
+      <td class="row-actions">${canRefresh?btn('手动刷新','refresh-account',d.id):''} ${accountErrorRows(d.id).length?btn('错误记录','account-errors',d.id):''} ${btn('编辑','edit-account',d.id)} ${window.teemerchant?.oauth && d.oauth_account && ['openai','anthropic','xai'].includes(d.provider)?btn('重新授权','oauth-renew',d.id):''} ${btn(accountEnabled(d)?'停用':'启用','toggle-account',d.id)} ${btn('删除','delete-account',d.id)}</td></tr>`;
   }));
   const poolRows = pools().map(p => {
     const rate = (settings().pool_pricing || []).find(r => r.pool === p.name);
@@ -107,7 +146,9 @@ function accountsView() {
   const sync = remote().local_sync;
   const pending = sync?.state === 'pending';
   const pausedCount = Object.values(remote().account_sync || {}).filter(s => s.state === 'paused').length;
-  const syncLabel = pending ? '本地已保存 · 等待同步' : sync?.state === 'remote_changed' ? 'Router 配置有变化，请核对本地配置后保存同步' : pausedCount ? `${pausedCount} 个账号已暂停自动同步` : '本地账号配置 · 已与 Router 同步';
+  const retryCount = Object.values(remote().account_sync || {}).filter(s => s.state === 'retry').length;
+  const syncLabel = pending ? '本地已保存 · 等待同步' : sync?.state === 'remote_changed' ? 'Router 配置有变化，请核对本地配置后保存同步' :
+    retryCount || pausedCount ? [retryCount?`${retryCount} 个账号等待自动重试`:'',pausedCount?`${pausedCount} 个账号已暂停自动同步`:''].filter(Boolean).join(' · ') : '本地账号配置 · 已与 Router 同步';
   return heading('账号与模型','',
     pending?btn('同步账号配置','sync-config'):'') +
     `<div class="notice">${syncLabel} · Router v${settings().revision} · ${pools().length} 个账号池 / ${all.length} 个账号。${sync?.error?`<br><span class="error">${esc(sync.error)}${sync.error.includes('revision_conflict')?'；请刷新并核对配置后重新保存。':''}</span>`:''}</div>

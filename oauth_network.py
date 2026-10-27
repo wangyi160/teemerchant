@@ -16,10 +16,33 @@ import httpx
 HOSTS = {'openai': {'auth.openai.com'}, 'anthropic': {'claude.ai', 'api.anthropic.com', 'platform.claude.com'}, 'xai': {'auth.x.ai'}}
 
 class OAuthError(RuntimeError):
-    def __init__(self, message, *, uncertain=False, permanent=False, status=None):
+    def __init__(self, message, *, uncertain=False, permanent=False, status=None, code='', provider_code=''):
         super().__init__(message)
         self.uncertain, self.permanent = uncertain, permanent
         self.status = status
+        self.code, self.provider_code = code, provider_code
+
+
+PROVIDER_ERRORS = {'invalid_grant', 'invalid_client', 'invalid_request', 'unauthorized_client',
+                   'unsupported_grant_type', 'invalid_scope', 'temporarily_unavailable',
+                   'server_error', 'access_denied', 'rate_limit_exceeded'}
+
+
+def provider_error(response):
+    """Keep only known OAuth error codes; descriptions may contain credentials."""
+    try:
+        raw = bytearray()
+        for chunk in response.iter_bytes():
+            raw.extend(chunk)
+            if len(raw) > 16384:
+                return ''
+        payload = json.loads(raw)
+        code = payload.get('error') if isinstance(payload, dict) else None
+        if isinstance(code, dict):
+            code = code.get('code')
+        return code if isinstance(code, str) and code in PROVIDER_ERRORS else ''
+    except (httpx.HTTPError, ValueError):
+        return ''
 
 def official(provider, url):
     u = urlsplit(url)
@@ -102,7 +125,7 @@ def proxy_url(proxy):
         if replies.get(timeout=10).get('ok') is not True: raise RuntimeError()
         yield f"socks5h://{route}:{ready['password']}@127.0.0.1:{ready['port']}"
     except (queue.Empty, OSError):
-        raise OAuthError('VLESS 代理不可用') from None
+        raise OAuthError('VLESS 代理不可用', code='proxy_unavailable') from None
     finally:
         child.kill();child.wait(timeout=5)
         child.stdin.close();child.stdout.close()
@@ -116,17 +139,25 @@ def request(provider, url, proxy, *, data=None, json_body=None):
                         data=data, json=json_body, headers={'Accept':'application/json'}) as response:
                     if response.status_code != 200:
                         status = response.status_code
-                        raise OAuthError(f'官方授权服务返回 HTTP {status}', permanent=status in (400,401,403), uncertain=status >= 500, status=status)
+                        raise OAuthError(f'官方授权服务返回 HTTP {status}', permanent=status in (400,401,403),
+                            uncertain=status >= 500, status=status, code='http_error', provider_code=provider_error(response))
                     raw = bytearray()
                     for chunk in response.iter_bytes():
                         raw.extend(chunk)
-                        if len(raw) > 256*1024: raise OAuthError('官方授权响应过大', uncertain=True)
+                        if len(raw) > 256*1024: raise OAuthError('官方授权响应过大', uncertain=True, code='response_too_large')
                     result = json.loads(raw)
-                    if not isinstance(result, dict) or result.get('error'): raise OAuthError('官方授权响应无效', uncertain=True)
+                    if not isinstance(result, dict) or result.get('error'): raise OAuthError('官方授权响应无效', uncertain=True, code='invalid_response')
                     return result
         except OAuthError: raise
-        except (httpx.ConnectError, httpx.ConnectTimeout):
-            raise OAuthError('无法连接账号代理或官方授权服务') from None
-        except (httpx.HTTPError, ValueError):
-            # A POST may already have rotated the token. Never blindly replay it.
-            raise OAuthError('授权响应未完整到达，需重新授权确认', uncertain=data is not None or json_body is not None) from None
+        except httpx.ConnectTimeout:
+            raise OAuthError('连接账号代理或官方授权服务超时', code='connection_timeout') from None
+        except httpx.ConnectError:
+            raise OAuthError('无法连接账号代理或官方授权服务', code='connection_failed') from None
+        except httpx.ReadTimeout:
+            raise OAuthError('等待授权响应超时，响应未完整到达', uncertain=data is not None or json_body is not None, code='response_timeout') from None
+        except (httpx.WriteTimeout, httpx.WriteError):
+            raise OAuthError('授权请求发送中断，结果未确认', uncertain=data is not None or json_body is not None, code='request_interrupted') from None
+        except httpx.HTTPError:
+            raise OAuthError('授权响应连接中断，响应未完整到达', uncertain=data is not None or json_body is not None, code='response_interrupted') from None
+        except ValueError:
+            raise OAuthError('官方授权响应格式无效', uncertain=data is not None or json_body is not None, code='invalid_response') from None

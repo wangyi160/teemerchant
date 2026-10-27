@@ -23,3 +23,4 @@ service.json
 .vault-key
 initial-password.txt
 http-auth.json
+proxy.txt

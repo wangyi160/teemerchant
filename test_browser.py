@@ -1,3 +1,4 @@
+import re
 """Optional UI integration tests: pip install playwright; Microsoft Edge required.
 
 Uses an isolated local server and a fake TEE transport. Never touches live accounts.
@@ -179,15 +180,15 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('目录已就绪', exact=True)).to_have_count(0)
         expect(self.page.get_by_text('等待模型目录', exact=True)).to_have_count(0)
         expect(self.page.get_by_text('账号认证失败（HTTP 401） · 自动同步已暂停', exact=True)).to_be_visible()
-        expect(self.page.locator('[data-action=retry-account][data-id=example-001]')).to_be_visible()
+        expect(self.page.locator('[data-action=refresh-account][data-id=example-001]')).to_have_text('手动刷新')
         calls = []
         def retry(route):
             calls.append(route.request.post_data_json)
             book.account_sync_result(router, 'example-001', account['basis'], 'synced')
             self.app.remote = book.view(router)
             route.fulfill(status=200, content_type='application/json', body=json.dumps(self.app.remote))
-        self.page.route('**/api/accounts/retry', retry)
-        self.page.locator('[data-action=retry-account]').click()
+        self.page.route('**/api/accounts/refresh', retry)
+        self.page.locator('[data-action=refresh-account]').click()
         expect(self.page.get_by_text('目录已就绪', exact=True)).to_be_visible()
         self.assertEqual(calls, [{'id': 'example-001'}])
 
@@ -198,6 +199,49 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('停用', exact=True)).to_be_visible()
         expect(self.page.get_by_text('等待模型目录', exact=True)).to_have_count(0)
         expect(self.page.locator('[data-action=toggle-account]')).to_have_text('启用')
+
+    def test_renewal_recovery_shows_step_attempt_deadline_and_exhaustion(self):
+        at = int(time.time()) + 60
+        status = {'state':'retry','step':'upload','renewal_cycle':True,'failures':2,
+                  'retry_at':at,'error':'Router 同步失败'}
+        self.app.remote['account_sync'] = {'example-001':status}
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('等待自动重试', exact=True)).to_be_visible()
+        expected = self.page.evaluate('at=>new Date(at*1000).toLocaleString("zh-CN",{hour12:false})',at)
+        expect(self.page.get_by_text('Router 同步失败 · Token 同步第 2/4 次重试：'+expected,exact=True)).to_be_visible()
+        expect(self.page.locator('[data-action=refresh-account]')).to_be_visible()
+        status.update(state='paused',failures=5)
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('Router 同步失败 · 4 次重试均失败 · 自动同步已暂停',exact=True)).to_be_visible()
+        expect(self.page.locator('[data-action=refresh-account]')).to_be_visible()
+
+    def test_refresh_error_history_remains_visible_after_success_and_manual_button_is_available(self):
+        at = int(time.time())
+        rows = [
+            {'at':at,'step':'refresh','code':'renewal_response_timeout','error':'续期响应超时，响应未完整到达',
+             'attempt':0,'state':'retry','retry_at':at+30},
+            {'at':at+30,'step':'refresh','code':'renewal_http_error','error':'续期接口返回错误（HTTP 400 · invalid_grant）',
+             'attempt':1,'state':'retry','retry_at':at+90}]
+        self.app.remote.update(account_sync={'example-001':{'state':'synced'}},
+                               account_errors={'example-001':rows},account_can_refresh={'example-001':True})
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_role('button',name='手动刷新',exact=True)).to_be_visible()
+        self.page.get_by_role('button',name='错误记录',exact=True).click()
+        dialog=self.page.locator('#dialog')
+        expect(dialog).to_contain_text('续期响应超时，响应未完整到达')
+        expect(dialog).to_contain_text('HTTP 400 · invalid_grant')
+        expect(dialog).to_contain_text('首次尝试')
+        expect(dialog).to_contain_text('重试 1/4')
+        expect(dialog).not_to_contain_text('需重新授权')
+        self.page.get_by_role('button',name='关闭',exact=True).click()
+        calls=[]
+        def refresh(route):
+            calls.append(route.request.post_data_json)
+            route.fulfill(status=200,content_type='application/json',body=json.dumps(self.app.remote))
+        self.page.route('**/api/accounts/refresh',refresh)
+        self.page.get_by_role('button',name='手动刷新',exact=True).click()
+        expect(self.page.get_by_role('button',name='手动刷新',exact=True)).to_be_enabled()
+        self.assertEqual(calls,[{'id':'example-001'}])
 
     def test_token_sync_timestamp_updates_in_place_and_remains_visible_on_failure(self):
         cell = self.page.locator('[data-token-sync=example-001]')
@@ -381,28 +425,17 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('[name=credential]')).to_have_value(credential)
         self.assertEqual(len(self.router.writes), 2)
 
-    def test_connection_shows_username_and_login_without_manual_credentials(self):
-        from unittest.mock import patch
-        secret = self.store.settings['token']
-        identity = self.store.enrollment()['id']
-        self.store.remember_platform_identity(self.store.settings['platform_url'], identity,
-            {'id': 'p_seller', 'role': 'merchant', 'username': 'seller', 'name': 'Seller'})
-        requested = []
-        self.page.on('request', lambda request: requested.append(request.url) if request.url.endswith('/api/credentials') else None)
-        with patch.object(self.app.platform_client, 'refresh_identity', return_value=self.store.platform_identity()):
-            self.page.locator('aside [data-id=connection]').click()
-            expect(self.page.locator('#merchant-username')).to_have_value('seller')
-        expect(self.page.locator('#merchant-saved-id, #merchant-saved-secret, [data-action=merchant-credentials]')).to_have_count(0)
-        self.assertEqual(requested, [])
-        denied = self.page.request.get(self.origin + '/api/credentials')
-        self.assertEqual(denied.status, 403)
-        self.assertNotIn(secret, denied.text())
-        self.page.get_by_role('button', name='添加登录', exact=True).click()
-        expect(self.page.get_by_role('heading', name='登录商户')).to_be_visible()
-        expect(self.page.locator('.platform-frame')).to_have_count(0)
-        expect(self.page.locator('aside [data-id=platform]')).to_have_count(0)
-        expect(self.page.get_by_role('heading', name='Router 连接')).to_be_visible()
-        self.assertNotIn(secret, json.dumps(self.app.api('GET','/api/state',{})))
+    def test_connection_shows_key_id_without_passwords_or_control_credentials(self):
+        account=next(iter(self.app.platform_client.sessions.values()))['account']
+        self.page.locator('aside [data-id=connection]').click()
+        expect(self.page.locator('#merchant-identity')).to_have_value(account['identity_id'])
+        expect(self.page.locator('#merchant-profile option')).to_have_count(1)
+        expect(self.page.locator('#merchant-auth, input[type=password], #merchant-password')).to_have_count(0)
+        expect(self.page.get_by_role('button',name='注册新 ID',exact=True)).to_be_visible()
+        expect(self.page.locator('#merchant-saved-id, #merchant-saved-secret, .platform-frame')).to_have_count(0)
+        self.assertNotIn(self.store.settings['token'],self.page.content())
+        self.page.reload()
+        expect(self.page.locator('#merchant-identity')).to_have_value(account['identity_id'])
 
     def test_no_merchant_total_limits_and_pool_pricing_remains_editable(self):
         expect(self.page.locator('aside [data-id=limits]')).to_have_count(0)
@@ -416,8 +449,8 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('累计应收 · USD', exact=True)).to_be_visible()
         self.page.locator('aside [data-id=connection]').click()
         with patch.object(self.app.platform_client, 'request', return_value=(200, {'ok':True}, {})):
-            self.page.get_by_role('button', name='退出登录', exact=True).click()
-            expect(self.page.locator('#merchant-auth')).to_be_visible()
+            self.page.get_by_role('button', name='退出此 ID', exact=True).click()
+            expect(self.page.get_by_role('button',name='注册新 ID',exact=True)).to_be_visible()
             self.page.wait_for_function('() => !connectionBusy')
         for section_name in ('accounts','revenue','receipts','customers','usage','refusals'):
             self.page.locator(f'aside [data-id={section_name}]').click()
@@ -429,7 +462,7 @@ class BrowserTests(unittest.TestCase):
         other = self.browser.new_context()
         try:
             page = other.new_page();page.goto(self.origin)
-            expect(page.locator('#merchant-auth')).to_be_visible()
+            expect(page.get_by_role('button',name='注册新 ID',exact=True)).to_be_visible()
             self.assertFalse(page.evaluate('state.auth.authenticated'))
         finally:
             other.close()
@@ -444,166 +477,74 @@ class BrowserTests(unittest.TestCase):
           window.lateRevenue=loadRevenue().then(()=>false,()=>true);
         }''')
         for session in self.app.platform_client.sessions.values():session['expires']=0
-        self.page.evaluate('pollAccountAccess()')
+        from unittest.mock import patch
+        import httpx
+        with patch.object(self.app.platform_client,'request',side_effect=httpx.ConnectError('offline')):
+            self.page.evaluate('pollAccountAccess()')
         expect(self.page.locator('#dialog')).not_to_be_visible()
         expect(self.page.locator('main')).not_to_contain_text('example-001')
         self.page.evaluate("releaseRevenue({ok:true,value:{data:[{pool:'PRIVATE_OLD_POOL'}]}})")
         self.assertFalse(self.page.evaluate('lateRevenue'))
         self.assertIsNone(self.page.evaluate('revenueData'))
         self.page.reload()
-        expect(self.page.locator('#merchant-auth')).to_be_visible()
+        expect(self.page.get_by_role('button',name='注册新 ID',exact=True)).to_be_visible()
 
-    def test_only_logged_in_accounts_appear_in_switcher_and_keep_separate_pools(self):
-        import httpx
+    def test_local_identity_switch_keeps_pools_separate_and_logout_keeps_id(self):
+        from test_platform_client import login_fixture
         from unittest.mock import patch
-        secret = 'c'*64
-        merchant_id = 'm_' + hashlib.sha256(secret.encode()).hexdigest()[:32]
-        view = {'account':{'id':'p_second','username':'second','name':'Second','role':'merchant'},
-                'applications':[{'kind':'merchant','status':'approved','subject':merchant_id}],
-                'merchant_credentials_available':True}
-        client = httpx.Client
-        def fetch(request):
-            if request.url.path.endswith('/reveal'):
-                return httpx.Response(200,json={'merchant_id':merchant_id,'merchant_secret':secret})
-            return httpx.Response(200,json={**view,'csrf':'csrf'},headers={'set-cookie':'teerouter_portal='+'B'*43})
-        with patch('platform_client.httpx.Client',side_effect=lambda **kw:client(**kw,transport=httpx.MockTransport(fetch))):
-            self.page.locator('aside [data-id=connection]').click()
-            self.page.get_by_role('button',name='添加登录',exact=True).click()
-            self.page.locator('#merchant-auth [name=username]').fill('second')
-            self.page.locator('#merchant-auth [name=password]').fill('test-password')
-            self.page.locator('#merchant-auth [type=submit]').click()
-            expect(self.page.locator('#merchant-username')).to_have_value('second')
-            expect(self.page.locator('#merchant-profile option')).to_have_count(2)
-            self.assertEqual(self.page.evaluate('pools()'),[])
-            self.page.locator('#merchant-profile').select_option('p_seller')
-            self.page.get_by_role('button',name='切换',exact=True).click()
-            expect(self.page.locator('#merchant-username')).to_have_value('seller')
-            self.page.locator('aside [data-id=accounts]').click()
-            expect(self.page.locator('main')).to_contain_text('example-001')
-            self.page.locator('aside [data-id=connection]').click()
-            self.page.get_by_role('button',name='退出登录',exact=True).click()
+        browser=self.page.context.cookies()[0]['value']
+        first=next(iter(self.app.platform_client.sessions.values()))['account']['identity_id']
+        secret='c'*64
+        merchant_id='m_'+hashlib.sha256(secret.encode()).hexdigest()[:32]
+        self.app._api('POST','/api/credentials',{'merchant_id':merchant_id,'merchant_secret':secret})
+        second=login_fixture(self.app,browser,'second')['account']['identity_id']
+        self.page.reload()
+        self.page.locator('aside [data-id=connection]').click()
+        expect(self.page.locator('#merchant-identity')).to_have_value(second)
+        expect(self.page.locator('#merchant-profile option')).to_have_count(2)
+        self.assertEqual(self.page.evaluate('pools()'),[])
+        self.page.locator('#merchant-profile').select_option(first)
+        self.page.get_by_role('button',name='使用此 ID',exact=True).click()
+        expect(self.page.locator('#merchant-identity')).to_have_value(first)
+        self.page.locator('aside [data-id=accounts]').click()
+        expect(self.page.locator('main')).to_contain_text('example-001')
+        self.page.locator('aside [data-id=connection]').click()
+        with patch.object(self.app.platform_client,'request',return_value=(200,{'ok':True},{})):
+            self.page.get_by_role('button',name='退出此 ID',exact=True).click()
             self.page.wait_for_function('() => !connectionBusy')
-            expect(self.page.locator('#merchant-profile option[value=p_seller]')).to_have_count(0)
-            self.page.locator('#merchant-profile').select_option('p_second')
-            self.page.get_by_role('button',name='切换',exact=True).click()
-            expect(self.page.locator('#merchant-username')).to_have_value('second')
+        expect(self.page.locator('#merchant-profile option')).to_have_count(2)
+        self.page.locator('#merchant-profile').select_option(second)
+        self.page.get_by_role('button',name='使用此 ID',exact=True).click()
+        expect(self.page.locator('#merchant-identity')).to_have_value(second)
+        self.assertEqual(self.page.evaluate('pools()'),[])
+
+    def test_one_click_registration_keeps_private_seed_local(self):
+        from unittest.mock import patch
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        original=self.app.platform_client.request
+        challenges={}
+        def request(client,method,url,headers,data=None):
+            if url.endswith('/identity/challenge'):
+                challenge={**data,'id':'ic_test','nonce':'nonce','expires':int(time.time())+300,'origin':'https://teerouter.org'}
+                challenges['value']=challenge
+                return 200,{'challenge':challenge},{}
+            if url.endswith('/register'):
+                challenge=challenges['value'];public=challenge['public_key']
+                message=json.dumps(['teerouter-identity-v1',challenge['origin'],'register','merchant',public,challenge['id'],challenge['nonce'],challenge['expires']],separators=(',',':')).encode()
+                Ed25519PublicKey.from_public_bytes(bytes.fromhex(public)).verify(bytes.fromhex(data['signature']),message)
+                self.assertNotIn('seed',data);self.assertNotIn('password',data)
+                iid='m_sig_'+hashlib.sha256(bytes.fromhex(public)).hexdigest()
+                account={'id':'p_new','identity_id':iid,'public_key':public,'role':'merchant','username':iid,'name':iid}
+                return 201,{'account':account,'applications':[],'merchant_credentials_available':False,'csrf':'new-csrf'},{'set-cookie':'teerouter_portal='+'B'*43}
+            return original(client,method,url,headers,data)
+        with patch.object(self.app.platform_client,'request',side_effect=request):
+            self.page.locator('aside [data-id=connection]').click()
+            self.page.get_by_role('button',name='注册新 ID',exact=True).click()
+            self.page.wait_for_function('() => state.auth?.account?.id === "p_new"')
+            expect(self.page.locator('#merchant-identity')).to_have_value(re.compile('m_sig_[a-f0-9]{64}'))
+            expect(self.page.locator('#merchant-profile option')).to_have_count(2)
+            expect(self.page.locator('input[type=password]')).to_have_count(0)
             self.assertEqual(self.page.evaluate('pools()'),[])
-
-    def test_login_automatically_binds_and_connection_displays_login_username(self):
-        self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
-        import httpx
-        from unittest.mock import patch
-        secret = 'b' * 64
-        merchant_id = 'm_' + hashlib.sha256(secret.encode()).hexdigest()[:32]
-        account = {'id': 'p_seller', 'role': 'merchant', 'username': 'seller', 'name': 'Seller'}
-        view = {'account': account, 'merchant': {'id': merchant_id}, 'keys': [],
-                'applications': [{'kind': 'merchant', 'status': 'approved', 'subject': merchant_id}],
-                'merchant_credentials_available': True}
-        original_client = httpx.Client
-        def fetch(request):
-            if request.url.path.endswith('/login'):
-                return httpx.Response(200, json={**view, 'csrf': 'csrf'},
-                    headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})
-            if request.url.path.endswith('/reveal'):
-                return httpx.Response(200, json={'merchant_id': merchant_id, 'merchant_secret': secret})
-            if request.url.path.endswith('/profile'):
-                return httpx.Response(200, json={'account': account, 'merchant': {'id': merchant_id}, 'legacy': False})
-            if request.url.path.endswith('/password'):
-                self.assertEqual(json.loads(request.content), {'current_password': 'a-test-password', 'new_password': 'a-new-test-password'})
-                return httpx.Response(200, json={'ok': True})
-            if not request.headers.get('cookie'):
-                return httpx.Response(401, json={'error': 'login_required'})
-            return httpx.Response(200, json=view)
-        with patch('platform_client.httpx.Client', side_effect=lambda **kw: original_client(**kw, transport=httpx.MockTransport(fetch))):
-            self.page.locator('aside [data-id=connection]').click()
-            self.page.locator('#merchant-auth [name=username]').fill('seller')
-            self.page.locator('#merchant-auth [name=password]').fill('a-test-password')
-            self.page.locator('#merchant-auth [type=submit]').click()
-            expect(self.page.locator('#merchant-username')).to_have_value('seller')
-            expect(self.page.get_by_role('button', name='绑定到本机')).to_have_count(0)
-            self.assertEqual(self.store.enrollment()['id'], merchant_id)
-            expect(self.page.get_by_role('heading', name='Router 连接')).to_be_visible()
-            expect(self.page.locator('iframe')).to_have_count(0)
-            self.assertNotIn(secret, self.page.content())
-            self.page.get_by_role('button', name='修改密码', exact=True).click()
-            self.page.locator('#merchant-password [name=current_password]').fill('a-test-password')
-            self.page.locator('#merchant-password [name=new_password]').fill('a-new-test-password')
-            self.page.locator('#merchant-password [type=submit]').click()
-            expect(self.page.locator('#merchant-auth [name=password]')).to_have_value('')
-            self.assertFalse(self.app.platform_client.sessions)
-            self.assertEqual(self.store.enrollment()['id'], merchant_id)
-
-    def test_inline_registration_pending_status_and_refresh_preserve_connection_drafts(self):
-        self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
-        import httpx
-        from unittest.mock import patch
-        account = {'id': 'p_pending', 'role': 'merchant', 'username': 'pending', 'name': 'New merchant'}
-        view = {'account': account, 'applications': [{'kind': 'merchant', 'status': 'pending'}],
-                'merchant_credentials_available': False}
-        original_client = httpx.Client
-        calls = []
-        def fetch(request):
-            calls.append(request.url.path)
-            if request.url.path.endswith('/info'):
-                return httpx.Response(200, json={'policy': {'registration_enabled': True}})
-            if request.url.path.endswith('/register'):
-                self.assertEqual(json.loads(request.content)['role'], 'merchant')
-                return httpx.Response(201, json={**view, 'csrf': 'csrf'},
-                    headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})
-            if request.url.path.endswith('/logout'):
-                return httpx.Response(200, json={'ok': True})
-            if request.url.path.endswith('/profile'):
-                return httpx.Response(200, json={'account': {**account, 'username': 'Legacy name'},
-                    'merchant': {'id': self.store.enrollment()['id']}, 'legacy': True})
-            return httpx.Response(200, json=view)
-        with patch('platform_client.httpx.Client', side_effect=lambda **kw: original_client(**kw, transport=httpx.MockTransport(fetch))):
-            self.page.locator('aside [data-id=connection]').click()
-            expect(self.page.get_by_role('heading', name='账号与连接', exact=True)).to_be_visible()
-            self.page.get_by_role('tab', name='注册', exact=True).click()
-            form = self.page.locator('#merchant-auth')
-            form.locator('[name=username]').fill('pending')
-            form.locator('[name=name]').fill('New merchant')
-            form.locator('[name=password]').fill('registration-password')
-            form.locator('[type=submit]').click()
-            expect(self.page.locator('#merchant-username')).to_have_value('pending')
-            expect(self.page.locator('#merchant-approval')).to_have_text('开通中')
-            expect(self.page.locator('#connection')).to_have_count(0)
-            self.page.locator('#platform-connection [name=platform_url]').fill('https://unsaved-platform.example')
-            self.page.get_by_role('button', name='刷新状态', exact=True).click()
-            expect(self.page.locator('#platform-connection [name=platform_url]')).to_have_value('https://unsaved-platform.example')
-            self.page.get_by_role('button', name='退出登录', exact=True).click()
-            expect(self.page.locator('#merchant-auth [name=password]')).to_have_value('')
-            self.assertNotIn('/portal/api/merchant/credentials/reveal', calls)
-
-    def test_slow_account_status_does_not_block_registration_or_erase_its_draft(self):
-        self.app.platform_client.sessions.clear();self.app.platform_client.accounts.clear();self.page.reload()
-        import httpx
-        from unittest.mock import patch
-        from platform_client import Reply
-        entered, release = threading.Event(), threading.Event()
-        original_call, original_client = self.app.platform_client.call, httpx.Client
-        def delayed(session, mode, method, path, *args):
-            if mode == 'account' and method == 'GET' and path == 'me':
-                entered.set();release.wait(10)
-                return Reply(401, b'{"error":"login_required"}')
-            return original_call(session, mode, method, path, *args)
-        def fetch(request):
-            self.assertTrue(request.url.path.endswith('/info'))
-            return httpx.Response(200, json={'policy': {'registration_enabled': True}})
-        with patch.object(self.app.platform_client, 'call', side_effect=delayed), \
-             patch('platform_client.httpx.Client', side_effect=lambda **kw: original_client(**kw, transport=httpx.MockTransport(fetch))):
-            try:
-                self.page.locator('aside [data-id=connection]').click()
-                self.assertTrue(entered.wait(2))
-                self.page.get_by_role('tab', name='注册', exact=True).click()
-                expect(self.page.locator('#merchant-auth [name=name]')).to_be_visible()
-                self.page.locator('#merchant-auth [name=username]').fill('draft_merchant')
-                release.set()
-                self.page.wait_for_function('() => !connectionLoading')
-                expect(self.page.locator('#merchant-auth [name=username]')).to_have_value('draft_merchant')
-                expect(self.page.locator('#merchant-auth [name=name]')).to_be_visible()
-            finally:
-                release.set()
 
     def test_revenue_totals_filter_pending_and_historic_bill_details(self):
         from test_revenue import receipt
@@ -714,7 +655,7 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('[name=model_mode]').select_option('all')
         self.page.get_by_role('button', name='保存并同步').click()
         expect(self.page.locator('#pool-model-editor')).to_have_count(0)
-        self.assertNotIn('allowed_models', self.router.writes[-1]['pools'][0])
+        self.assertEqual(self.router.writes[-1]['pools'][0]['allowed_models'], [])
 
     def test_successful_refresh_removes_missing_model_from_list_and_editor(self):
         from local_accounts import config_from
@@ -1129,7 +1070,7 @@ class BrowserTests(unittest.TestCase):
     def test_platform_records_are_queried_on_open_without_sync_controls_or_local_writes(self):
         self.page.locator('aside [data-id=connection]').click()
         expect(self.page.locator('[data-action=sync]')).to_have_count(0)
-        self.assertEqual(self.platform_reads, [])
+        self.assertEqual([p for p in self.platform_reads if p!='state'], [])
         rows=[];writes=[]
         def query(path):
             self.platform_reads.append(path)
@@ -1146,7 +1087,7 @@ class BrowserTests(unittest.TestCase):
         self.page.locator('aside [data-id=connection]').click()
         self.page.locator('aside [data-id=refusals]').click()
         expect(self.page.locator('tbody')).to_contain_text('fixture-model')
-        self.assertEqual(self.platform_reads,['activity?kind=refusals&limit=50']*2)
+        self.assertEqual([p for p in self.platform_reads if p!='state'],['activity?kind=refusals&limit=50']*2)
         self.assertEqual(writes,[])
         self.page.locator('[data-action=record]').click()
         expect(self.page.locator('#dialog')).to_contain_text('provider_refusal')

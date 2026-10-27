@@ -158,6 +158,22 @@ class Application:
             status = account['sync'].get('state')
             if status == 'paused':
                 continue
+            if status == 'retry':
+                if account['sync'].get('step') == 'refresh' or account['sync'].get('retry_at', 0) > time.time():
+                    continue
+                if account['sync'].get('step') == 'upload':
+                    # The new credential was already checked. Retry only its
+                    # idempotent upload, retaining the consumed retry budget.
+                    status = 'verified'
+                    book.account_sync_result(router, identifier, account['basis'], status)
+            if account['sync'].get('renewal_cycle') and status in ('checking', 'sending', 'renewing'):
+                # Interrupted work resumes from its persisted step, using the
+                # same bounded retry schedule even if refresh completion is unknown.
+                step = account['sync']['step']
+                code = 'renewal_interrupted' if step == 'refresh' else 'sync_uncertain'
+                book.account_sync_failure(router, identifier, account['basis'], step,
+                                          code, str(AccountError(code)))
+                continue
             missing = not account['credential'] or ('api_key' in account['credential'] and not account['credential']['api_key'])
             if missing and identifier not in remote_ids:
                 book.account_sync_result(router, identifier, account['basis'], 'paused', 'invalid_credential', '缺少本地账号凭证')
@@ -190,7 +206,7 @@ class Application:
                 if isinstance(error, (ValueError, TypeError, AttributeError)):
                     error = AccountError('invalid_credential')
                 code, message = sync_error(error)
-                book.account_sync_result(router, identifier, account['basis'], 'paused', code, message)
+                book.account_sync_failure(router, identifier, account['basis'], 'check', code, message)
         self.remote = book.view(router)
 
     def sync_credentials(self):
@@ -200,7 +216,9 @@ class Application:
             self.check_accounts()
             book.reconcile_accounts(router)
             pending = book.pending(router)
-            if pending and not book.view(router)['local_sync']['error']:
+            retrying_upload = any(a['sync'].get('renewal_cycle') and a['sync'].get('state') == 'verified'
+                                  for a in book.sync_accounts(router).values())
+            if pending and (not book.view(router)['local_sync']['error'] or retrying_upload):
                 self.push_config()
             update = book.access_updates(router, self.remote)
             if update:
@@ -217,7 +235,7 @@ class Application:
                     except Exception as error:
                         code, message = sync_error(error)
                         for identifier, account in rows.items():
-                            book.account_sync_result(router, identifier, account['basis'], 'paused', code, message)
+                            book.account_sync_failure(router, identifier, account['basis'], 'upload', code, message)
                     else:
                         for identifier, account in rows.items():
                             book.account_sync_result(router, identifier, account['basis'], 'synced')
@@ -237,13 +255,9 @@ class Application:
                 credential = refresh(account['provider'], account['credential'], account.get('proxy', ''))
             except (RuntimeError, ValueError) as error:
                 self.store.accounts.renewal_finished(router, name, basis, error=error)
-                for identifier, account in self.store.accounts.sync_accounts(router).items():
-                    if account['oauth_account'] == name:
-                        code = 'authentication_failed' if getattr(error, 'permanent', False) else 'renewal_failed'
-                        self.store.accounts.account_sync_result(router, identifier, account['basis'], 'paused', code, str(AccountError(code)))
             else:
-                # A failed local save deliberately leaves the durable 'refreshing'
-                # marker. Never send or retry tokens that were not durably saved.
+                # Commit rotated tokens before checking/uploading them. A crash
+                # leaves a durable marker for bounded recovery from this step.
                 self.store.accounts.renewal_finished(router, name, basis, credential=credential)
         self.remote = self.store.accounts.view(router)
 
@@ -275,6 +289,7 @@ class Application:
                               if a.get('credential', {}).get('access_token') and
                               fingerprint(a['credential']) != statuses.get(name, {}).get('access_sha256')}
             sending = {i: a for i, a in self.store.accounts.sync_accounts(router).items() if i in published
+                       and a['sync'].get('state') not in ('paused', 'retry', 'renewing')
                        and (a['oauth_account'] in changed_tokens or a['sync'].get('state') != 'synced' or
                             redact(published[i]) != redact(previous.get(i)))}
             for identifier, account in sending.items():
@@ -293,12 +308,13 @@ class Application:
                     self.store.accounts.account_sync_result(router, identifier, account['basis'], 'synced')
         except Exception as error:
             # The local write already committed. Retain it even if a request or its
-            # acknowledgement failed; never silently replay credential updates.
+            # acknowledgement failed. Renewal recovery retains its step/budget;
+            # unrelated manual edits still require an explicit retry.
             code, detail = sync_error(error)
             self.store.accounts.sync_failed(router, detail)
             for identifier, account in self.store.accounts.sync_accounts(router).items():
-                if (identifier in affected or identifier in sending) and account['sync'].get('state') != 'paused':
-                    self.store.accounts.account_sync_result(router, identifier, account['basis'], 'paused', code, detail)
+                if (identifier in affected or identifier in sending) and account['sync'].get('state') not in ('paused', 'retry', 'renewing'):
+                    self.store.accounts.account_sync_failure(router, identifier, account['basis'], 'upload', code, detail)
         else:
             # Account activation is complete. A separate policy write must never
             # relabel confirmed credentials as failed or pause their renewal.
@@ -478,11 +494,11 @@ class Application:
                 if account['sync'].get('state') == 'paused':
                     self.store.accounts.retry_account(router, identifier)
             return self.push_config()
-        if (method, path) == ('POST', '/api/accounts/retry'):
+        if method == 'POST' and path in ('/api/accounts/retry', '/api/accounts/refresh'):
             if not isinstance(body, dict) or set(body) != {'id'} or not isinstance(body['id'], str):
                 raise ValueError('账号重试参数无效')
             router = self.store.settings['router']
-            self.store.accounts.retry_account(router, body['id'])
+            self.store.accounts.retry_account(router, body['id'], refresh=path.endswith('/refresh'))
             try:
                 if not self.connected:
                     self.connect()
@@ -493,7 +509,8 @@ class Application:
             except Exception as error:
                 code, detail = sync_error(error)
                 account = self.store.accounts.sync_accounts(router)[body['id']]
-                self.store.accounts.account_sync_result(router, body['id'], account['basis'], 'paused', code, detail)
+                step = account['sync'].get('step', 'upload')
+                self.store.accounts.account_sync_failure(router, body['id'], account['basis'], step, code, detail)
                 self.remote = self.store.accounts.view(router)
             return self.remote
         if (method, path) == ('POST', '/api/accounts/test'):

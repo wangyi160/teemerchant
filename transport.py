@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import time
 from urllib.parse import urlsplit
 
 
@@ -66,6 +67,7 @@ class Transport:
     def __init__(self, store):
         self.store, self.client = store, None
         self.lock = threading.RLock()
+        self.access_refresh_at = 0
 
     def close(self):
         with self.lock:
@@ -80,10 +82,53 @@ class Transport:
             raise ValueError('请填写 Router 的 HTTPS 根地址')
         if not settings['tdx_policy'] and not settings['snp_policy']:
             raise ValueError('请选择独立审核的 TEE 发布策略')
-        config = {'endpoint': settings['router']}
+        self.ensure_router_access()
+        config = {'endpoint': settings['router'], 'router_access': settings.get('router_access', {}).get('token', '')}
         for name in ('tdx_policy', 'snp_policy'):
             config[name] = str(self.store.policy_path(settings[name])) if settings[name] else None
         self.client = NativeClient(config)
+
+    def remember_router_access(self, value, merchant_id, base):
+        if not isinstance(value, dict):
+            return
+        token, expires = value.get('token'), value.get('expires_at')
+        if not isinstance(token, str) or not 1 <= len(token) <= 2048 or type(expires) is not int or expires <= time.time():
+            raise RuntimeError('Invalid Router access credential from platform')
+        with self.store.lock:
+            if merchant_id != self.store.enrollment()['id'] or base != self.store.settings.get('platform_url', '').rstrip('/'):
+                raise RuntimeError('Merchant identity changed during Router access renewal')
+            record = {'token': token, 'expires_at': expires, 'merchant_id': merchant_id, 'platform_url': base}
+            if self.store.settings.get('router_access') == record:
+                return
+            previous = self.store.settings.copy()
+            self.store.settings['router_access'] = record
+            try:
+                self.store.save()
+            except Exception:
+                self.store.settings = previous
+                raise
+        self.close()
+
+    def ensure_router_access(self):
+        from platform_data import PlatformData
+        record = self.store.settings.get('router_access', {})
+        identity = self.store.enrollment()['id']
+        base = self.store.settings.get('platform_url', '').rstrip('/')
+        valid = (record.get('merchant_id') == identity and record.get('platform_url') == base
+                 and record.get('expires_at', 0) > time.time())
+        if valid and (record['expires_at'] > time.time() + 86400 or time.monotonic() < self.access_refresh_at):
+            return
+        try:
+            self.access_refresh_at = time.monotonic() + 300
+            value = PlatformData(self.store).fetch('profile')
+            self.remember_router_access(value.get('router_access'), value.get('merchant', {}).get('id'), base)
+        except (RuntimeError, ValueError, OSError):
+            # An unexpired login credential remains usable during platform outages.
+            if not valid:
+                raise
+        current = self.store.settings.get('router_access', {})
+        if not current.get('token') or current.get('expires_at', 0) <= time.time() or current.get('merchant_id') != identity or current.get('platform_url') != base:
+            raise RuntimeError('Platform has not issued a Router access credential; sign in again')
 
     def call(self, method, path, body=None):
         if method != 'VERIFY' and (method, path) not in (
@@ -99,6 +144,8 @@ class Transport:
                 for item in value: check(item)
         check(body)
         with self.lock:
+            if self.client is not None:
+                self.ensure_router_access()
             if self.client is None:
                 self.start()
             try:

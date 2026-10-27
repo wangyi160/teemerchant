@@ -22,6 +22,17 @@ MESSAGES = {
     'sync_failed': 'Router 同步失败',
     'sync_uncertain': '上次操作未完成，结果待确认',
     'renewal_failed': '访问令牌续期失败',
+    'renewal_uncertain': '续期响应未确认，Refresh Token 是否已轮换未知',
+    'renewal_interrupted': '续期操作中断，结果未确认',
+    'renewal_connection_failed': '续期时无法连接账号代理或官方服务',
+    'renewal_connection_timeout': '续期时连接账号代理或官方服务超时',
+    'renewal_proxy_unavailable': '续期时账号代理组件不可用',
+    'renewal_response_timeout': '续期响应超时，响应未完整到达',
+    'renewal_response_interrupted': '续期响应连接中断，响应未完整到达',
+    'renewal_request_interrupted': '续期请求发送中断，结果未确认',
+    'renewal_invalid_response': '续期响应格式或凭证字段无效',
+    'renewal_response_too_large': '续期响应超过大小限制',
+    'renewal_http_error': '续期接口返回错误',
 }
 
 
@@ -29,6 +40,23 @@ class AccountError(RuntimeError):
     def __init__(self, code, detail=''):
         self.code = code
         super().__init__(MESSAGES[code] + (f'（{detail}）' if detail else ''))
+
+
+def renewal_error(error):
+    """Classify refresh failures without echoing exceptions or upstream bodies."""
+    from oauth_network import PROVIDER_ERRORS
+    status = getattr(error, 'status', None)
+    provider_code = getattr(error, 'provider_code', '')
+    if type(status) is int and 100 <= status <= 599:
+        detail = f'HTTP {status}' + (f' · {provider_code}' if isinstance(provider_code, str) and provider_code in PROVIDER_ERRORS else '')
+        return 'renewal_http_error', str(AccountError('renewal_http_error', detail))
+    code = getattr(error, 'code', '')
+    if isinstance(code, str) and 'renewal_' + code in MESSAGES:
+        code = 'renewal_' + code
+    else:
+        code = ('renewal_uncertain' if getattr(error, 'uncertain', False) else
+                'authentication_failed' if getattr(error, 'permanent', False) else 'renewal_failed')
+    return code, str(AccountError(code))
 
 
 def sync_error(error):

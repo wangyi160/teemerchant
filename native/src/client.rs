@@ -173,6 +173,7 @@ pub struct VerificationAttempt {
 
 #[derive(Default)]
 pub struct Trust {
+    pub router_access: zeroize::Zeroizing<String>,
     #[cfg(test)]
     pub(crate) allow_test_evidence: bool,
     #[cfg(feature = "tdx-verifier")]
@@ -263,11 +264,13 @@ pub async fn verify(endpoint: &str, trust: &Trust) -> VerificationAttempt {
             driver,
             authority,
         };
+        ensure!(cfg!(test) || !trust.router_access.is_empty(), "Router access credential missing; sign in again");
         let nonce = random_hex()?;
         report.nonce = Some(nonce.clone());
         let request = Request::builder()
             .method("POST")
             .uri(ATTESTATION_PATH)
+            .header("x-router-access", trust.router_access.as_str())
             .header("host", &transport.authority)
             .header("content-type", "application/json")
             .body(Full::new(Bytes::from(serde_json::to_vec(&Challenge {

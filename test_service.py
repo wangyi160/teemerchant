@@ -43,7 +43,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(value,{'access_token':'A','expires_at':2000000000})
         self.assertEqual(access_only({'access_token':'A','metadata':{'refresh_token':'SECRET'}}),{'access_token':'A'})
 
-    def test_rotation_is_persisted_before_upload_and_uncertain_rotation_is_not_retried(self):
+    def test_rotation_is_persisted_before_upload_and_crash_marker_waits_for_recovery(self):
         name,account,basis=self.book.renewal_candidates(self.url)[0]
         self.book.renewal_started(self.url,name,basis)
         reloaded=Store(self.tmp.name)
@@ -64,11 +64,12 @@ class ProtocolTests(unittest.TestCase):
         with patch('oauth_service.refresh') as renewal:
             self.app.renew_credentials();renewal.assert_not_called()
 
-    def test_error_quarantine_and_safe_connection_retry(self):
+    def test_uncertain_response_and_connection_error_both_schedule_retries(self):
         name,account,basis=self.book.renewal_candidates(self.url)[0]
         self.book.renewal_started(self.url,name,basis)
         self.book.renewal_finished(self.url,name,basis,error=OAuthError('lost response',uncertain=True))
-        self.assertEqual(self.book.renewal_candidates(self.url,time.time()+1000),[])
+        self.assertEqual(self.book.renewal_candidates(self.url,time.time()+10),[])
+        self.assertEqual(len(self.book.renewal_candidates(self.url,time.time()+31)),1)
         self.book.renewal_finished(self.url,name,basis,error=OAuthError('connect failed'))
         self.assertEqual(len(self.book.renewal_candidates(self.url,time.time()+1000)),1)
 

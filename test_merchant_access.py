@@ -44,6 +44,7 @@ class AccessTests(unittest.TestCase):
                              ('GET', '/api/accounts/credential-ref'), ('GET', '/api/identity'),
                              ('PUT', '/api/config'), ('PUT', '/api/settings'),
                              ('POST', '/api/sync'), ('POST', '/api/oauth/result'),
+                             ('POST', '/api/accounts/refresh'),
                              ('POST', '/api/merchant-profile')]:
             with self.subTest(path=path):
                 self.assertEqual(self.request(method, path, json={}).status_code, 401)
@@ -58,7 +59,7 @@ class AccessTests(unittest.TestCase):
     def test_multiple_logins_are_scoped_and_logout_keeps_other_login_only(self):
         self.prepare()
         first = self.store.enrollment()['id']
-        login_fixture(self.app, self.browser, 'first')
+        first_session=login_fixture(self.app, self.browser, 'first')
         self.assertEqual(len(self.state()['remote']['pools']), 1)
         from hashlib import sha256
         secret = 'b' * 64
@@ -67,10 +68,10 @@ class AccessTests(unittest.TestCase):
         # A saved profile and an active login to another merchant are insufficient.
         self.assertFalse(self.state()['auth']['authorized'])
         self.assertEqual(self.request('GET', '/api/revenue').status_code, 401)
-        login_fixture(self.app, self.browser, 'second')
+        second_session=login_fixture(self.app, self.browser, 'second')
         self.assertIsNone(self.state()['remote'])
         self.assertEqual(len(self.state()['auth']['accounts']), 2)
-        selected = self.request('POST', '/account-api/select', json={'account_id': 'p_first'})
+        selected = self.request('POST', '/account-api/select', json={'account_id': first_session['account']['identity_id']})
         self.assertEqual(selected.status_code, 200)
         self.assertEqual(self.store.enrollment()['id'], first)
         self.assertEqual(len(self.state()['remote']['pools']), 1)
@@ -79,9 +80,9 @@ class AccessTests(unittest.TestCase):
         with patch.object(self.app.platform_client, 'request', side_effect=httpx.ReadTimeout('offline')):
             self.assertEqual(self.request('POST', '/account-api/logout', json={}).status_code, 400)
         self.assertIsNone(self.state()['remote'])
-        self.assertEqual([a['username'] for a in self.state()['auth']['accounts']], ['second'])
-        self.assertEqual(self.request('POST', '/account-api/select', json={'account_id': 'p_first'}).status_code, 401)
-        self.assertEqual(self.request('POST', '/account-api/select', json={'account_id': 'p_second'}).status_code, 200)
+        self.assertEqual(len(self.state()['auth']['accounts']),2)
+        self.assertEqual(self.request('POST','/account-api/select',json={'account_id':'p_first'}).status_code,400)
+        self.assertEqual(self.request('POST', '/account-api/select', json={'account_id': second_session['account']['identity_id']}).status_code, 200)
         self.assertEqual(self.store.enrollment()['id'], second)
         self.assertTrue(self.state()['auth']['authorized'])
         self.assertIsNone(self.state()['remote'])
@@ -90,18 +91,15 @@ class AccessTests(unittest.TestCase):
         self.prepare()
         session = login_fixture(self.app, self.browser)
         session['expires'] = 0
-        self.assertIsNone(self.state()['remote'])
-        self.assertEqual(self.request('GET', '/api/revenue').status_code, 401)
-        view = {'account': {'id':'p_pending','role':'merchant','username':'pending','name':'Pending'},
-                'applications':[{'kind':'merchant','status':'pending'}], 'merchant_credentials_available':False,
-                'csrf':'csrf'}
-        with patch.object(self.app.platform_client, 'request', return_value=(200, view, {'set-cookie':'teerouter_portal='+'B'*43})):
-            self.assertEqual(self.request('POST', '/account-api/login', json={}).status_code, 200)
-        value = self.state()
+        with patch.object(self.app.platform_client, 'request', side_effect=httpx.ConnectError('offline')):
+            self.assertIsNone(self.state()['remote'])
+            self.assertEqual(self.request('GET', '/api/revenue').status_code, 401)
+        session.update(expires=10**12,restored=False,checked=10**12,merchants=set())
+        value=self.state()
         self.assertTrue(value['auth']['authenticated'])
         self.assertFalse(value['auth']['authorized'])
         self.assertIsNone(value['remote'])
-        self.assertEqual(self.request('GET', '/api/accounts/credential-ref').status_code, 401)
+        self.assertEqual(self.request('GET','/api/accounts/credential-ref').status_code,401)
 
     def test_login_platform_setting_does_not_redirect_background_credentials(self):
         self.prepare()

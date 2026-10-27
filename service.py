@@ -13,21 +13,31 @@ import socket
 import sys
 import threading
 import time
+from remembered_login import SessionFile, BROWSER_LIFETIME as LIFETIME, RENEW_INTERVAL
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).parent
 
 class LocalSessions:
-    def __init__(self):
+    def __init__(self, directory=None):
         self.lock = threading.RLock()
-        self.sessions = {}
+        self.saved = SessionFile(directory, 'browser-sessions.dpapi') if directory else None
+        self.sessions = self.saved.read() if self.saved else {}
+        self.sessions = {k: v for k, v in self.sessions.items()
+                         if isinstance(v, dict) and v.get('id') == k and isinstance(v.get('csrf'), str)
+                         and isinstance(v.get('expires'), (int, float)) and v['expires'] > time.time()}
+
+    def persist(self):
+        if self.saved:
+            self.saved.write(self.sessions)
 
     def create(self):
         with self.lock:
             self.sessions={k:v for k,v in self.sessions.items() if v['expires']>time.time()}
             if len(self.sessions)>=64:self.sessions.pop(next(iter(self.sessions)))
             token=secrets.token_urlsafe(32)
-            self.sessions[token]={'id':token,'csrf':secrets.token_urlsafe(32),'expires':time.time()+12*3600}
+            self.sessions[token]={'id':token,'csrf':secrets.token_urlsafe(32),'expires':time.time()+LIFETIME}
+            self.persist()
             return token
 
     def session(self, header):
@@ -37,12 +47,15 @@ class LocalSessions:
         except (KeyError,ValueError): return None
         with self.lock:
             session=self.sessions.get(token)
+            if session and session['expires'] > time.time() and session['expires'] < time.time()+LIFETIME-RENEW_INTERVAL:
+                session['expires']=time.time()+LIFETIME
+                self.persist()
             return session.copy() if session and session['expires']>time.time() else None
 
 def handler(application, origins, auth=None):
     if isinstance(origins,str): origins={origins}
     origins={o.rstrip('/') for o in origins}
-    auth=auth or LocalSessions()
+    auth=auth or LocalSessions(application.store.root_directory)
     if any(urlsplit(o).hostname not in ('127.0.0.1','::1','localhost') for o in origins):
         raise ValueError('商户管理页面只允许本机访问')
     authorities={urlsplit(o).netloc:o for o in origins}
@@ -52,6 +65,7 @@ def handler(application, origins, auth=None):
         def log_message(self,*_): pass
         def respond(self,status,value,mime='application/json; charset=utf-8',headers=None):
             data=value if isinstance(value,bytes) else json.dumps(value,ensure_ascii=False).encode()
+            headers={**({'Set-Cookie':self.session_cookie} if getattr(self,'session_cookie',None) else {}),**(headers or {})}
             self.send_response(status)
             for key,value in {'Content-Type':mime,'Content-Length':str(len(data)),'Cache-Control':'no-store',
                     'X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
@@ -72,6 +86,9 @@ def handler(application, origins, auth=None):
                 return self.respond(403,{'error':'不允许跨站访问'})
             path=urlsplit(self.path).path
             session=auth.session(self.headers.get('Cookie'))
+            def session_cookie(token):
+                return f'tm_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={LIFETIME}' + ('; Secure' if origin.startswith('https:') else '')
+            self.session_cookie=session_cookie(session['id']) if session else None
             if self.command=='GET' and path=='/login':return self.respond(303,b'',headers={'Location':'/'})
             if self.command=='GET' and path in ('/account','/account/login','/account/register'):
                 suffix='' if path=='/account' else '/'+path.rsplit('/',1)[1]
@@ -80,7 +97,7 @@ def handler(application, origins, auth=None):
                 headers={}
                 if not session:
                     token=auth.create()
-                    cookie=f'tm_session={token}; HttpOnly; SameSite=Strict; Path=/' + ('; Secure' if origin.startswith('https:') else '')
+                    cookie=session_cookie(token)
                     headers['Set-Cookie']=cookie
                     session=auth.session(cookie)
                 data=(ROOT/'static/index.html').read_bytes().replace(b'CSRF_PLACEHOLDER',session['csrf'].encode())
@@ -247,8 +264,8 @@ class Runtime:
         lock=store=application=server=http_worker=worker=None
         try:
             lock=DataLock(args.data)
-            auth=LocalSessions()
             store=Store(args.data)
+            auth=LocalSessions(store.root_directory)
             application=Application(store)
             server_type=type('IPv6Server',(Server,),{'address_family':socket.AF_INET6}) if ':' in args.host else Server
             server=server_type((args.host,args.port),handler(application,args.origins,auth))

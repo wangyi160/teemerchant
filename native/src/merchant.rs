@@ -16,6 +16,8 @@ pub fn allowed(method: &str, path: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub endpoint: String,
+    #[serde(default)]
+    pub router_access: String,
     pub tdx_policy: Option<String>,
     pub snp_policy: Option<String>,
 }
@@ -49,6 +51,7 @@ impl Merchant {
             "HTTPS Router root required"
         );
         let mut trust = Trust::default();
+        trust.router_access = Zeroizing::new(config.router_access);
         let mut releases = 0;
         if let Some(path) = config.tdx_policy {
             #[cfg(feature = "tdx-verifier")]
@@ -95,6 +98,7 @@ impl Merchant {
             endpoint,
             trust: Trust {
                 allow_test_evidence,
+                router_access: Zeroizing::new("fixture-admission-only".into()),
                 ..Default::default()
             },
             session: None,
