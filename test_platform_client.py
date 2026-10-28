@@ -32,6 +32,9 @@ class ClientTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.store=Store(self.temp.name)
+        self.store.settings['merchant_id']='m_sig_'+'0'*64
+        self.store.accounts.identity=self.store.settings['merchant_id']
+        self.store.accounts.data['identity']=self.store.settings['merchant_id']
         self.store.settings.update(platform_url='https://platform.example',credentials_saved=True,owner_secret='PRIVATE_OWNER')
         self.store.save()
         self.app=Application(self.store)
@@ -121,7 +124,7 @@ class ClientTests(unittest.TestCase):
 
     def account_fixture(self, approved=True):
         secret = 'b' * 64
-        merchant_id = 'm_' + hashlib.sha256(secret.encode()).hexdigest()[:32]
+        merchant_id = self.app.platform_client.identities.for_account('https://platform.example', 'p_seller')['identity_id']
         return {'account': {'id': 'p_seller', 'role': 'merchant', 'username': 'seller', 'name': 'Seller'},
                 'applications': [{'kind': 'merchant', 'status': 'approved' if approved else 'pending',
                                   'subject': merchant_id if approved else 'p_seller'}],

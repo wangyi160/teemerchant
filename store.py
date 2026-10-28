@@ -45,6 +45,9 @@ def protector(directory):
 class Store:
     def __init__(self, directory, *, _profile=False):
         self.root_directory = Path(directory).resolve()
+        if not _profile:
+            from identity_unification import migrate
+            migrate(self.root_directory, protector)
         self.directory = self.root_directory
         self.protect = protector(self.directory)
         selection = self.root_directory / 'active-merchant.json'
@@ -74,12 +77,12 @@ class Store:
         self.revenue_index = RevenueIndex()
 
     def _profile_directory(self, identity):
-        if not isinstance(identity, str) or not re.fullmatch(r'm_[a-f0-9]{32}', identity):
+        if not isinstance(identity, str) or not re.fullmatch(r'm_sig_[a-f0-9]{64}', identity):
             raise ValueError('商户 ID 无效')
         legacy = self.root_directory / 'settings.dpapi'
         if legacy.exists():
             settings = json.loads(protector(self.root_directory)(legacy.read_bytes(), True))
-            if 'm_' + hashlib.sha256(settings['token'].encode()).hexdigest()[:32] == identity:
+            if settings.get('merchant_id') == identity:
                 return self.root_directory
         directory = (self.root_directory / 'merchants' / identity).resolve()
         if not directory.is_relative_to(self.root_directory):
@@ -98,7 +101,9 @@ class Store:
                 settings = json.loads(protector(path.parent)(path.read_bytes(), True))
                 if not settings.get('credentials_saved', bool(settings.get('token'))):
                     continue
-                identity = 'm_' + hashlib.sha256(settings['token'].encode()).hexdigest()[:32]
+                identity = settings.get('merchant_id', '')
+                if not identity:
+                    continue
                 if path.parent != self._profile_directory(identity):
                     raise ValueError('已保存的商户资料身份不一致')
                 account = settings.get('platform_identity', {})
@@ -188,7 +193,7 @@ class Store:
 
     def enrollment(self):
         digest = hashlib.sha256(self.settings['token'].encode()).hexdigest()
-        return {'id': 'm_' + digest[:32], 'credential_hash': digest}
+        return {'id': self.settings.get('merchant_id', ''), 'credential_hash': digest}
 
     def public(self):
         return {k: v for k, v in self.settings.items() if k not in ('token', 'owner_secret', 'router_access', 'default_multiplier_millionths')}
@@ -268,14 +273,13 @@ class Store:
     def import_credentials(self, body):
         if (not isinstance(body, dict) or set(body) != {'merchant_id', 'merchant_secret'}
                 or not all(isinstance(v, str) for v in body.values())
-                or not re.fullmatch(r'm_[a-f0-9]{32}', body['merchant_id'])
+                or not re.fullmatch(r'm_sig_[a-f0-9]{64}', body['merchant_id'])
                 or not re.fullmatch(r'[a-f0-9]{64}', body['merchant_secret'])):
             raise ValueError('请填写平台签发的 Merchant ID 和 Merchant Secret')
-        digest = hashlib.sha256(body['merchant_secret'].encode()).hexdigest()
-        if not secrets.compare_digest(body['merchant_id'], 'm_' + digest[:32]):
-            raise ValueError('Merchant ID 与 Merchant Secret 不匹配')
         with self.lock:
             same = secrets.compare_digest(self.settings['token'], body['merchant_secret'])
+            if self.credentials()['saved'] and ((body['merchant_id'] == self.enrollment()['id']) != same):
+                raise ValueError('Merchant ID and enrollment credential conflict')
             # Only the initial, unused placeholder identity can be replaced in
             # place. Saved merchants always keep their own encrypted files.
             if not same and (self.credentials()['saved'] or self.accounts.path.exists() or self.accounts.data['routers']
@@ -305,6 +309,7 @@ class Store:
                 return
             previous = self.settings.copy()
             self.settings['token'] = body['merchant_secret']
+            self.settings['merchant_id'] = body['merchant_id']
             if not same:
                 self.settings.pop('owner_secret', None)
                 self.settings.pop('platform_identity', None)

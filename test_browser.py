@@ -495,7 +495,7 @@ class BrowserTests(unittest.TestCase):
         browser=self.page.context.cookies()[0]['value']
         first=next(iter(self.app.platform_client.sessions.values()))['account']['identity_id']
         secret='c'*64
-        merchant_id='m_'+hashlib.sha256(secret.encode()).hexdigest()[:32]
+        merchant_id='m_sig_'+hashlib.sha256(secret.encode()).hexdigest()
         self.app._api('POST','/api/credentials',{'merchant_id':merchant_id,'merchant_secret':secret})
         second=login_fixture(self.app,browser,'second')['account']['identity_id']
         self.page.reload()

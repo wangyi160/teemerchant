@@ -31,7 +31,7 @@ class MerchantTests(unittest.TestCase):
         token=self.store.settings['token']
         self.assertNotIn(token.encode(),self.store.path.read_bytes())
         self.assertNotIn('token',self.store.public())
-        self.assertEqual(self.store.enrollment()['id'],'m_'+self.store.enrollment()['credential_hash'][:32])
+        self.assertEqual(self.store.enrollment()['id'],'')
         other=Store(self.tmp.name);self.assertEqual(other.settings['token'],token);other.db.close()
     def test_legacy_archive_remains_encrypted_and_replay_is_idempotent(self):
         t=Transport()

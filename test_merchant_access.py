@@ -15,6 +15,10 @@ class AccessTests(unittest.TestCase):
     open_page = HTTPTests.open_page
 
     def prepare(self):
+        self.store.settings['merchant_id']='m_sig_'+'0'*64
+        self.store.accounts.identity=self.store.settings['merchant_id']
+        self.store.accounts.data['identity']=self.store.settings['merchant_id']
+        self.store.save()
         self.app.accept(copy.deepcopy(FakeRouter(self.store).remote))
         self.headers = self.open_page()
         self.browser = self.client.cookies['tm_session']
@@ -63,7 +67,7 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(len(self.state()['remote']['pools']), 1)
         from hashlib import sha256
         secret = 'b' * 64
-        second = 'm_' + sha256(secret.encode()).hexdigest()[:32]
+        second = 'm_sig_' + sha256(secret.encode()).hexdigest()
         self.app._api('POST', '/api/credentials', {'merchant_id': second, 'merchant_secret': secret})
         # A saved profile and an active login to another merchant are insufficient.
         self.assertFalse(self.state()['auth']['authorized'])

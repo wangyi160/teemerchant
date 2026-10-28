@@ -16,7 +16,7 @@ from test_revenue import receipt
 
 def issued():
     secret = secrets.token_hex(32)
-    return {'merchant_id': 'm_' + hashlib.sha256(secret.encode()).hexdigest()[:32], 'merchant_secret': secret}
+    return {'merchant_id': 'm_sig_' + secrets.token_hex(32), 'merchant_secret': secret}
 
 
 class CredentialsTests(unittest.TestCase):
@@ -70,7 +70,9 @@ class CredentialsTests(unittest.TestCase):
     def test_bad_pair_and_old_password_endpoint_cannot_change_identity(self):
         original = self.store.enrollment()
         data = issued()
-        data['merchant_id'] = issued()['merchant_id']
+        self.store.import_credentials(data)
+        original = self.store.enrollment()
+        data['merchant_secret'] = issued()['merchant_secret']
         with self.assertRaises(ValueError): self.app.api('POST', '/api/credentials', data)
         with self.assertRaises(ValueError): self.app.api('POST', '/api/credentials', {'username':'seller', 'password':'password'})
         with self.assertRaises(ValueError): self.app.api('POST', '/api/portal/bind', {})
