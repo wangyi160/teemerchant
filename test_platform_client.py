@@ -31,7 +31,7 @@ def login_fixture(app, browser, username='seller'):
         if url.endswith('/identity/challenge'):
             return 200,{'challenge':{'id':'ic_fixture','nonce':'fixture','expires':int(time.time())+300,
                 'origin':app.platform_client.base(browser),'purpose':data['purpose'],'role':'merchant','public_key':local['public_key']}},{}
-        return 200,dict(view,csrf='fixture-csrf'),{'set-cookie':'teerouter_portal='+'A'*43}
+        return 200,dict(view,csrf='fixture-csrf'),{'set-cookie':'teerouter_portal='+hashlib.sha256(local['identity_id'].encode()).hexdigest()[:43]}
     with patch.object(app.platform_client,'request',side_effect=request):
         result=app.platform_client.call(browser,'account','POST','login',{'account_id':local['identity_id']},'',identity)
     assert result.status==200 and json.loads(result.data)['local_connected']

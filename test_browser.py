@@ -121,7 +121,7 @@ class BrowserTests(unittest.TestCase):
         # sent to the real management platform during isolated browser tests.
         platform_request=self.app.platform_client.request
         def request(client,method,url,headers,data=None):
-            if url=='https://teerouter.org/portal/api/me':
+            if url in ('https://teerouter.org/portal/api/me','https://platform.example/portal/api/me'):
                 session=next((s for s in self.app.platform_client.sessions.values()
                               if s.get('cookie')==headers.get('Cookie')),None)
                 if not session:return 401,{'error':'login_required'},{}
@@ -495,7 +495,7 @@ class BrowserTests(unittest.TestCase):
         browser=self.page.context.cookies()[0]['value']
         first=next(iter(self.app.platform_client.sessions.values()))['account']['identity_id']
         secret='c'*64
-        merchant_id='m_sig_'+hashlib.sha256(secret.encode()).hexdigest()
+        merchant_id=self.app.platform_client.identities.for_account(self.app.platform_client.base(browser),'p_second')['identity_id']
         self.app._api('POST','/api/credentials',{'merchant_id':merchant_id,'merchant_secret':secret})
         second=login_fixture(self.app,browser,'second')['account']['identity_id']
         self.page.reload()
@@ -534,13 +534,14 @@ class BrowserTests(unittest.TestCase):
                 Ed25519PublicKey.from_public_bytes(bytes.fromhex(public)).verify(bytes.fromhex(data['signature']),message)
                 self.assertNotIn('seed',data);self.assertNotIn('password',data)
                 iid='m_sig_'+hashlib.sha256(bytes.fromhex(public)).hexdigest()
-                account={'id':'p_new','identity_id':iid,'public_key':public,'role':'merchant','username':iid,'name':iid}
+                account={'id':iid,'identity_id':iid,'public_key':public,'role':'merchant','username':iid,'name':iid}
                 return 201,{'account':account,'applications':[],'merchant_credentials_available':False,'csrf':'new-csrf'},{'set-cookie':'teerouter_portal='+'B'*43}
             return original(client,method,url,headers,data)
         with patch.object(self.app.platform_client,'request',side_effect=request):
             self.page.locator('aside [data-id=connection]').click()
+            previous=self.store.enrollment()['id']
             self.page.get_by_role('button',name='注册新 ID',exact=True).click()
-            self.page.wait_for_function('() => state.auth?.account?.id === "p_new"')
+            self.page.wait_for_function('(previous) => state.auth?.account?.id && state.auth.account.id !== previous && state.auth.account.id === state.auth.account.identity_id',arg=previous)
             expect(self.page.locator('#merchant-identity')).to_have_value(re.compile('m_sig_[a-f0-9]{64}'))
             expect(self.page.locator('#merchant-profile option')).to_have_count(2)
             expect(self.page.locator('input[type=password]')).to_have_count(0)
@@ -577,6 +578,7 @@ class BrowserTests(unittest.TestCase):
                 return index.report(path.partition('?')[2])
             return next(row for row in (a,b,c) if str(row['seq'])==path.split('/')[-1])
         self.app.platform_data.fetch=read
+        self.page.reload()
         self.page.locator('aside [data-id=revenue]').click()
         expect(self.page.get_by_role('heading', name='收入', exact=True)).to_be_visible()
         cards=self.page.locator('.revenue-cards .card')
