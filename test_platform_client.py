@@ -13,7 +13,17 @@ def login_fixture(app, browser, username='seller'):
     identity = app.store.enrollment()['id']
     app.store.settings['credentials_saved'] = True
     local=app.platform_client.identities.for_account(app.platform_client.base(browser),'p_'+username)
-    account={'id':'p_'+username,'role':'merchant','username':username,'name':username,
+    if identity != local['identity_id']:
+        from identity_unification import remap
+        app.store.settings['merchant_id']=local['identity_id']
+        app.store.accounts.data=remap(app.store.accounts.data,{identity:local['identity_id']})
+        app.store.accounts.identity=local['identity_id']
+        app.store.accounts._write(app.store.accounts.data)
+        if app.remote: app.remote=remap(app.remote,{identity:local['identity_id']})
+        if isinstance(getattr(app.transport,'remote',None),dict): app.transport.remote=remap(app.transport.remote,{identity:local['identity_id']})
+        app.store.save()
+        identity=local['identity_id']
+    account={'id':local['identity_id'],'role':'merchant','username':username,'name':username,
              'identity_id':local['identity_id'],'public_key':local['public_key']}
     view={'account':account,'merchant_credentials_available':True,
           'applications':[{'kind':'merchant','status':'approved','subject':identity}]}
@@ -29,6 +39,17 @@ def login_fixture(app, browser, username='seller'):
 
 
 class ClientTests(unittest.TestCase):
+    def test_platform_cannot_bind_own_signer_to_another_merchant_vault(self):
+        view, credentials = self.account_fixture()
+        foreign = 'm_sig_' + 'f' * 64
+        view['applications'][0]['subject'] = foreign
+        with self.mock(lambda request: httpx.Response(200, json={**view, 'csrf': 'csrf'},
+                headers={'set-cookie': 'teerouter_portal=' + 'A' * 43})):
+            result = self.call('account', 'POST', 'login')
+        self.assertFalse(json.loads(result.data)['local_connected'])
+        self.assertEqual(self.store.enrollment()['id'], self.identity)
+        self.assertFalse(self.app.platform_client.current('browser')['merchants'])
+
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.store=Store(self.temp.name)
@@ -49,7 +70,7 @@ class ClientTests(unittest.TestCase):
         if mode=='account' and path=='login' and 'account_id' not in data:
             local=self.app.platform_client.identities.for_account(self.app.platform_client.base('browser'),'p_seller')
             data={'account_id':local['identity_id']}
-        return self.app.platform_client.call('browser',mode,method,path,data,operation,self.identity)
+        return self.app.platform_client.call('browser',mode,method,path,data,operation,self.store.enrollment()['id'])
 
     def mock(self,handler):
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -69,7 +90,7 @@ class ClientTests(unittest.TestCase):
             response=handler(request)
             value=response.json()
             if challenge and isinstance(value.get('account'),dict):
-                value['account'].update(public_key=challenge['public_key'],identity_id='m_sig_'+hashlib.sha256(bytes.fromhex(challenge['public_key'])).hexdigest())
+                value['account'].update(id='m_sig_'+hashlib.sha256(bytes.fromhex(challenge['public_key'])).hexdigest(),public_key=challenge['public_key'],identity_id='m_sig_'+hashlib.sha256(bytes.fromhex(challenge['public_key'])).hexdigest())
                 return httpx.Response(response.status_code,json=value,headers=response.headers)
             return response
         return patch('platform_client.httpx.Client',side_effect=lambda **kw:self.client(**kw,transport=httpx.MockTransport(signed)))
@@ -125,7 +146,8 @@ class ClientTests(unittest.TestCase):
     def account_fixture(self, approved=True):
         secret = 'b' * 64
         merchant_id = self.app.platform_client.identities.for_account('https://platform.example', 'p_seller')['identity_id']
-        return {'account': {'id': 'p_seller', 'role': 'merchant', 'username': 'seller', 'name': 'Seller'},
+        local=self.app.platform_client.identities.load('https://platform.example',merchant_id)
+        return {'account': {'id': merchant_id, 'identity_id':merchant_id,'public_key':local['public_key'], 'role': 'merchant', 'username': 'seller', 'name': 'Seller'},
                 'applications': [{'kind': 'merchant', 'status': 'approved' if approved else 'pending',
                                   'subject': merchant_id if approved else 'p_seller'}],
                 'merchant': {'id': merchant_id} if approved else None,
@@ -185,7 +207,8 @@ class ClientTests(unittest.TestCase):
                     raise httpx.ReadTimeout('delivery interrupted')
                 return httpx.Response(200, json=credentials)
             return httpx.Response(200, json=current)
-        with self.mock(fetch):
+        local=self.app.platform_client.identities.load('https://platform.example',credentials['merchant_id'])
+        with self.mock(fetch), patch.object(self.app.platform_client.identities,'create',return_value=local):
             response = self.call('account', 'POST', 'register', {'role': 'merchant'})
             self.assertFalse(json.loads(response.data)['local_connected'])
             self.assertEqual(self.store.enrollment()['id'], self.identity)
@@ -200,17 +223,18 @@ class ClientTests(unittest.TestCase):
 
     def test_existing_profile_uses_verified_username_and_legacy_name_is_not_a_username(self):
         account = self.account_fixture()[0]['account']
+        account.update(id=self.identity,identity_id=self.identity)
         profile = {'account': account, 'merchant': {'id': self.identity}, 'legacy': False}
         def fetch(request):
             self.assertEqual(request.url.path, '/merchant-api/v1/profile')
             self.assertNotIn('PRIVATE_OWNER', str(request.headers))
             return httpx.Response(200, json=profile)
         with self.mock(fetch):
-            self.assertEqual(self.app.api('GET', '/api/identity', {})['username'], 'seller')
-            self.assertEqual(self.app.api('GET', '/api/state', {})['identity']['username'], 'seller')
+            self.assertEqual(self.app.api('GET', '/api/identity', {})['username'], self.identity)
+            self.assertEqual(self.app.api('GET', '/api/state', {})['identity']['username'], self.identity)
             profile['merchant']['id'] = 'm_' + '0' * 32
             with self.assertRaises(ValueError): self.app.api('GET', '/api/identity', {})
-            self.assertEqual(self.store.platform_identity()['username'], 'seller')
+            self.assertEqual(self.store.platform_identity()['username'], self.identity)
             profile['merchant']['id'] = self.identity
             profile['legacy'] = True
             self.assertEqual(self.app.api('GET', '/api/identity', {})['username'], '')

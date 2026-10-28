@@ -57,17 +57,17 @@ class AccessTests(unittest.TestCase):
         with patch.object(self.app.platform_client, 'request', side_effect=AssertionError('No remote request')):
             for method, path in [('GET', 'finance'), ('GET', 'receipts/mine'), ('POST', 'withdrawals')]:
                 result = self.client.request(method, '/account-api/' + path,
-                    headers={**self.headers, 'X-Account-Mode': 'merchant'}, json={})
+                    headers={**self.headers, 'X-Account-Mode': 'merchant','X-Merchant-ID':self.store.enrollment()['id']}, json={})
                 self.assertEqual(result.status_code, 401)
 
     def test_multiple_logins_are_scoped_and_logout_keeps_other_login_only(self):
         self.prepare()
-        first = self.store.enrollment()['id']
         first_session=login_fixture(self.app, self.browser, 'first')
+        first = self.store.enrollment()['id']
         self.assertEqual(len(self.state()['remote']['pools']), 1)
         from hashlib import sha256
         secret = 'b' * 64
-        second = 'm_sig_' + sha256(secret.encode()).hexdigest()
+        second = self.app.platform_client.identities.for_account(self.app.platform_client.base(self.browser),'p_second')['identity_id']
         self.app._api('POST', '/api/credentials', {'merchant_id': second, 'merchant_secret': secret})
         # A saved profile and an active login to another merchant are insufficient.
         self.assertFalse(self.state()['auth']['authorized'])

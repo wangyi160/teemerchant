@@ -57,7 +57,9 @@ class Identities:
 
     def bind(self, base, identity, account_id):
         value = self.load(base, identity)
-        if value.get('account_id') not in (None, account_id):
+        if account_id != identity:
+            raise ValueError('账户 ID 必须与本地公钥身份一致')
+        if value.get('account_id') not in (None, account_id) and not re.fullmatch(r'p_[a-zA-Z0-9_-]+', value['account_id']):
             raise ValueError('身份已经绑定其他账户')
         value['account_id'] = account_id
         self.file(identity).write(value)

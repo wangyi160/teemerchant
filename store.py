@@ -130,6 +130,8 @@ class Store:
                     or not isinstance(account.get('name'), str)
                     or (not legacy and not re.fullmatch(r'[a-zA-Z0-9_.-]{3,128}', account.get('username', '')))):
                 raise ValueError('平台返回的商户身份不匹配')
+            if not legacy and (account.get('id') != merchant_id or account.get('identity_id') != merchant_id):
+                raise ValueError('平台返回的商户公钥身份不匹配')
             identity = {'platform_url': base, 'account_id': account['id'],
                         'username': '' if legacy else account.get('identity_id') or account['username'],
                         'identity_id': account.get('identity_id'),
@@ -287,6 +289,9 @@ class Store:
                              or self.db.execute('SELECT 1 FROM records LIMIT 1').fetchone()):
                 directory = self._profile_directory(body['merchant_id'])
                 if (directory / 'settings.dpapi').exists():
+                    saved = json.loads(protector(directory)((directory / 'settings.dpapi').read_bytes(), True))
+                    if not secrets.compare_digest(saved['token'], body['merchant_secret']):
+                        raise ValueError('Merchant ID and enrollment credential conflict')
                     self.switch_profile({'merchant_id': body['merchant_id']})
                     return
                 directory.parent.mkdir(parents=True, exist_ok=True)

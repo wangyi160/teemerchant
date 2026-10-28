@@ -20,6 +20,16 @@ def issued():
 
 
 class CredentialsTests(unittest.TestCase):
+    def test_existing_other_profile_requires_its_exact_credential(self):
+        first, second = issued(), issued()
+        self.store.import_credentials(first)
+        self.store.import_credentials(second)
+        self.store.switch_profile({'merchant_id': first['merchant_id']})
+        with self.assertRaisesRegex(ValueError, 'credential conflict'):
+            self.store.import_credentials({**second, 'merchant_secret': '0' * 64})
+        self.assertEqual(self.store.enrollment()['id'], first['merchant_id'])
+        self.assertEqual(self.store.settings['token'], first['merchant_secret'])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(self.tmp.name)

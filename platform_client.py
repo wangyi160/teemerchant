@@ -207,7 +207,8 @@ class PlatformClient:
             if status >= 300:
                 return Reply(status, json.dumps(value, ensure_ascii=False).encode())
             account = value.get('account', {})
-            if account.get('role') != 'merchant' or account.get('identity_id') != local['identity_id'] or account.get('public_key') != local['public_key']:
+            if (account.get('role') != 'merchant' or account.get('id') != local['identity_id']
+                    or account.get('identity_id') != local['identity_id'] or account.get('public_key') != local['public_key']):
                 raise RuntimeError('平台返回的身份与本地密钥不匹配')
             cookie = response_headers.get('set-cookie', '').split(';')[0]
             if not re.fullmatch(r'teerouter_portal=[A-Za-z0-9_-]{40,128}', cookie) or not value.get('csrf'):
@@ -276,6 +277,8 @@ class PlatformClient:
         approved = {a.get('subject') for a in value.get('applications', [])
                     if a.get('kind') == 'merchant' and a.get('status') == 'approved'
                     and isinstance(a.get('subject'), str)}
+        if account.get('id') != account.get('identity_id') or (approved and approved != {account['id']}):
+            raise RuntimeError('平台返回的商户公钥身份不匹配')
         session['account'] = {k: account.get(k) for k in ('id', 'role', 'username', 'name', 'identity_id', 'public_key')}
         session['merchants'] = approved
         if not value.get('merchant_credentials_available'):

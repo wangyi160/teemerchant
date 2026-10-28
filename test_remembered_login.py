@@ -84,7 +84,7 @@ class RememberedLoginTests(unittest.TestCase):
         self.restart()
         client = self.app.platform_client
         self.assertIsNone(client.current(self.browser))
-        self.assertEqual([key[2] for key in client.accounts], ['p_seller'])
+        self.assertEqual([key[2] for key in client.accounts], [self.view['account']['id']])
 
     def test_idle_expiration_and_active_renewal(self):
         future = time.time() + 2 * 24 * 3600
