@@ -13,7 +13,7 @@ from credential_protocol import router_update
 class Router:
     def __init__(self, store):
         self.store, self.writes, self.failure = store, [], False
-        self.remote = {'merchant': {'id': store.enrollment()['id'], 'name': 'Fixture', 'allow_test': False},
+        self.remote = {'merchant': {'id': store.enrollment()['id'], 'name': 'Fixture'},
             'settings': {'revision': 1, 'max_concurrent': 16, 'rpm': 0, 'tpm': 0,
                          'customer_defaults': {'enabled': True, 'models': [], 'max_concurrent': 4, 'rpm': 0, 'tpm': 0},
                          'customers': [], 'pool_pricing': []}, 'pools': [], 'accounts': {'data': []}, 'catalog': {'data': []}}

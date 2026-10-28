@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from credential_protocol import access_only, normalized, fingerprint
+from official_accounts import PROVIDERS, retire_unsupported
 
 
 def config_from(remote):
@@ -47,7 +48,7 @@ def current_pool_models(remote, pool, now):
         providers = {d['provider'] for d in pool['deployments'] if d.get('enabled', True)}
         scope_ok = ((status.get('scope') == 'pool' and status.get('source_deployment') in enabled)
                     or (status.get('scope') == 'provider' and len(providers) == 1
-                        and status.get('provider') in providers - {'workbuddy'}))
+                        and status.get('provider') in providers))
         if (not scope_ok or status.get('complete_catalog') is not True
                 or status.get('refreshing') is not False or 'last_error' not in status
                 or status['last_error'] is not None
@@ -72,6 +73,13 @@ class AccountBook:
             'version': 1, 'identity': identity, 'routers': {}}
         if self.data.get('version') != 1 or self.data.get('identity') != identity:
             raise RuntimeError('本地账号库身份或格式不匹配')
+        migrated = retire_unsupported(self.data)
+        if migrated != self.data:
+            backup = directory / 'accounts-before-official-only.dpapi'
+            if self.path.exists() and not backup.exists():
+                backup.write_bytes(self.path.read_bytes())
+                if os.name != 'nt': backup.chmod(0o600)
+            self._write(migrated)
 
     def _write(self, data):
         temporary = self.path.with_suffix('.tmp')
@@ -164,12 +172,17 @@ class AccountBook:
         def valid_name(value):
             return isinstance(value, str) and re.fullmatch(r'[a-zA-Z0-9_.-]{1,128}', value)
         ids, names = set(), set()
+        for account in body.get('accounts', {}).values():
+            if isinstance(account, dict) and 'provider' in account and account['provider'] not in PROVIDERS:
+                raise ValueError('Unsupported account provider')
         for pool in body['pools']:
             if not isinstance(pool, dict) or not valid_name(pool.get('name')) or not isinstance(pool.get('deployments'), list):
                 raise ValueError('账号池格式无效')
             if pool['name'] in names:
                 raise ValueError('账号池名称重复')
             names.add(pool['name'])
+            if pool.get('provider') is not None and pool['provider'] not in PROVIDERS:
+                raise ValueError('Unsupported pool provider')
             allowed = pool.get('allowed_models')
             if allowed is not None and (not isinstance(allowed, list) or len(allowed) > 4096
                     or any(not isinstance(model, str) or not re.fullmatch(r'[a-zA-Z0-9._:/-]{1,256}', model)
@@ -178,7 +191,7 @@ class AccountBook:
                 raise ValueError('对外模型列表必须是有效且不重复的模型 ID')
             for account in pool['deployments']:
                 if (not isinstance(account, dict) or not valid_name(account.get('id'))
-                        or account['id'] in ids or account.get('provider') not in ('openai','anthropic','xai','workbuddy')):
+                        or account['id'] in ids or account.get('provider') not in PROVIDERS):
                     raise ValueError('账号格式无效或账号 ID 重复')
                 ids.add(account['id'])
         for field in ('accounts', 'secrets'):
@@ -357,7 +370,7 @@ class AccountBook:
     @staticmethod
     def can_refresh(account):
         try:
-            return bool(account['oauth_account'] and account['provider'] != 'workbuddy'
+            return bool(account['oauth_account']
                         and normalized(account['credential']).get('refresh_token'))
         except (ValueError, TypeError, AttributeError):
             return False
@@ -457,7 +470,7 @@ class AccountBook:
             result = []
             for name in refs:
                 account = book.get('accounts', {}).get(name)
-                if name in paused or not account or not account.get('enabled', True) or account.get('provider') == 'workbuddy': continue
+                if name in paused or not account or not account.get('enabled', True): continue
                 try:
                     credential = normalized(account.get('credential', {}))
                     if not credential.get('refresh_token'): continue
@@ -530,7 +543,7 @@ class AccountBook:
             updates={}
             for name,account in book.get('accounts',{}).items():
                 status=statuses.get(name)
-                if not status or name in paused or name not in enabled_refs or not account.get('enabled',True) or account.get('provider')=='workbuddy': continue
+                if not status or name in paused or name not in enabled_refs or not account.get('enabled',True): continue
                 try: credential=access_only(account['credential'])
                 except (ValueError, TypeError, AttributeError): continue
                 if pending:
@@ -687,7 +700,7 @@ class AccountBook:
             statuses = {a['name']: a for a in book['remote'].get('accounts', {}).get('data', [])}
             for name, account in self._sync_accounts(book).items():
                 ref = account['oauth_account']
-                if not ref or account['provider'] == 'workbuddy':
+                if not ref:
                     continue
                 receipt = book.get('token_sync', {}).get(ref, {})
                 try: digest = fingerprint(account['credential'])
@@ -709,7 +722,7 @@ class AccountBook:
         proxy = account.get('proxy', '') if d.get('oauth_account') else d.get('proxy', '')
         if proxy == '[redacted]':
             proxy = ''
-        kind = 'oauth' if d.get('oauth_account') and d['provider'] != 'workbuddy' else 'api'
+        kind = 'oauth' if d.get('oauth_account') else 'api'
         if kind == 'api' and isinstance(credential, dict):
             credential = credential.get('api_key')
         raw = (json.dumps({'provider': d['provider'], 'credential': credential}, ensure_ascii=False, indent=2)

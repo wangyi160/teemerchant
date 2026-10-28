@@ -59,7 +59,7 @@ def router_update(update):
         names = {pool['name'] for pool in result['pools']}
         result['pool_pricing'] = [price for price in result.get('pool_pricing', []) if price['pool'] in names]
     for account in result.get('accounts', {}).values():
-        if 'credential' in account and account.get('provider') != 'workbuddy' and 'api_key' not in account['credential']:
+        if 'credential' in account and 'api_key' not in account['credential']:
             account['credential'] = access_only(account['credential'])
     # Renewal settings from older releases now belong to the merchant only.
     for profile in result.get('compatibility', {}).values():

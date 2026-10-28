@@ -18,7 +18,7 @@ def router_charge(event):
         return validate(event, router_charge)
     if not isinstance(result, dict) or not isinstance(quote, dict):
         return None
-    calculators = {'openai': 'chatgpt_v1', 'anthropic': 'claude_v1', 'xai': 'grok_v1', 'workbuddy': 'workbuddy_v1'}
+    calculators = {'openai': 'chatgpt_v1', 'anthropic': 'claude_v1', 'xai': 'grok_v1'}
     if (type(result.get('version')) is not int or result['version'] != 1 or result.get('state') != 'calculated'
             or result.get('provider') != event.get('provider')
             or result.get('calculator') != calculators.get(event.get('provider'))

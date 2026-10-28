@@ -19,7 +19,7 @@ function poolForm(editName = '') {
   const existing = snapshot.pools.find(p => p.name === editName);
   if (editName && !existing) throw Error('请刷新账号池后重试');
   const rate = snapshot.settings.pool_pricing?.find(p => p.pool === editName);
-  const providers = ['openai','anthropic','xai',...(snapshot.merchant.allow_test ? ['workbuddy'] : [])];
+  const providers = ['openai','anthropic','xai'];
   form(existing ? '编辑账号池' : '添加账号池',
     `<div class="grid">`+
     field('账号池名称（路由标识）','name',existing?.name || '','text',`required maxlength="80" pattern="[a-zA-Z0-9_.-]+" ${existing?'readonly':''}`)+
@@ -76,7 +76,7 @@ function accountState(pool, deployment) {
 }
 
 function tokenSyncTime(deployment) {
-  if (!deployment.oauth_account || deployment.provider === 'workbuddy') return '—';
+  if (!deployment.oauth_account) return '—';
   const sync = remote().access_token_sync?.[deployment.id];
   if (!sync?.last_success_at) return '<span class="muted">尚无记录</span>';
   const date = new Date(sync.last_success_at * 1000);
@@ -130,7 +130,7 @@ function accountsView() {
     const sync = remote().account_sync?.[d.id];
     const canRefresh = accountEnabled(d) && (remote().account_can_refresh?.[d.id] || ['paused','retry'].includes(sync?.state));
     return `<tr><td><strong>${esc(d.id)}</strong><small>${esc(p.name)}</small></td>
-      <td>${esc(d.provider)}<small>${d.oauth_account && d.provider !== 'workbuddy' ? 'OAuth' : 'API key'}</small></td>
+      <td>${esc(d.provider)}<small>${d.oauth_account ? 'OAuth' : 'API key'}</small></td>
       <td><span class="${cls}">${status}</span>${accountRecoveryDetail(sync)}</td>
       <td data-token-sync="${esc(d.id)}">${tokenSyncTime(d)}</td><td>${d.max_concurrent} / ${d.rpm || '不限'}</td>
       <td class="row-actions">${canRefresh?btn('手动刷新','refresh-account',d.id):''} ${accountErrorRows(d.id).length?btn('错误记录','account-errors',d.id):''} ${btn('编辑','edit-account',d.id)} ${window.teemerchant?.oauth && d.oauth_account && ['openai','anthropic','xai'].includes(d.provider)?btn('重新授权','oauth-renew',d.id):''} ${btn(accountEnabled(d)?'停用':'启用','toggle-account',d.id)} ${btn('删除','delete-account',d.id)}</td></tr>`;
@@ -285,7 +285,7 @@ async function accountForm(editId = '', initialMode = '') {
   if (state.enrollment.id !== identity || state.settings.router !== router) throw Error('商户连接已变化，请重新打开');
   if (local && local.local_revision !== snapshot.local_revision) throw Error('本地配置已变更，请刷新后再编辑');
   const available = snapshot.pools.filter(p => !account || p.provider === account.provider);
-  const kind = account?.oauth_account && account.provider !== 'workbuddy' ? 'oauth' : 'api';
+  const kind = account?.oauth_account ? 'oauth' : 'api';
   const originalCredential = local?.credential_text ? (kind === 'api' ? JSON.stringify({provider:account.provider,credential:{api_key:local.credential_text}},null,2) : local.credential_text) : '';
   const originalProxy = local?.proxy || '';
   const canAuthorize = !!window.teemerchant?.oauth && ['openai','anthropic','xai'].includes((originalPool || creationPool).provider) && (!account || kind === 'oauth');
@@ -471,7 +471,7 @@ function batchAccountForm() {
   $('#import-example').onclick = () => {
     const target = snapshot.pools.find(p=>p.name===formEl.elements.pool.value);
     const data=[1,2].map(n=>({id:`account-00${n}`,pool:target.name,
-      proxy:target.provider==='workbuddy'?'direct://':{scheme:'socks5h',host:`proxy-${n}.example`,port:1080,
+      proxy:{scheme:'socks5h',host:`proxy-${n}.example`,port:1080,
         username:`REPLACE_PROXY_USER_${n}`,password:`REPLACE_PROXY_PASSWORD_${n}`},
       api_key:`REPLACE_API_KEY_${n}`}));
     if (target.provider === 'xai') {

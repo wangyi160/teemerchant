@@ -13,7 +13,6 @@ const AccountConfig = (() => {
     return value;
   }
   function proxy(value, provider) {
-    if (provider === 'workbuddy' && value === 'direct://') return value;
     try {
       if (object(value)) {
         const fields = ['scheme','host','port','username','password'];
@@ -35,7 +34,7 @@ const AccountConfig = (() => {
       if (!['http:', 'https:', 'socks5h:'].includes(url.protocol) || !url.hostname || url.hash || url.search || !['','/'].includes(url.pathname) || url.port === '0')
         throw Error();
       return value;
-    } catch { throw Error('proxy 格式无效：支持 http://、https://、socks5h://，以及 TLS + TCP/XHTTP 的 vless:// 链接；VLESS 须包含 UUID、端口和 security=tls，不支持的参数会被拒绝。仅 Workbuddy 可用 direct://'); }
+    } catch { throw Error('proxy 格式无效：支持 http://、https://、socks5h://，以及 TLS + TCP/XHTTP 的 vless:// 链接；VLESS 须包含 UUID、端口和 security=tls，不支持的参数会被拒绝。不支持 direct://'); }
   }
   function vless(url, value) {
     const authority = (value, port) => {
@@ -64,7 +63,6 @@ const AccountConfig = (() => {
         (network === 'tcp' && ['host','path','mode'].some(k => fields.has(k)))) throw Error();
   }
   function proxyLabel(value) {
-    if (value === 'direct://') return value;
     const url = new URL(value);
     return `${url.protocol}//${url.username || url.password ? '***:***@' : ''}${url.host}`;
   }
@@ -150,8 +148,7 @@ const AccountConfig = (() => {
     const existing = config.pools.find(p => p.name === (editName || poolName));
     if (editName && (!existing || poolName !== editName)) throw Error('账号池标识不可变更，请刷新后重试');
     if (!editName && existing) throw Error('账号池名称已存在');
-    if (!['openai','anthropic','xai','workbuddy'].includes(entry.provider) ||
-        (entry.provider === 'workbuddy' && !remote.merchant.allow_test))
+    if (!['openai','anthropic','xai'].includes(entry.provider))
       throw Error('该服务未获授权或不受支持');
     if (existing && existing.provider !== entry.provider) throw Error('账号池服务类型不可变更');
     const multiplier = integer(entry.multiplier_millionths, '账号池倍率', 0, 1e15);
@@ -227,10 +224,10 @@ const AccountConfig = (() => {
         const provider = pool.provider;
         if (entry.provider !== undefined && entry.provider !== provider)
           throw Error('账号池的服务类型不匹配');
-        if (!['openai','anthropic','xai','workbuddy'].includes(provider) || (provider === 'workbuddy' && !remote.merchant.allow_test))
+        if (!['openai','anthropic','xai'].includes(provider))
           throw Error('该服务未获授权或不受支持');
         if (old && provider !== old.provider) throw Error('编辑时不可变更服务类型');
-        const oldKind = old?.oauth_account && provider !== 'workbuddy' ? 'oauth' : 'api';
+        const oldKind = old?.oauth_account ? 'oauth' : 'api';
         const kind = entry.kind ?? (old ? oldKind : (entry.api_key !== undefined ? 'api' : 'oauth'));
         if (!['api','oauth'].includes(kind) || (old && kind !== oldKind))
           throw Error('凭证类型无效或与原账号不一致');
@@ -256,25 +253,15 @@ const AccountConfig = (() => {
             if (typeof credential !== 'string' || !credential.length || credential.length > 65536 || /[\r\n]/.test(credential))
               throw Error('API key 不能为空或包含换行');
           }
-          if (provider === 'workbuddy' && old?.oauth_account) {
-            // Migrated Workbuddy keys live in account storage but remain API keys.
-            const patch = {provider};
-            if (changed) patch.credential = {api_key:credential};
-            if (network) patch.proxy = network;
-            const stored = (remote.accounts?.data || []).find(a => a.name === ref);
-            if (d.enabled && stored?.enabled === false) patch.enabled = true;
-            if (changed || network || patch.enabled) config.accounts[ref] = patch;
-          } else {
-            d.api_key_ref = ref;
-            if (changed) config.secrets[ref] = credential;
-            if (network) d.proxy = network;
-          }
+          d.api_key_ref = ref;
+          if (changed) config.secrets[ref] = credential;
+          if (network) d.proxy = network;
         } else {
           d.oauth_account = ref;
           const patch = {provider};
           if (changed) {
             if (!object(credential) || !Object.keys(credential).length) throw Error('credential 须为非空对象');
-            const tokens = provider === 'workbuddy' ? [credential.api_key] : provider === 'anthropic' && credential.claudeAiOauth ?
+            const tokens = provider === 'anthropic' && credential.claudeAiOauth ?
               [credential.claudeAiOauth.accessToken] : [credential.access_token, credential.refresh_token];
             if (!tokens.some(t => typeof t === 'string' && t.length > 0)) throw Error('OAuth 凭证缺少访问令牌或刷新令牌');
             if (tokens.some(t => t !== undefined && (typeof t !== 'string' || t.length > 65536 || /[\r\n]/.test(t))))

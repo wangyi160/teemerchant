@@ -97,8 +97,6 @@ def sync_error(error):
 
 def verify(account):
     provider = account['provider']
-    if provider == 'workbuddy':
-        return  # Its custom endpoint is tested through Router by the existing test button.
     try:
         credential = (access_only(account['credential']) if account.get('oauth_account') else
                       {'access_token': account['credential'].get('api_key')})

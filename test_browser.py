@@ -30,7 +30,7 @@ class FakeRouter:
         self.reject = False
         self.probes = []
         self.probe_result = {'ok':True,'model':'fixture-text','latency_ms':12}
-        self.remote = {'merchant': {'id': store.enrollment()['id'], 'name': 'Example merchant', 'allow_test': True,
+        self.remote = {'merchant': {'id': store.enrollment()['id'], 'name': 'Example merchant',
                                    'max_concurrent': 16, 'rpm': 0, 'tpm': 0},
             'settings': {'revision': 7, 'max_concurrent': 16, 'rpm': 0, 'tpm': 0, 'customers': [],
                          'customer_defaults': {'enabled': True, 'models': [], 'max_concurrent': 4, 'rpm': 0, 'tpm': 0},

@@ -123,7 +123,7 @@ test('duplicate pools, invalid prices, unauthorized providers and edits to stabl
   assert.throws(()=>pool(source,{...valid,name:'existing',provider:'anthropic'},'existing'),/服务类型不可变更/);
   assert.deepEqual(source,before);
   source.merchant.allow_test=true;
-  assert.equal(pool(source,{...valid,provider:'workbuddy'}).pools.at(-1).provider,'workbuddy');
+  assert.throws(()=>pool(source,{...valid,provider:'workbuddy'}));
 });
 
 test('account add and batch import require existing pools and inherit each pool provider',()=>{
@@ -194,15 +194,13 @@ test('re-enabling an OAuth deployment also restores an explicitly disabled accou
   assert.deepEqual(config.accounts['private-ref'],{provider:'openai',enabled:true});
 });
 
-test('migrated Workbuddy account storage still accepts plain API key edits',()=>{
+test('legacy test permission cannot enable retired credentials',()=>{
   const source=remote();source.merchant.allow_test=true;
   source.pools[0].provider='workbuddy';source.pools[0].deployments=[{
     id:'test-account',provider:'workbuddy',oauth_account:'test-ref',enabled:true,max_concurrent:16,rpm:0}];
-  const {config}=build(source,[{id:'test-account',kind:'api',api_key:'fixture-replacement',proxy:'direct://'}],{},'test-account');
-  assert.deepEqual(config.accounts['test-ref'],{provider:'workbuddy',credential:{api_key:'fixture-replacement'},proxy:'direct://'});
-  assert.deepEqual(Object.keys(config.secrets),[]);
-  assert.equal(config.pools[0].deployments[0].api_key_ref,undefined);
-  assert.equal(config.pools[0].deployments[0].oauth_account,'test-ref');
+  const before=structuredClone(source);
+  assert.throws(()=>build(source,[{id:'test-account',kind:'api',api_key:'fixture-replacement',proxy:'direct://'}],{},'test-account'));
+  assert.deepEqual(source,before);
 });
 
 test('moving account preserves its identity and leaves original pool and price intact',()=>{
@@ -282,7 +280,7 @@ test('invalid structured proxies are rejected without disclosing authentication 
   }
 });
 
-test('legacy proxy URLs stay supported and direct is explicit for authorized Workbuddy only',()=>{
+test('explicit proxies stay supported and direct connections are always rejected',()=>{
   const url='https://user:PRIVATE_PASS@proxy.example:8443';
   const result=build(remote(),[{...oauth('new'),proxy:url}]);
   assert.equal(result.config.accounts.new.proxy,url);
@@ -291,8 +289,8 @@ test('legacy proxy URLs stay supported and direct is explicit for authorized Wor
   const source=remote();source.merchant.allow_test=true;
   source.pools.push({name:'test-pool',provider:'workbuddy',deployments:[]});
   const entry={id:'test-account',pool:'test-pool',api_key:'FIXTURE_KEY',proxy:'direct://'};
-  assert.equal(build(source,[entry]).rows[0].proxy,'direct://');
-  assert.throws(()=>build(source,[{...entry,proxy:undefined}]),/缺少 proxy/);
+  assert.throws(()=>build(source,[entry]));
+  assert.throws(()=>build(source,[{...entry,proxy:undefined}]));
 });
 
 test('account aliases cannot modify object prototypes',()=>{

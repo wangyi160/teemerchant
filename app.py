@@ -188,7 +188,7 @@ class Application:
             try:
                 if status in ('checking', 'sending'):
                     raise AccountError('sync_uncertain')
-                if account['provider'] != 'workbuddy' and account.get('oauth_account'):
+                if account.get('oauth_account'):
                     token = access_only(account['credential'])
                     if token.get('expires_at', float('inf')) <= time.time():
                         raise AccountError('access_token_expired')
