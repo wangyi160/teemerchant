@@ -1,5 +1,9 @@
-# Security
+<a id="security"></a>
 
-The authenticated platform issues a separate Router admission token. It is kept in the encrypted merchant profile, hidden from public local state, and sent only as `X-Router-Access` during attestation. Merchant control and account credentials are sent only after the same TLS connection has passed hardware and release-policy verification. The service renews admission before expiry; platform outages do not invalidate an unexpired token.
+# 安全边界
 
-Merchant identities use local Ed25519 keys and IDs derived from their public keys. Registration sends only the public key; login signs a single-use challenge bound to the origin, role and purpose. Local IDs survive logout and session expiry. Private seeds are encrypted in `data/identities/` and are never returned to the browser or platform. Existing financial/profile identifiers remain internal so migration preserves account pools, withdrawals and revenue.
+**简体中文** | [English](SECURITY.en.md)
+
+完成认证的平台会签发独立的 Router 接入令牌。它保存在加密商户资料中，不出现在公开本地状态里，仅在证明协商时通过 `X-Router-Access` 发送。只有同一 TLS 连接通过硬件证明和发布策略验证后，才发送商户控制与账号凭据。服务在令牌到期前续期；平台临时不可用不会使尚未过期的令牌失效。
+
+商户身份使用本地 Ed25519 密钥及由其公钥派生的 ID。注册只发送公钥；登录签署限定来源、角色与用途的一次性挑战。退出或会话到期不会删除本地 ID。私有种子加密保存在 `data/identities/`，不返回浏览器或上传平台。现有财务/资料标识保留为内部标识，迁移保持账号池、提现和收入记录。

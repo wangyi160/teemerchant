@@ -1,18 +1,11 @@
-# Public verification fixtures
+<a id="public-verification-fixtures"></a>
 
-`test-*.bin` and `test-*.der` are public test vectors from Confidential Containers
-Trustee at the exact commit in `sources.json`, licensed Apache-2.0.
-`milan*.pem` / `milan*.crl` are public AMD endorsement material, downloaded from
-the fixed AMD KDS URLs in that manifest. SHA-256 hashes record the imported bytes.
+# 公开验证夹具
 
-These are **not this project's Oracle measurements**, approved production releases,
-or fresh evidence for a client connection. The VCEK report is version 2 (rejected by
-our production verifier); the VLEK report is version 3 but VMPL 1, lacks enforced
-InitData, and has a certificate that expired in December 2025. Its signatures are
-checked separately and full certificate verification must reject it. Both exercise
-real AMD signatures. Policy tests use explicitly synthetic
-reports and never establish a business session.
+**简体中文** | [English](README.en.md)
 
-Tests fix the collateral validation time to 2026-10-10 to keep archived fixtures
-reproducible, and separately exercise expiry. Production always reads the client's
-actual clock and fresh AMD collateral; it has no clock override or test trust root.
+`test-*.bin` 和 `test-*.der` 是来自 Confidential Containers Trustee 的公开测试向量，具体提交见 `sources.json`，许可为 Apache-2.0。`milan*.pem` / `milan*.crl` 是公开 AMD 背书材料，来自清单中固定的 AMD KDS URL。SHA-256 摘要记录导入时的原始字节。
+
+这些材料**不是本项目的 Oracle 测量值**、已批准生产发布或某次客户端连接的新鲜证据。VCEK 报告为版本 2，生产验证器拒绝；VLEK 报告为版本 3，但 VMPL 为 1、缺少强制 InitData，证书已于 2025 年 12 月到期。其签名单独检查，完整证书验证必须拒绝该材料。两者均用于测试真实 AMD 签名。策略测试使用明确的合成报告，不建立业务会话。
+
+测试将验证材料的校验时间固定为 2026-10-10，以便复现归档夹具，并单独测试过期情况。生产始终读取客户端实际时钟与新的 AMD 验证材料，不提供时钟覆盖或测试信任根。
