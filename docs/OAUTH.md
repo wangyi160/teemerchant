@@ -6,6 +6,8 @@
 
 授权和续期在商户 HTTP 服务中执行。提供商端点与公开 CLI client ID 定义于 `oauth_service.py`，沿用此前审阅的 Codex、Claude Code、Grok CLI 授权参数。浏览器表单提供 OAuth / JSON 两个切换页；OAuth 只填充草稿，测试连接成功后才保存。
 
+连接测试仅通过账号代理读取官方模型目录，成功取得有效目录即可保存，不发送任何模型生成请求。
+
 OpenAI 使用 Codex 设备码授权：通过账号代理向 `/api/accounts/deviceauth/usercode` 申请设备码，用户在 `https://auth.openai.com/codex/device` 输入设备码并授权。商户服务按官方 interval（至少 5 秒）轮询 `/api/accounts/deviceauth/token`，403/404 表示等待授权，最多等待 15 分钟。批准后使用官方返回的授权码和 PKCE verifier，向 `/oauth/token` 兑换凭证，redirect URI 为 `https://auth.openai.com/deviceauth/callback`。不监听 localhost 回调，不接收手动回调，不自动回退到浏览器 PKCE 登录。设备码登录需要在 ChatGPT 安全设置或工作区权限中启用。协议参考 [官方说明](https://learn.chatgpt.com/docs/auth#preferred-device-code-authentication-beta) 和 [Codex 官方实现](https://github.com/openai/codex/blob/main/codex-rs/login/src/device_code_auth.rs)。
 
 Claude 和 Grok 仍使用独立的 PKCE S256 verifier 和 state，Grok 另含 nonce，十分钟过期。Grok 粘贴完整 localhost 回调 URL，须匹配官方注册的 redirect URI 和 state；Claude 支持官方返回的授权码或 code#state。所有授权会话均绑定本机浏览器会话、商户身份、Router 和账号池。设备码轮询不占用服务状态锁；取消、登录失效或配置变化后不再兑换或交付凭证，兑换请求不自动重放。错误、取消或过期清理服务端草稿；凭据结果只能取回一次，状态轮询不返回令牌。

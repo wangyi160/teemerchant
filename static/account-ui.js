@@ -408,11 +408,11 @@ async function accountForm(editId = '', initialMode = '') {
       if(!dialog.open || state.enrollment.id!==identity || state.settings.router!==router)return;
       if(fingerprint!==JSON.stringify(connection(new FormData(setup))))throw Error('配置已变更，请重新测试');
       if(!result.ok){
-        const messages={credential_rejected:'凭证被上游拒绝',credential_invalid_or_expired:'凭证无效或已过期',upstream_rate_limited:'上游限流，请稍后重试',proxy_or_upstream_unreachable:'代理或上游无法连接',upstream_error:'上游请求失败',invalid_upstream_response:'模型响应无效',probe_timeout:'连接测试超时',probe_no_text_model:'没有可测试的对外文本模型'};
+        const messages={credential_rejected:'凭证被上游拒绝',credential_invalid_or_expired:'凭证无效或已过期',upstream_rate_limited:'上游限流，请稍后重试',proxy_or_upstream_unreachable:'代理或上游无法连接',upstream_error:'上游请求失败',invalid_upstream_response:'模型目录响应无效',probe_timeout:'连接测试超时'};
         throw Error(messages[result.code]||'连接测试失败');
       }
       tested={fingerprint,expires:Date.now()+5*60*1000};
-      status.textContent=`通过 · ${result.model} · ${result.latency_ms} ms`;
+      status.textContent=`通过 · 凭证及模型目录正常 · ${result.model_count} 个模型 · ${result.latency_ms} ms`;
     }catch(error){if(dialog.open){status.textContent='测试失败';alert.textContent=error.message;}}
     finally{testing=false;if(dialog.open)updateMode();}
   };

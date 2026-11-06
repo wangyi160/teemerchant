@@ -29,7 +29,7 @@ class FakeRouter:
         self.writes = []
         self.reject = False
         self.probes = []
-        self.probe_result = {'ok':True,'model':'fixture-text','latency_ms':12}
+        self.probe_result = {'ok':True,'stage':'models','model_count':1,'latency_ms':12}
         self.remote = {'merchant': {'id': store.enrollment()['id'], 'name': 'Example merchant',
                                    'max_concurrent': 16, 'rpm': 0, 'tpm': 0},
             'settings': {'revision': 7, 'max_concurrent': 16, 'rpm': 0, 'tpm': 0, 'customers': [],
@@ -145,7 +145,7 @@ class BrowserTests(unittest.TestCase):
 
     def pass_probe(self):
         self.page.locator('#account-test').click()
-        expect(self.page.locator('#account-test-status')).to_contain_text('通过')
+        expect(self.page.locator('#account-test-status')).to_contain_text('凭证及模型目录正常 · 1 个模型')
 
     def discover_fixture_model(self):
         self.router.remote['catalog'] = {'data': [{'pool': 'openai', 'deployment': 'example-001',
@@ -344,7 +344,7 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.locator('#dialog [role=alert]')).to_have_text('凭证被上游拒绝')
         expect(save).to_be_disabled()
         self.assertEqual(self.router.writes, [])
-        self.router.probe_result = {'ok':True,'model':'fixture-text','latency_ms':12}
+        self.router.probe_result = {'ok':True,'stage':'models','model_count':1,'latency_ms':12}
         self.pass_probe()
         expect(save).to_be_enabled()
         self.page.locator('[name=max_concurrent]').fill('4')
