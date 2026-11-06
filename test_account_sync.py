@@ -346,6 +346,46 @@ class AccountSyncTests(unittest.TestCase):
         self.assertIsNone(self.book.view(self.url)['access_token_sync']['good']['last_success_at'])
 
 
+    def test_new_token_waits_for_new_catalog_check_without_hiding_later_failure(self):
+        self.installed()
+        self.router.remote['catalog'] = {'data': [{'pool':'claude', 'deployment':name,
+            'catalog':{'check_id':7,'complete_catalog':False,'last_error':'authentication_failed'}}
+            for name in ('bad','good')]}
+        self.app.sync_credentials()
+        self.assertTrue(self.app.remote['access_token_sync']['good']['awaiting_catalog'])
+        # Persist the check boundary, not a browser timer or a wall-clock comparison.
+        reloaded = Store(self.tmp.name)
+        try:self.assertTrue(reloaded.accounts.view(self.url)['access_token_sync']['good']['awaiting_catalog'])
+        finally:reloaded.db.close()
+        for row in self.router.remote['catalog']['data']:row['catalog']['check_id']=6
+        self.app.accept(self.router.remote)
+        self.assertTrue(self.app.remote['access_token_sync']['good']['awaiting_catalog'])
+        for row in self.router.remote['catalog']['data']:row['catalog']['check_id']=8
+        self.app.accept(self.router.remote)
+        self.assertNotIn('awaiting_catalog',self.app.remote['access_token_sync']['good'])
+        # A new runtime cannot reuse an old token receipt or catalog check number.
+        self.router.remote['merchant']['runtime_id']='restarted'
+        for row in self.router.remote['catalog']['data']:row['catalog']['check_id']=1
+        self.app.accept(self.router.remote)
+        self.assertFalse(self.app.remote['access_token_sync']['good']['current'])
+        self.assertNotIn('awaiting_catalog',self.app.remote['access_token_sync']['good'])
+
+    def test_valid_shared_catalog_does_not_wait_for_account_specific_refresh(self):
+        self.installed()
+        self.router.remote['catalog'] = {'data': [{'pool':'claude','deployment':name,
+            'catalog':{'check_id':0,'complete_catalog':False,'last_error':None}}
+            for name in ('bad','good')]}
+        self.app.sync_credentials()
+        self.assertTrue(self.app.remote['access_token_sync']['good']['awaiting_catalog'])
+        for row in self.router.remote['catalog']['data']:
+            row['catalog'].update(check_id=1,complete_catalog=True,fetched_at=int(time.time()))
+        self.app.accept(self.router.remote)
+        self.assertNotIn('awaiting_catalog',self.app.remote['access_token_sync']['good'])
+        # Uploading another token can use an already valid shared provider catalog.
+        self.book.confirm_token_upload(self.url,self.config['accounts'],self.router.remote)
+        self.assertNotIn('awaiting_catalog',self.book.view(self.url)['access_token_sync']['good'])
+
+
 class AuthenticationTests(unittest.TestCase):
     def account(self, provider='anthropic'):
         return {'provider':provider, 'oauth_account':'a', 'credential':{'access_token':'PRIVATE_TOKEN', 'refresh_token':'PRIVATE_REFRESH'},

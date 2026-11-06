@@ -66,6 +66,8 @@ function accountState(pool, deployment) {
   if (deployment.oauth_account && !account) return ['等待账号同步', 'muted'];
   const entry = (remote().catalog?.data || []).find(c => c.pool === pool.name && c.deployment === deployment.id);
   if (entry?.catalog?.refreshing) return ['获取目录中', 'muted'];
+  if (remote().access_token_sync?.[deployment.id]?.awaiting_catalog || entry?.catalog?.last_error === 'account_changed')
+    return ['等待目录更新', 'muted'];
   if (entry?.catalog?.last_error) return ['目录获取失败', 'error'];
   if (!entry?.catalog?.fetched_at) return ['等待模型目录', 'muted'];
   if (!Object.keys(entry.official_models || {}).length) return ['暂无模型', 'muted'];

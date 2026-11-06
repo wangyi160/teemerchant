@@ -192,6 +192,30 @@ class BrowserTests(unittest.TestCase):
         expect(self.page.get_by_text('目录已就绪', exact=True)).to_be_visible()
         self.assertEqual(calls, [{'id': 'example-001'}])
 
+    def test_previous_catalog_failure_waits_after_new_token_but_new_failure_is_visible(self):
+        self.router.remote['catalog'] = {'data':[{'pool':'openai','deployment':'example-001',
+            'official_models':{},'catalog':{'check_id':4,'complete_catalog':False,
+            'last_error':'authentication_failed','refreshing':False}}]}
+        self.app.accept(copy.deepcopy(self.router.remote))
+        self.app.remote['access_token_sync']={'example-001':{'current':True,'last_success_at':1792836300,'awaiting_catalog':True}}
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('等待目录更新',exact=True)).to_be_visible()
+        expect(self.page.get_by_text('目录获取失败',exact=True)).to_have_count(0)
+        self.app.remote['access_token_sync']['example-001'].pop('awaiting_catalog')
+        self.app.remote['catalog']['data'][0]['catalog']['check_id']=5
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('目录获取失败',exact=True)).to_be_visible()
+        self.discover_fixture_model()
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('目录已就绪',exact=True)).to_be_visible()
+        # A superseded in-flight fetch is pending evidence, not a credential failure.
+        self.app.remote['catalog']['data'][0]['catalog']['last_error']='account_changed'
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('等待目录更新',exact=True)).to_be_visible()
+        self.app.remote['accounts']['data'][0]['health']['state']='reauthorization_required'
+        self.page.evaluate('pollAccountAccess()')
+        expect(self.page.get_by_text('账号认证失败',exact=True)).to_be_visible()
+
     def test_disabled_credential_cannot_appear_as_waiting_for_catalog(self):
         self.router.remote['accounts']['data'][0]['enabled'] = False
         self.app.accept(copy.deepcopy(self.router.remote))

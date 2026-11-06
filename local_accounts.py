@@ -25,6 +25,12 @@ def deployments(config):
     return [d for p in (config or {}).get('pools', []) for d in p['deployments']]
 
 
+def account_catalog(remote, reference):
+    identifiers = {d['id'] for d in deployments(remote) if d.get('oauth_account') == reference}
+    return next((row.get('catalog') or {} for row in remote.get('catalog', {}).get('data', [])
+                 if row.get('deployment') in identifiers), {})
+
+
 def redact(value):
     if isinstance(value, dict):
         return {k: ('[redacted]' if k == 'proxy' and v else redact(v))
@@ -361,6 +367,9 @@ class AccountBook:
             digest = fingerprint(credential)
             if statuses.get(name, {}).get('access_sha256') == digest:
                 confirmed[name] = {'last_success_at': now, 'access_sha256': digest, 'runtime_id': runtime}
+                check_id = account_catalog(remote, name).get('check_id')
+                if type(check_id) is int and check_id >= 0:
+                    confirmed[name]['catalog_check_id'] = check_id
         if confirmed:
             with self.lock:
                 data = copy.deepcopy(self.data)
@@ -709,6 +718,11 @@ class AccountBook:
                                and statuses.get(ref, {}).get('access_sha256') == digest
                                and receipt.get('runtime_id') == book['remote']['merchant'].get('runtime_id'))
                 view['access_token_sync'][name] = {'last_success_at': receipt.get('last_success_at'), 'current': current}
+                catalog = account_catalog(book['remote'], ref)
+                baseline, check_id = receipt.get('catalog_check_id'), catalog.get('check_id')
+                if (current and catalog.get('complete_catalog') is not True
+                        and type(baseline) is int and type(check_id) is int and check_id <= baseline):
+                    view['access_token_sync'][name]['awaiting_catalog'] = True
             missing = [d['id'] for d in deployments(config) if not self._material(book, d)['credential_present']]
             view['local_sync'] = {'state': book['sync_state'], 'error': book['sync_error'],
                                   'saved_at': book['saved_at'], 'missing_credentials': missing}
